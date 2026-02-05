@@ -29,7 +29,14 @@ function parseJobLinkInBrowser(link: Element, baseUrl: string) {
 
   let urlPath: string;
   try {
-    urlPath = new URL(href, baseUrl).pathname;
+    const fullUrl = new URL(href, baseUrl);
+    // If the link points to a different domain, keep the full URL
+    // Otherwise just keep the pathname
+    if (fullUrl.origin !== baseUrl) {
+      urlPath = fullUrl.href;
+    } else {
+      urlPath = fullUrl.pathname;
+    }
   } catch {
     return null;
   }
