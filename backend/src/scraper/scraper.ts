@@ -63,10 +63,10 @@ function parseJobLinkInBrowser(link: Element, baseUrl: string) {
 
   if (!title || title.length < 3) return null;
 
-  // Clean up location: remove trailing department labels
+  // Clean up location: remove trailing department labels (may be concatenated without space)
   location = location
-    .replace(/\b(Product|Engineering|Design|Marketing|Sales|Finance|Legal|Operations|Security)\s*$/i, "")
-    .replace(/\bProduct Management\s*$/i, "")
+    .replace(/(Product|Engineering|Design|Marketing|Sales|Finance|Legal|Operations|Security)\s*$/i, "")
+    .replace(/Product Management\s*$/i, "")
     .trim();
 
   // Clean up title: remove "Apply" / department labels that got concatenated
@@ -75,16 +75,15 @@ function parseJobLinkInBrowser(link: Element, baseUrl: string) {
     .replace(/Product Management$/i, "")
     .trim();
 
-  // If location is still stuck in the title (no children case like Anthropic),
-  // try to split on a known city pattern
-  if (!location && children.length < 2) {
+  // If location is still stuck in the title, try to split on a known city pattern
+  if (!location) {
     const cityMatch = title.match(
-      /(.*?)(?:San Francisco|San Mateo|New York|London|Seattle|Washington|Remote|Tokyo|Dublin|Sydney|Munich|Boston|Singapore|Paris|Berlin|Zurich|Toronto|Austin|Chicago|Los Angeles)/
+      /(.+?)(?=San Francisco|San Mateo|New York|London|Seattle|Washington|Remote|Tokyo|Dublin|Sydney|Munich|Boston|Singapore|Paris|Berlin|Zurich|Toronto|Austin|Chicago|Los Angeles)/
     );
-    if (cityMatch && cityMatch[1].length > 5) {
-      const splitIdx = cityMatch[1].length;
+    if (cityMatch && cityMatch[1].trim().length > 5) {
+      const splitIdx = cityMatch[0].length;
       location = title.substring(splitIdx).replace(/Apply(?:\s+now)?$/i, "").trim();
-      title = title.substring(0, splitIdx).trim();
+      title = cityMatch[1].trim();
     }
   }
 
@@ -204,6 +203,62 @@ async function extractAllJobsFromPage(
   );
 }
 
+/**
+ * Uber uses a JSON API instead of HTML job links.
+ * Fetches jobs directly via POST to their API (no browser needed).
+ */
+async function scrapeUberCareers(careersUrl: string): Promise<ScrapedJob[]> {
+  const url = new URL(careersUrl);
+  const department = url.searchParams.get("department") || "Product";
+
+  const allJobs: ScrapedJob[] = [];
+  let pageNum = 0;
+
+  while (true) {
+    const res = await fetch(
+      "https://www.uber.com/api/loadSearchJobsResults?localeCode=en",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-csrf-token": "x",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+        body: JSON.stringify({
+          limit: 50,
+          page: pageNum,
+          params: { department: [department] },
+        }),
+      }
+    );
+
+    const result = await res.json();
+    if (result.status !== "success" || !result.data.results) break;
+
+    const totalResults = result.data.totalResults?.low || 0;
+
+    for (const job of result.data.results) {
+      const locations = (job.allLocations || [])
+        .map((l: { city: string; region?: string; country?: string }) =>
+          l.region ? `${l.city}, ${l.region}` : `${l.city}, ${l.country}`
+        )
+        .join(" | ");
+
+      allJobs.push({
+        title: job.title,
+        location: locations,
+        urlPath: `/careers/list/${job.id}`,
+      });
+    }
+
+    if (allJobs.length >= totalResults) break;
+    pageNum++;
+  }
+
+  return allJobs;
+}
+
 export async function scrapeCompanyCareers(
   careersUrl: string
 ): Promise<ScrapedJob[]> {
@@ -216,6 +271,13 @@ export async function scrapeCompanyCareers(
       "--disable-gpu",
     ],
   });
+
+  // Uber-specific: use their JSON API directly (no browser needed)
+  if (new URL(careersUrl).hostname.includes("uber.com")) {
+    console.log("Detected Uber careers page, using API scraper");
+    await browser.close();
+    return scrapeUberCareers(careersUrl);
+  }
 
   try {
     const page = await browser.newPage();

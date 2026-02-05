@@ -18,6 +18,7 @@ CREATE TABLE seen_jobs (
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   job_url_path text NOT NULL,
   job_title text NOT NULL,
+  job_location text,
   first_seen_at timestamptz NOT NULL DEFAULT now(),
   is_baseline boolean NOT NULL DEFAULT false
 );
