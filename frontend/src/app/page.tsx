@@ -116,9 +116,9 @@ export default function Dashboard() {
             onClick={() => router.push(`/company/${company.id}`)}
             className="bg-white rounded-xl border border-slate-200 p-5 hover:shadow-md transition-shadow cursor-pointer"
           >
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center justify-between gap-4">
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-3 mb-1">
+                <div className="flex items-center gap-3">
                   <span className="text-lg font-semibold text-slate-900">
                     {company.name}
                   </span>
@@ -135,23 +135,27 @@ export default function Dashboard() {
                     <span className="w-2 h-2 bg-slate-300 rounded-full" title="Pending" />
                   )}
                 </div>
+              </div>
+
+              <div className="flex items-center gap-4 text-sm">
                 <a
                   href={company.careers_url}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
-                  className="text-sm text-slate-500 hover:text-blue-600 truncate block"
+                  className="text-slate-500 hover:text-blue-600 transition-colors px-3 py-1.5 hover:bg-blue-50 rounded-lg flex items-center gap-1.5"
+                  title={company.careers_url}
                 >
-                  {company.careers_url}
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                  Site
                 </a>
-              </div>
-
-              <div className="flex items-center gap-6 text-sm">
-                <div className="text-center">
+                <div className="text-center min-w-[60px]">
                   <div className="text-2xl font-bold text-slate-900">{company.total_product_jobs}</div>
-                  <div className="text-slate-500 text-xs">Total Jobs</div>
+                  <div className="text-slate-500 text-xs">Jobs</div>
                 </div>
-                <div className="text-right">
+                <div className="text-right min-w-[100px]">
                   <div className="text-slate-600">{formatDate(company.last_checked_at)}</div>
                   <div className="text-slate-400 text-xs">Last checked</div>
                 </div>
