@@ -255,7 +255,7 @@ async function scrapeUberCareers(careersUrl: string): Promise<ScrapedJob[]> {
       allJobs.push({
         title: job.title,
         location: locations,
-        urlPath: `/careers/list/${job.id}`,
+        urlPath: `https://www.uber.com/global/en/careers/list/${job.id}`,
       });
     }
 
