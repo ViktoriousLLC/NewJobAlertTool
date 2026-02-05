@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -17,6 +18,7 @@ interface Company {
 }
 
 export default function Dashboard() {
+  const router = useRouter();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -111,17 +113,15 @@ export default function Dashboard() {
         {companies.map((company) => (
           <div
             key={company.id}
-            className="bg-white rounded-xl border border-slate-200 p-5 hover:shadow-md transition-shadow"
+            onClick={() => router.push(`/company/${company.id}`)}
+            className="bg-white rounded-xl border border-slate-200 p-5 hover:shadow-md transition-shadow cursor-pointer"
           >
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-3 mb-1">
-                  <Link
-                    href={`/company/${company.id}`}
-                    className="text-lg font-semibold text-slate-900 hover:text-blue-600 transition-colors"
-                  >
+                  <span className="text-lg font-semibold text-slate-900">
                     {company.name}
-                  </Link>
+                  </span>
                   {company.new_jobs_30d > 0 && (
                     <span className="bg-emerald-100 text-emerald-700 px-2.5 py-0.5 rounded-full text-xs font-semibold">
                       {company.new_jobs_30d} new
@@ -139,6 +139,7 @@ export default function Dashboard() {
                   href={company.careers_url}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
                   className="text-sm text-slate-500 hover:text-blue-600 truncate block"
                 >
                   {company.careers_url}
@@ -155,7 +156,10 @@ export default function Dashboard() {
                   <div className="text-slate-400 text-xs">Last checked</div>
                 </div>
                 <button
-                  onClick={() => deleteCompany(company.id, company.name)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteCompany(company.id, company.name);
+                  }}
                   className="text-slate-400 hover:text-red-500 transition-colors p-2 hover:bg-red-50 rounded-lg"
                   title="Delete company"
                 >
