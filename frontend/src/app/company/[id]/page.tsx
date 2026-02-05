@@ -25,11 +25,27 @@ interface CompanyDetail {
   jobs: Job[];
 }
 
+// US states and common US location patterns
+const US_PATTERNS = [
+  /\bCA\b/i, /\bNY\b/i, /\bWA\b/i, /\bTX\b/i, /\bIL\b/i, /\bMA\b/i, /\bCO\b/i, /\bGA\b/i, /\bPA\b/i, /\bAZ\b/i,
+  /California/i, /New York/i, /Washington/i, /Texas/i, /Illinois/i, /Massachusetts/i,
+  /Colorado/i, /Georgia/i, /Pennsylvania/i, /Arizona/i, /Oregon/i, /Virginia/i,
+  /San Francisco/i, /Seattle/i, /Austin/i, /Chicago/i, /Boston/i, /Los Angeles/i,
+  /New York City/i, /NYC/i, /Sunnyvale/i, /San Mateo/i, /Palo Alto/i, /Mountain View/i,
+  /United States/i, /USA/i, /\bUS\b/, /Remote/i,
+];
+
+function isUSLocation(location: string | null): boolean {
+  if (!location) return false;
+  return US_PATTERNS.some((pattern) => pattern.test(location));
+}
+
 export default function CompanyDetailPage() {
   const params = useParams();
   const id = params.id as string;
   const [company, setCompany] = useState<CompanyDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [usOnly, setUsOnly] = useState(true);
 
   useEffect(() => {
     async function fetchCompany() {
@@ -68,9 +84,14 @@ export default function CompanyDetailPage() {
     );
   }
 
+  // Filter jobs based on US-only toggle
+  const filteredJobs = usOnly
+    ? company.jobs.filter((job) => isUSLocation(job.job_location))
+    : company.jobs;
+
   // Group jobs by date (already sorted newest first from API)
   const jobsByDate = new Map<string, Job[]>();
-  for (const job of company.jobs) {
+  for (const job of filteredJobs) {
     const date = new Date(job.first_seen_at).toLocaleDateString("en-US", {
       year: "numeric",
       month: "long",
@@ -125,12 +146,23 @@ export default function CompanyDetailPage() {
         </div>
       </div>
 
-      <h2 className="text-lg font-semibold text-gray-900 mb-4">
-        All Product Jobs ({company.jobs.length})
-      </h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-gray-900">
+          All Product Jobs ({filteredJobs.length}{usOnly ? ` of ${company.jobs.length}` : ""})
+        </h2>
+        <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={usOnly}
+            onChange={(e) => setUsOnly(e.target.checked)}
+            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          US only
+        </label>
+      </div>
 
-      {company.jobs.length === 0 ? (
-        <p className="text-gray-500">No jobs found.</p>
+      {filteredJobs.length === 0 ? (
+        <p className="text-gray-500">No jobs found{usOnly ? " in the US. Try unchecking 'US only'." : "."}</p>
       ) : (
         <div className="space-y-6">
           {Array.from(jobsByDate.entries()).map(([date, jobs]) => (
