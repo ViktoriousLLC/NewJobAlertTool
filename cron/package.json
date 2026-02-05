@@ -1,0 +1,10 @@
+{
+  "name": "job-alert-cron",
+  "version": "1.0.0",
+  "description": "Cron job to trigger daily job scraping",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {}
+}
