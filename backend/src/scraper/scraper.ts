@@ -206,97 +206,23 @@ async function extractAllJobsFromPage(
 }
 
 /**
- * Netflix uses an API endpoint for job listings.
- * Filters for Product Manager roles.
- */
-async function scrapeNetflixCareers(): Promise<ScrapedJob[]> {
-  console.log("Netflix: Fetching jobs via API...");
-
-  const url = "https://explore.jobs.netflix.net/api/apply/v2/jobs/790312512674/jobs?domain=netflix.com&limit=200&Teams=Product%20Management";
-
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0" }
-  });
-
-  const data = await res.json();
-  const positions = data.positions || [];
-
-  // Filter for Product Manager roles
-  const pmRoles = positions.filter((p: { name: string }) => {
-    const name = p.name.toLowerCase();
-    return name.includes("product manager") ||
-           name.includes("product lead") ||
-           name.includes("group product") ||
-           name.includes("director, product");
-  });
-
-  console.log(`Netflix: Found ${pmRoles.length} PM roles from ${positions.length} total`);
-
-  return pmRoles.map((p: { name: string; id: number; locations?: string[]; location?: string }) => ({
-    title: p.name,
-    location: p.locations ? p.locations.join(" | ") : (p.location || ""),
-    urlPath: `https://explore.jobs.netflix.net/careers?pid=790312512674&job=${p.id}`
-  }));
-}
-
-/**
- * Discord: Scrape all jobs and filter for PM roles.
- */
-async function scrapeDiscordCareers(): Promise<ScrapedJob[]> {
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
-  });
-
-  try {
-    const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0");
-    await page.goto("https://discord.com/careers", { waitUntil: "networkidle2", timeout: 60000 });
-    await new Promise(r => setTimeout(r, 3000));
-
-    const jobs = await page.evaluate(() => {
-      const links = Array.from(document.querySelectorAll('a[href*="/jobs/"]'));
-      return links.map(a => ({
-        title: (a.textContent || "").trim(),
-        href: "https://discord.com" + a.getAttribute("href")
-      })).filter(j => j.title.length > 5);
-    });
-
-    const pmJobs = jobs.filter(j => {
-      const t = j.title.toLowerCase();
-      return t.includes("product manager") || t.includes("product lead") || t.includes("group product");
-    });
-
-    console.log(`Discord: Found ${pmJobs.length} PM roles from ${jobs.length} total`);
-
-    return pmJobs.map(j => ({
-      title: j.title,
-      location: "",
-      urlPath: j.href
-    }));
-  } finally {
-    await browser.close();
-  }
-}
-
-/**
  * Instacart: Expand accordions and scrape PM roles.
  */
 async function scrapeInstacartCareers(): Promise<ScrapedJob[]> {
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
   });
 
   try {
     const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0");
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
     await page.goto("https://instacart.careers/current-openings/", { waitUntil: "networkidle2", timeout: 60000 });
     await new Promise(r => setTimeout(r, 3000));
 
-    // Click all expand buttons
+    // Click all accordion expand buttons
     await page.evaluate(() => {
-      document.querySelectorAll('button, [role="button"], .accordion-toggle').forEach(b => (b as HTMLElement).click());
+      document.querySelectorAll('button, [role="button"], .accordion-toggle, .card-header').forEach(b => (b as HTMLElement).click());
     });
     await new Promise(r => setTimeout(r, 2000));
 
@@ -304,7 +230,7 @@ async function scrapeInstacartCareers(): Promise<ScrapedJob[]> {
       const links = Array.from(document.querySelectorAll("a"));
       return links.filter(a => {
         const href = a.getAttribute("href") || "";
-        return href.includes("greenhouse") || href.includes("job");
+        return href.includes("greenhouse") || href.includes("instacart.careers/job");
       }).map(a => ({
         title: (a.textContent || "").trim(),
         href: a.getAttribute("href") || ""
@@ -313,15 +239,17 @@ async function scrapeInstacartCareers(): Promise<ScrapedJob[]> {
 
     const pmJobs = jobs.filter(j => {
       const t = j.title.toLowerCase();
-      return t.includes("product manager") || t.includes("product lead") || t.includes("group product") || t.includes("director, product");
+      return t.includes("product manager") || t.includes("product lead") ||
+             t.includes("group product") || t.includes("director, product") ||
+             t.includes("product analytics");
     });
 
-    console.log(`Instacart: Found ${pmJobs.length} PM roles`);
+    console.log(`Instacart: Found ${pmJobs.length} PM roles from ${jobs.length} total`);
 
     return pmJobs.map(j => ({
       title: j.title,
       location: "",
-      urlPath: j.href
+      urlPath: j.href.startsWith("http") ? j.href : "https://instacart.careers" + j.href
     }));
   } finally {
     await browser.close();
@@ -976,19 +904,19 @@ export async function scrapeCompanyCareers(
   if (new URL(careersUrl).hostname.includes("netflix.net") || new URL(careersUrl).hostname.includes("netflix.com")) {
     console.log("Detected Netflix careers page, using API scraper");
     await browser.close();
-    return scrapeNetflixCareers();
+    return scrapeNetflixCareers(careersUrl);
   }
 
-  // Discord-specific: scrape all and filter
+  // Discord-specific: use Greenhouse API
   if (new URL(careersUrl).hostname.includes("discord.com")) {
-    console.log("Detected Discord careers page, using custom scraper");
+    console.log("Detected Discord careers page, using Greenhouse API scraper");
     await browser.close();
     return scrapeDiscordCareers();
   }
 
   // Instacart-specific: handle accordions
   if (new URL(careersUrl).hostname.includes("instacart.careers")) {
-    console.log("Detected Instacart careers page, using custom scraper");
+    console.log("Detected Instacart careers page, using accordion scraper");
     await browser.close();
     return scrapeInstacartCareers();
   }
