@@ -211,6 +211,174 @@ async function extractAllJobsFromPage(
 }
 
 /**
+ * Stripe uses server-side rendered pages with ?skip= pagination.
+ * Filters for Product Manager/Lead roles and fetches locations from detail pages.
+ */
+async function scrapeStripeCareers(): Promise<ScrapedJob[]> {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+
+    const productJobs: { title: string; url: string }[] = [];
+    let skip = 0;
+
+    // Phase 1: Collect all Product Manager jobs from all pages
+    while (skip <= 1200) {
+      const url = `https://stripe.com/jobs/search?skip=${skip}`;
+      console.log(`Stripe: Fetching ${url}`);
+
+      try {
+        await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+
+        const jobs = await page.evaluate(() => {
+          const links = document.querySelectorAll('a[href*="/jobs/listing"]');
+          const seen = new Set<string>();
+          const results: { title: string; url: string }[] = [];
+
+          links.forEach((link) => {
+            const href = link.getAttribute("href") || "";
+            if (seen.has(href)) return;
+            seen.add(href);
+
+            const title = (link.textContent || "").trim();
+            const lower = title.toLowerCase();
+
+            // Filter for Product Manager/Lead roles
+            if (
+              lower.includes("product manager") ||
+              lower.includes("product lead") ||
+              lower.includes("product director") ||
+              lower.includes("head of product") ||
+              lower.includes("vp of product") ||
+              lower.includes("vp, product") ||
+              lower.includes("chief product")
+            ) {
+              results.push({ title, url: href });
+            }
+          });
+
+          return results;
+        });
+
+        if (jobs.length > 0) {
+          console.log(`  Found ${jobs.length} product roles on this page`);
+          productJobs.push(...jobs);
+        }
+
+        // Check if we've reached the last page
+        const hasMore = await page.evaluate(() => {
+          const links = document.querySelectorAll('a[href*="/jobs/listing"]');
+          return links.length > 0;
+        });
+
+        if (!hasMore) break;
+        skip += 100;
+        await new Promise((r) => setTimeout(r, 500));
+      } catch (err) {
+        console.log(`Stripe: Error at skip=${skip}:`, err);
+        break;
+      }
+    }
+
+    console.log(`Stripe: Found ${productJobs.length} total product jobs`);
+
+    // Phase 2: Fetch location details for each job
+    const allJobs: ScrapedJob[] = [];
+
+    for (const job of productJobs) {
+      try {
+        await page.goto(job.url, { waitUntil: "networkidle2", timeout: 30000 });
+
+        const details = await page.evaluate(() => {
+          const bodyText = document.body.innerText;
+          const lines = bodyText.split("\n").filter((l) => l.trim());
+
+          const officeLocations: string[] = [];
+          const remoteLocations: string[] = [];
+
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+
+            if (line === "Office locations") {
+              for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+                const nextLine = lines[j].trim();
+                if (
+                  nextLine === "Remote locations" ||
+                  nextLine === "Team" ||
+                  nextLine === "Full time"
+                )
+                  break;
+                if (nextLine.length > 0 && nextLine.length < 100) {
+                  officeLocations.push(nextLine);
+                }
+              }
+            }
+
+            if (line === "Remote locations") {
+              for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+                const nextLine = lines[j].trim();
+                if (
+                  nextLine === "Team" ||
+                  nextLine === "Full time" ||
+                  nextLine === "Office locations"
+                )
+                  break;
+                if (nextLine.length > 0 && nextLine.length < 100) {
+                  remoteLocations.push(nextLine);
+                }
+              }
+            }
+          }
+
+          return { officeLocations, remoteLocations };
+        });
+
+        // Combine office and remote locations
+        const locations = [
+          ...details.officeLocations,
+          ...details.remoteLocations,
+        ]
+          .filter((l) => l)
+          .join(" | ");
+
+        allJobs.push({
+          title: job.title,
+          location: locations,
+          urlPath: job.url,
+        });
+
+        console.log(`  ${job.title}: ${locations || "No location"}`);
+        await new Promise((r) => setTimeout(r, 300));
+      } catch (err) {
+        // If detail page fails, still include job without location
+        allJobs.push({
+          title: job.title,
+          location: "",
+          urlPath: job.url,
+        });
+        console.log(`  ${job.title}: Failed to get location`);
+      }
+    }
+
+    return allJobs;
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
  * Uber uses a JSON API instead of HTML job links.
  * Fetches jobs directly via POST to their API (no browser needed).
  */
@@ -278,6 +446,13 @@ export async function scrapeCompanyCareers(
       "--disable-gpu",
     ],
   });
+
+  // Stripe-specific: paginate through all pages and filter for PM roles
+  if (new URL(careersUrl).hostname.includes("stripe.com")) {
+    console.log("Detected Stripe careers page, using custom scraper");
+    await browser.close();
+    return scrapeStripeCareers();
+  }
 
   // Uber-specific: use their JSON API directly (no browser needed)
   if (new URL(careersUrl).hostname.includes("uber.com")) {
