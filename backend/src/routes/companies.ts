@@ -14,15 +14,15 @@ router.get("/", async (_req: Request, res: Response) => {
 
     if (error) throw error;
 
-    // Get new job counts (last 30 days, non-baseline) for each company
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    // Get new job counts (found today, non-baseline) for each company
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
     const { data: newJobCounts } = await supabase
       .from("seen_jobs")
       .select("company_id")
       .eq("is_baseline", false)
-      .gte("first_seen_at", thirtyDaysAgo.toISOString());
+      .gte("first_seen_at", today.toISOString());
 
     const countMap = new Map<string, number>();
     for (const row of newJobCounts || []) {
@@ -31,7 +31,7 @@ router.get("/", async (_req: Request, res: Response) => {
 
     const result = (companies || []).map((c) => ({
       ...c,
-      new_jobs_30d: countMap.get(c.id) || 0,
+      new_jobs_today: countMap.get(c.id) || 0,
     }));
 
     res.json(result);

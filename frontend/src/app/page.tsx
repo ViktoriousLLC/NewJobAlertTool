@@ -14,7 +14,7 @@ interface Company {
   last_checked_at: string | null;
   last_check_status: string | null;
   total_product_jobs: number;
-  new_jobs_30d: number;
+  new_jobs_today: number;
 }
 
 export default function Dashboard() {
@@ -122,9 +122,9 @@ export default function Dashboard() {
                   <span className="text-lg font-semibold text-slate-900">
                     {company.name}
                   </span>
-                  {company.new_jobs_30d > 0 && (
+                  {company.new_jobs_today > 0 && (
                     <span className="bg-emerald-100 text-emerald-700 px-2.5 py-0.5 rounded-full text-xs font-semibold">
-                      {company.new_jobs_30d} new
+                      {company.new_jobs_today} new
                     </span>
                   )}
                   {company.last_check_status === "success" ? (
