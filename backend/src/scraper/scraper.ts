@@ -30,13 +30,8 @@ function parseJobLinkInBrowser(link: Element, baseUrl: string) {
   let urlPath: string;
   try {
     const fullUrl = new URL(href, baseUrl);
-    // If the link points to a different domain, keep the full URL
-    // Otherwise just keep the pathname
-    if (fullUrl.origin !== baseUrl) {
-      urlPath = fullUrl.href;
-    } else {
-      urlPath = fullUrl.pathname;
-    }
+    // Always use the full URL to ensure consistent deduplication
+    urlPath = fullUrl.href;
   } catch {
     return null;
   }
