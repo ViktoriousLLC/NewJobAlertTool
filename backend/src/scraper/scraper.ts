@@ -206,6 +206,129 @@ async function extractAllJobsFromPage(
 }
 
 /**
+ * Netflix uses an API endpoint for job listings.
+ * Filters for Product Manager roles.
+ */
+async function scrapeNetflixCareers(): Promise<ScrapedJob[]> {
+  console.log("Netflix: Fetching jobs via API...");
+
+  const url = "https://explore.jobs.netflix.net/api/apply/v2/jobs/790312512674/jobs?domain=netflix.com&limit=200&Teams=Product%20Management";
+
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0" }
+  });
+
+  const data = await res.json();
+  const positions = data.positions || [];
+
+  // Filter for Product Manager roles
+  const pmRoles = positions.filter((p: { name: string }) => {
+    const name = p.name.toLowerCase();
+    return name.includes("product manager") ||
+           name.includes("product lead") ||
+           name.includes("group product") ||
+           name.includes("director, product");
+  });
+
+  console.log(`Netflix: Found ${pmRoles.length} PM roles from ${positions.length} total`);
+
+  return pmRoles.map((p: { name: string; id: number; locations?: string[]; location?: string }) => ({
+    title: p.name,
+    location: p.locations ? p.locations.join(" | ") : (p.location || ""),
+    urlPath: `https://explore.jobs.netflix.net/careers?pid=790312512674&job=${p.id}`
+  }));
+}
+
+/**
+ * Discord: Scrape all jobs and filter for PM roles.
+ */
+async function scrapeDiscordCareers(): Promise<ScrapedJob[]> {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent("Mozilla/5.0");
+    await page.goto("https://discord.com/careers", { waitUntil: "networkidle2", timeout: 60000 });
+    await new Promise(r => setTimeout(r, 3000));
+
+    const jobs = await page.evaluate(() => {
+      const links = Array.from(document.querySelectorAll('a[href*="/jobs/"]'));
+      return links.map(a => ({
+        title: (a.textContent || "").trim(),
+        href: "https://discord.com" + a.getAttribute("href")
+      })).filter(j => j.title.length > 5);
+    });
+
+    const pmJobs = jobs.filter(j => {
+      const t = j.title.toLowerCase();
+      return t.includes("product manager") || t.includes("product lead") || t.includes("group product");
+    });
+
+    console.log(`Discord: Found ${pmJobs.length} PM roles from ${jobs.length} total`);
+
+    return pmJobs.map(j => ({
+      title: j.title,
+      location: "",
+      urlPath: j.href
+    }));
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * Instacart: Expand accordions and scrape PM roles.
+ */
+async function scrapeInstacartCareers(): Promise<ScrapedJob[]> {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent("Mozilla/5.0");
+    await page.goto("https://instacart.careers/current-openings/", { waitUntil: "networkidle2", timeout: 60000 });
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Click all expand buttons
+    await page.evaluate(() => {
+      document.querySelectorAll('button, [role="button"], .accordion-toggle').forEach(b => (b as HTMLElement).click());
+    });
+    await new Promise(r => setTimeout(r, 2000));
+
+    const jobs = await page.evaluate(() => {
+      const links = Array.from(document.querySelectorAll("a"));
+      return links.filter(a => {
+        const href = a.getAttribute("href") || "";
+        return href.includes("greenhouse") || href.includes("job");
+      }).map(a => ({
+        title: (a.textContent || "").trim(),
+        href: a.getAttribute("href") || ""
+      })).filter(j => j.title.length > 5 && j.title.length < 150);
+    });
+
+    const pmJobs = jobs.filter(j => {
+      const t = j.title.toLowerCase();
+      return t.includes("product manager") || t.includes("product lead") || t.includes("group product") || t.includes("director, product");
+    });
+
+    console.log(`Instacart: Found ${pmJobs.length} PM roles`);
+
+    return pmJobs.map(j => ({
+      title: j.title,
+      location: "",
+      urlPath: j.href
+    }));
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
  * Stripe uses server-side rendered pages with ?skip= pagination.
  * Filters for Product Manager/Lead roles and fetches locations from detail pages.
  */
@@ -374,6 +497,413 @@ async function scrapeStripeCareers(): Promise<ScrapedJob[]> {
 }
 
 /**
+ * Discord uses Greenhouse API. Since there's no product filter in the URL,
+ * we fetch all jobs and filter by title for product-related roles.
+ */
+async function scrapeDiscordCareers(): Promise<ScrapedJob[]> {
+  console.log("Discord: Fetching jobs from Greenhouse API");
+
+  const response = await fetch(
+    "https://api.greenhouse.io/v1/boards/discord/jobs"
+  );
+
+  interface GreenhouseJob {
+    id: number;
+    title: string;
+    absolute_url: string;
+    location: {
+      name: string;
+    };
+  }
+
+  interface GreenhouseResponse {
+    jobs: GreenhouseJob[];
+  }
+
+  const data: GreenhouseResponse = await response.json();
+  console.log(`Discord: Found ${data.jobs.length} total jobs`);
+
+  // Filter for Product Manager roles by title
+  const productKeywords = [
+    "product manager",
+    "product lead",
+    "product director",
+    "head of product",
+    "vp of product",
+    "vp, product",
+    "chief product",
+  ];
+
+  const productJobs = data.jobs.filter((job) => {
+    const lowerTitle = job.title.toLowerCase();
+    return productKeywords.some((kw) => lowerTitle.includes(kw));
+  });
+
+  console.log(`Discord: Found ${productJobs.length} product manager roles`);
+
+  return productJobs.map((job) => ({
+    title: job.title,
+    location: job.location?.name || "",
+    urlPath: job.absolute_url,
+  }));
+}
+
+/**
+ * Netflix uses a JSON API with pagination.
+ * Extracts team filters from the URL and fetches all jobs via API.
+ */
+async function scrapeNetflixCareers(careersUrl: string): Promise<ScrapedJob[]> {
+  const url = new URL(careersUrl);
+
+  // Extract team filters from URL (e.g., Teams=Product%20Management)
+  const teams = url.searchParams.getAll("Teams");
+
+  if (teams.length === 0) {
+    // Default to Product Management if no teams specified
+    teams.push("Product Management");
+  }
+
+  const baseApiUrl = "https://explore.jobs.netflix.net/api/apply/v2/jobs";
+  const allJobs: ScrapedJob[] = [];
+  let start = 0;
+  const batchSize = 100;
+
+  // First request to get total count
+  const params = new URLSearchParams();
+  params.append("domain", "netflix.com");
+  params.append("start", "0");
+  params.append("num", batchSize.toString());
+  for (const team of teams) {
+    params.append("Teams", team);
+  }
+
+  const initialResponse = await fetch(`${baseApiUrl}?${params.toString()}`, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "application/json",
+    },
+  });
+
+  const initialData = await initialResponse.json();
+  const totalCount = initialData.count || 0;
+
+  console.log(`Netflix: Found ${totalCount} total jobs for teams: ${teams.join(", ")}`);
+
+  // Process initial batch
+  for (const job of initialData.positions || []) {
+    const location = (job.location || "").replace(/,/g, ", ");
+    allJobs.push({
+      title: job.name,
+      location,
+      urlPath: `https://explore.jobs.netflix.net/careers/job/${job.id}`,
+    });
+  }
+
+  start = allJobs.length;
+
+  // Paginate through remaining jobs
+  while (start < totalCount) {
+    const nextParams = new URLSearchParams();
+    nextParams.append("domain", "netflix.com");
+    nextParams.append("start", start.toString());
+    nextParams.append("num", batchSize.toString());
+    for (const team of teams) {
+      nextParams.append("Teams", team);
+    }
+
+    console.log(`Netflix: Fetching jobs starting at ${start}...`);
+
+    const response = await fetch(`${baseApiUrl}?${nextParams.toString()}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+      },
+    });
+
+    const data = await response.json();
+    if (!data.positions || data.positions.length === 0) break;
+
+    for (const job of data.positions) {
+      const location = (job.location || "").replace(/,/g, ", ");
+      allJobs.push({
+        title: job.name,
+        location,
+        urlPath: `https://explore.jobs.netflix.net/careers/job/${job.id}`,
+      });
+    }
+
+    start += data.positions.length;
+
+    // Small delay to be respectful
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  console.log(`Netflix: Scraped ${allJobs.length} jobs successfully`);
+  return allJobs;
+}
+
+/**
+ * Eightfold.ai platform (used by PayPal, etc.)
+ * Uses a direct API with pagination (start=0, start=10, etc.)
+ */
+async function scrapeEightfoldCareers(careersUrl: string): Promise<ScrapedJob[]> {
+  const url = new URL(careersUrl);
+  const domain = url.hostname.split(".")[0] + ".com"; // e.g., "paypal.com"
+  const baseOrigin = url.origin; // e.g., "https://paypal.eightfold.ai"
+
+  // Extract filter parameters from the careers URL
+  const location = url.searchParams.get("location") || "";
+  const sortBy = url.searchParams.get("sort_by") || "relevance";
+  const filterDistance = url.searchParams.get("filter_distance") || "";
+  const filterJobCategory = url.searchParams.get("filter_job_category") || "";
+
+  console.log(`Eightfold: Scraping ${domain} careers`);
+
+  const allJobs: ScrapedJob[] = [];
+  let start = 0;
+
+  while (true) {
+    // Build API URL with same filters as the careers page
+    const apiUrl = new URL(`${baseOrigin}/api/pcsx/search`);
+    apiUrl.searchParams.set("domain", domain);
+    apiUrl.searchParams.set("query", "");
+    apiUrl.searchParams.set("start", start.toString());
+    if (location) apiUrl.searchParams.set("location", location);
+    if (sortBy) apiUrl.searchParams.set("sort_by", sortBy);
+    if (filterDistance) apiUrl.searchParams.set("filter_distance", filterDistance);
+    if (filterJobCategory) apiUrl.searchParams.set("filter_job_category", filterJobCategory);
+
+    console.log(`Eightfold: Fetching start=${start}`);
+
+    try {
+      const res = await fetch(apiUrl.toString(), {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      });
+
+      interface EightfoldPosition {
+        id: number;
+        name: string;
+        locations?: string[];
+        standardizedLocations?: string[];
+        positionUrl?: string;
+      }
+
+      interface EightfoldResponse {
+        status: number;
+        data: {
+          positions: EightfoldPosition[];
+          count: number;
+        };
+      }
+
+      const result: EightfoldResponse = await res.json();
+
+      if (result.status !== 200 || !result.data?.positions) {
+        console.log("Eightfold: API returned non-success status");
+        break;
+      }
+
+      const positions = result.data.positions;
+      const totalCount = result.data.count;
+
+      console.log(`  Found ${positions.length} jobs (total: ${totalCount})`);
+
+      for (const job of positions) {
+        const locations = (job.standardizedLocations || job.locations || []).join(" | ");
+        const jobUrl = job.positionUrl
+          ? `${baseOrigin}${job.positionUrl}`
+          : `${baseOrigin}/careers/job/${job.id}`;
+
+        allJobs.push({
+          title: job.name,
+          location: locations,
+          urlPath: jobUrl,
+        });
+      }
+
+      // Check if we've fetched all jobs
+      if (allJobs.length >= totalCount || positions.length === 0) {
+        break;
+      }
+
+      start += 10; // Eightfold uses 10 items per page
+      await new Promise((r) => setTimeout(r, 300)); // Rate limiting
+    } catch (err) {
+      console.log(`Eightfold: Error at start=${start}:`, err);
+      break;
+    }
+  }
+
+  console.log(`Eightfold: Found ${allJobs.length} total jobs`);
+  return allJobs;
+}
+
+/**
+ * Google Careers uses page-based pagination with ?page= parameter.
+ * Extracts job listings from the search results page.
+ */
+async function scrapeGoogleCareers(careersUrl: string): Promise<ScrapedJob[]> {
+  console.log("Google: Starting careers scraper");
+
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+
+    const allJobs: ScrapedJob[] = [];
+    const seen = new Set<string>();
+
+    // Ensure page parameter is in the URL
+    const baseUrl = careersUrl.includes("page=")
+      ? careersUrl.replace(/page=\d+/, "page=")
+      : careersUrl + (careersUrl.includes("?") ? "&page=" : "?page=");
+
+    // Paginate through all pages
+    for (let pageNum = 1; pageNum <= 20; pageNum++) {
+      const pageUrl = baseUrl + pageNum;
+      console.log(`Google: Fetching page ${pageNum}...`);
+
+      await page.goto(pageUrl, { waitUntil: "networkidle2", timeout: 60000 });
+      await new Promise((r) => setTimeout(r, 2000));
+
+      // Get total job count on first page
+      if (pageNum === 1) {
+        const totalJobs = await page.evaluate(() => {
+          const bodyText = document.body.innerText;
+          const match = bodyText.match(/(\d+)\s*jobs?\s*matched/i);
+          return match ? parseInt(match[1]) : 0;
+        });
+        console.log(`Google: Total jobs to find: ${totalJobs}`);
+      }
+
+      const pageJobs = await page.evaluate(() => {
+        const baseUrlPrefix = "https://www.google.com/about/careers/applications/";
+        const allLinks = Array.from(document.querySelectorAll("a[href]"));
+        const jobLinks = allLinks.filter((a) => {
+          const href = a.getAttribute("href") || "";
+          // Match links like: jobs/results/128346269826327238-group-product-manager-ai-infra
+          return /jobs\/results\/\d+-/.test(href);
+        });
+
+        const jobs: { title: string; location: string; urlPath: string }[] = [];
+        const localSeen = new Set<string>();
+
+        for (const link of jobLinks) {
+          const href = link.getAttribute("href") || "";
+
+          let fullUrl: string;
+          if (href.startsWith("http")) {
+            fullUrl = href;
+          } else if (href.startsWith("/")) {
+            fullUrl = "https://www.google.com" + href;
+          } else {
+            fullUrl = baseUrlPrefix + href;
+          }
+
+          // Clean URL - remove query parameters for deduplication
+          const urlObj = new URL(fullUrl);
+          const cleanUrl = urlObj.origin + urlObj.pathname;
+
+          if (localSeen.has(cleanUrl)) continue;
+          localSeen.add(cleanUrl);
+
+          // Extract title and location from parent container
+          let title = "";
+          let location = "";
+
+          const parent = link.closest("li") || link.parentElement?.parentElement?.parentElement;
+          if (parent) {
+            const text = (parent.textContent || "").trim();
+            const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              if (/^(learn more|share|save|apply)$/i.test(line)) continue;
+
+              // Look for line with "Company | Location" pattern
+              if (line.includes(" | ") && !title) {
+                // Previous meaningful line is the title
+                for (let j = i - 1; j >= 0; j--) {
+                  if (lines[j] && !/^(learn more|share|save|apply)$/i.test(lines[j])) {
+                    title = lines[j];
+                    break;
+                  }
+                }
+                // Extract location after the pipe
+                const parts = line.split(" | ");
+                if (parts.length >= 2) {
+                  location = parts
+                    .slice(1)
+                    .join(" | ")
+                    .replace(/Minimum qualifications.*$/i, "")
+                    .replace(/\s*;\s*\+\d+\s*more/gi, " (+more)")
+                    .trim();
+                }
+                break;
+              }
+            }
+          }
+
+          // Fallback: extract title from URL slug
+          if (!title) {
+            const slugMatch = href.match(/\d+-(.+?)(?:\?|$)/);
+            if (slugMatch) {
+              title = slugMatch[1]
+                .replace(/-/g, " ")
+                .replace(/\b\w/g, (l) => l.toUpperCase());
+            }
+          }
+
+          if (title) {
+            jobs.push({ title, location: location || "Unknown", urlPath: cleanUrl });
+          }
+        }
+
+        return jobs;
+      });
+
+      console.log(`Google: Found ${pageJobs.length} jobs on page ${pageNum}`);
+
+      let newJobsCount = 0;
+      for (const job of pageJobs) {
+        if (!seen.has(job.urlPath)) {
+          seen.add(job.urlPath);
+          allJobs.push(job);
+          newJobsCount++;
+        }
+      }
+
+      console.log(`Google: New unique jobs: ${newJobsCount}, Total so far: ${allJobs.length}`);
+
+      // Stop if no new jobs found (empty page)
+      if (newJobsCount === 0) {
+        console.log("Google: No new jobs found, stopping pagination");
+        break;
+      }
+    }
+
+    console.log(`Google: Scraped ${allJobs.length} jobs successfully`);
+    return allJobs;
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
  * Uber uses a JSON API instead of HTML job links.
  * Fetches jobs directly via POST to their API (no browser needed).
  */
@@ -442,6 +972,27 @@ export async function scrapeCompanyCareers(
     ],
   });
 
+  // Netflix-specific: use their API
+  if (new URL(careersUrl).hostname.includes("netflix.net") || new URL(careersUrl).hostname.includes("netflix.com")) {
+    console.log("Detected Netflix careers page, using API scraper");
+    await browser.close();
+    return scrapeNetflixCareers();
+  }
+
+  // Discord-specific: scrape all and filter
+  if (new URL(careersUrl).hostname.includes("discord.com")) {
+    console.log("Detected Discord careers page, using custom scraper");
+    await browser.close();
+    return scrapeDiscordCareers();
+  }
+
+  // Instacart-specific: handle accordions
+  if (new URL(careersUrl).hostname.includes("instacart.careers")) {
+    console.log("Detected Instacart careers page, using custom scraper");
+    await browser.close();
+    return scrapeInstacartCareers();
+  }
+
   // Stripe-specific: paginate through all pages and filter for PM roles
   if (new URL(careersUrl).hostname.includes("stripe.com")) {
     console.log("Detected Stripe careers page, using custom scraper");
@@ -454,6 +1005,34 @@ export async function scrapeCompanyCareers(
     console.log("Detected Uber careers page, using API scraper");
     await browser.close();
     return scrapeUberCareers(careersUrl);
+  }
+
+  // Google-specific: use page-based pagination
+  if (new URL(careersUrl).hostname.includes("google.com") && careersUrl.includes("/careers/")) {
+    console.log("Detected Google careers page, using custom scraper");
+    await browser.close();
+    return scrapeGoogleCareers(careersUrl);
+  }
+
+  // Discord-specific: use Greenhouse API and filter by title for product roles
+  if (new URL(careersUrl).hostname.includes("discord.com")) {
+    console.log("Detected Discord careers page, using Greenhouse API scraper");
+    await browser.close();
+    return scrapeDiscordCareers();
+  }
+
+  // Netflix-specific: use their JSON API with pagination
+  if (new URL(careersUrl).hostname.includes("netflix.net") || new URL(careersUrl).hostname.includes("netflix.com")) {
+    console.log("Detected Netflix careers page, using API scraper");
+    await browser.close();
+    return scrapeNetflixCareers(careersUrl);
+  }
+
+  // Eightfold.ai platform (PayPal, etc.): use their JSON API with pagination
+  if (new URL(careersUrl).hostname.includes("eightfold.ai")) {
+    console.log("Detected Eightfold.ai careers page, using API scraper");
+    await browser.close();
+    return scrapeEightfoldCareers(careersUrl);
   }
 
   try {
