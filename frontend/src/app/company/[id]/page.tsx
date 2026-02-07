@@ -25,6 +25,11 @@ interface CompanyDetail {
   jobs: Job[];
 }
 
+interface CompanySummary {
+  id: string;
+  name: string;
+}
+
 // US states and common US location patterns
 const US_PATTERNS = [
   /\bCA\b/i, /\bNY\b/i, /\bWA\b/i, /\bTX\b/i, /\bIL\b/i, /\bMA\b/i, /\bCO\b/i, /\bGA\b/i, /\bPA\b/i, /\bAZ\b/i,
@@ -46,21 +51,38 @@ export default function CompanyDetailPage() {
   const [company, setCompany] = useState<CompanyDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [usOnly, setUsOnly] = useState(true);
+  const [nextCompany, setNextCompany] = useState<CompanySummary | null>(null);
 
   useEffect(() => {
-    async function fetchCompany() {
+    async function fetchData() {
       try {
-        const res = await fetch(`${API_URL}/api/companies/${id}`);
-        if (!res.ok) throw new Error("Not found");
-        const data = await res.json();
-        setCompany(data);
+        // Fetch company detail and all companies in parallel
+        const [detailRes, listRes] = await Promise.all([
+          fetch(`${API_URL}/api/companies/${id}`),
+          fetch(`${API_URL}/api/companies`),
+        ]);
+
+        if (!detailRes.ok) throw new Error("Not found");
+        const detail = await detailRes.json();
+        setCompany(detail);
+
+        // Determine next company alphabetically
+        const allCompanies: CompanySummary[] = await listRes.json();
+        const sorted = [...allCompanies].sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+        const currentIdx = sorted.findIndex((c) => c.id === id);
+        if (currentIdx !== -1 && sorted.length > 1) {
+          const nextIdx = (currentIdx + 1) % sorted.length;
+          setNextCompany(sorted[nextIdx]);
+        }
       } catch (err) {
         console.error("Failed to fetch company:", err);
       } finally {
         setLoading(false);
       }
     }
-    fetchCompany();
+    fetchData();
   }, [id]);
 
   if (loading) {
@@ -123,15 +145,28 @@ export default function CompanyDetailPage() {
 
   return (
     <div>
-      <Link
-        href="/"
-        className="inline-flex items-center gap-1 text-stone-500 hover:text-stone-700 text-sm mb-6 transition-colors"
-      >
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-        </svg>
-        Back to dashboard
-      </Link>
+      <div className="flex items-center justify-between mb-6">
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1.5 bg-white border border-stone-200 text-stone-700 px-4 py-2 rounded-lg text-sm font-medium hover:shadow-md hover:border-stone-300 transition-all"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Dashboard
+        </Link>
+        {nextCompany && (
+          <Link
+            href={`/company/${nextCompany.id}`}
+            className="inline-flex items-center gap-1.5 bg-white border border-stone-200 text-stone-700 px-4 py-2 rounded-lg text-sm font-medium hover:shadow-md hover:border-stone-300 transition-all"
+          >
+            {nextCompany.name}
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
+        )}
+      </div>
 
       <div className="bg-white rounded-xl border border-stone-200 p-6 mb-6 shadow-sm">
         <div className="flex items-start justify-between gap-4">

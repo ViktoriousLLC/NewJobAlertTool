@@ -33,12 +33,20 @@ export default function RootLayout({
                   Vik&apos;s New Job Tool
                 </span>
               </Link>
-              <Link
-                href="/add"
-                className="bg-[var(--brand)] text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-[var(--brand-hover)] transition-all shadow-md hover:shadow-lg"
-              >
-                + Add Company
-              </Link>
+              <div className="flex items-center gap-3">
+                <Link
+                  href="/jobs"
+                  className="border border-[var(--brand)] text-[var(--brand)] px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-[var(--brand)] hover:text-white transition-all"
+                >
+                  View All Jobs
+                </Link>
+                <Link
+                  href="/add"
+                  className="bg-[var(--brand)] text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-[var(--brand-hover)] transition-all shadow-md hover:shadow-lg"
+                >
+                  + Add Company
+                </Link>
+              </div>
             </div>
           </nav>
           <main className="max-w-[1800px] mx-auto px-6 py-8">{children}</main>
