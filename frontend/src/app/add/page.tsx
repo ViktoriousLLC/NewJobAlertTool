@@ -58,7 +58,7 @@ export default function AddCompany() {
     <div className="max-w-lg mx-auto">
       <Link
         href="/"
-        className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-700 text-sm mb-6 transition-colors"
+        className="inline-flex items-center gap-1 text-stone-500 hover:text-stone-700 text-sm mb-6 transition-colors"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -66,16 +66,16 @@ export default function AddCompany() {
         Back to dashboard
       </Link>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+      <div className="bg-white rounded-xl border border-stone-200 p-6 shadow-sm">
         <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center">
+          <div className="w-10 h-10 bg-[var(--brand)] rounded-lg flex items-center justify-center">
             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
           </div>
           <div>
-            <h1 className="text-xl font-bold text-slate-900">Add Company</h1>
-            <p className="text-sm text-slate-500">Track product job postings from a new company</p>
+            <h1 className="text-xl font-bold text-stone-800">Add Company</h1>
+            <p className="text-sm text-stone-500">Track product job postings from a new company</p>
           </div>
         </div>
 
@@ -83,7 +83,7 @@ export default function AddCompany() {
           <div>
             <label
               htmlFor="name"
-              className="block text-sm font-medium text-slate-700 mb-2"
+              className="block text-sm font-medium text-stone-700 mb-2"
             >
               Company Name
             </label>
@@ -94,14 +94,14 @@ export default function AddCompany() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Roblox"
-              className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 text-slate-900 placeholder-slate-400"
+              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-stone-50 text-stone-900 placeholder-stone-400"
             />
           </div>
 
           <div>
             <label
               htmlFor="url"
-              className="block text-sm font-medium text-slate-700 mb-2"
+              className="block text-sm font-medium text-stone-700 mb-2"
             >
               Careers Page URL
             </label>
@@ -112,9 +112,9 @@ export default function AddCompany() {
               value={careersUrl}
               onChange={(e) => setCareersUrl(e.target.value)}
               placeholder="e.g. https://careers.roblox.com/jobs"
-              className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 text-slate-900 placeholder-slate-400"
+              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-stone-50 text-stone-900 placeholder-stone-400"
             />
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2 text-xs text-stone-500">
               Enter the URL of the company's careers page that lists job openings
             </p>
           </div>
@@ -132,7 +132,7 @@ export default function AddCompany() {
             <button
               type="submit"
               disabled={loading}
-              className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-6 py-3 rounded-lg font-semibold hover:from-blue-700 hover:to-indigo-700 transition-all shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="flex-1 bg-[var(--brand)] text-white px-6 py-3 rounded-lg font-semibold hover:bg-[var(--brand-hover)] transition-all shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {loading ? (
                 <>
@@ -149,15 +149,15 @@ export default function AddCompany() {
             <button
               type="button"
               onClick={() => router.push("/")}
-              className="px-6 py-3 rounded-lg font-medium border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors"
+              className="px-6 py-3 rounded-lg font-medium border border-stone-200 text-stone-700 hover:bg-stone-50 transition-colors"
             >
               Cancel
             </button>
           </div>
 
           {loading && (
-            <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
-              <p className="text-sm text-blue-700 flex items-center gap-2">
+            <div className="bg-[var(--brand)]/10 border border-[var(--brand)]/20 rounded-lg p-4">
+              <p className="text-sm text-[var(--brand)] flex items-center gap-2">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>

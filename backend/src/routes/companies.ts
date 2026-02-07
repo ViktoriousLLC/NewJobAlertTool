@@ -29,9 +29,24 @@ router.get("/", async (_req: Request, res: Response) => {
       countMap.set(row.company_id, (countMap.get(row.company_id) || 0) + 1);
     }
 
+    // Get latest new job timestamp per company (most recent non-baseline job)
+    const { data: latestNewJobs } = await supabase
+      .from("seen_jobs")
+      .select("company_id, first_seen_at")
+      .eq("is_baseline", false)
+      .order("first_seen_at", { ascending: false });
+
+    const latestNewJobMap = new Map<string, string>();
+    for (const row of latestNewJobs || []) {
+      if (!latestNewJobMap.has(row.company_id)) {
+        latestNewJobMap.set(row.company_id, row.first_seen_at);
+      }
+    }
+
     const result = (companies || []).map((c) => ({
       ...c,
       new_jobs_today: countMap.get(c.id) || 0,
+      latest_new_job_at: latestNewJobMap.get(c.id) || null,
     }));
 
     res.json(result);
