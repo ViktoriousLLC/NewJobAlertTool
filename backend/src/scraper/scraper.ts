@@ -206,6 +206,49 @@ async function extractAllJobsFromPage(
 }
 
 /**
+ * Atlassian: Use their JSON API at /endpoint/careers/listings.
+ * Filter for Product Management category and extract US locations.
+ */
+async function scrapeAtlassianCareers(): Promise<ScrapedJob[]> {
+  console.log("Fetching Atlassian careers API...");
+  const res = await fetch("https://www.atlassian.com/endpoint/careers/listings");
+  if (!res.ok) throw new Error(`Atlassian API returned ${res.status}`);
+
+  const allJobs: Array<{
+    id: number;
+    title: string;
+    category: string;
+    locations: string[];
+  }> = await res.json();
+
+  const pmJobs = allJobs.filter(
+    (j) => j.category === "Product Management"
+  );
+
+  console.log(`Atlassian: ${allJobs.length} total jobs, ${pmJobs.length} PM jobs`);
+
+  return pmJobs.map((j) => {
+    // Build a clean location string from the locations array
+    // Format is like "Seattle - United States - Seattle, Washington United States"
+    // Extract the first part before " - " for a clean city name
+    const locationParts = j.locations
+      .map((loc) => loc.split(" - ")[0].trim())
+      .filter((loc) => loc !== "Remote");
+    const hasRemote = j.locations.some((loc) => loc.includes("Remote"));
+    const location = [
+      ...new Set(locationParts),
+      ...(hasRemote ? ["Remote"] : []),
+    ].join(", ");
+
+    return {
+      title: j.title,
+      location,
+      urlPath: `https://www.atlassian.com/company/careers/details/${j.id}`,
+    };
+  });
+}
+
+/**
  * Instacart: Expand accordions and scrape PM roles.
  */
 async function scrapeInstacartCareers(): Promise<ScrapedJob[]> {
@@ -1403,6 +1446,13 @@ export async function scrapeCompanyCareers(
       "--disable-gpu",
     ],
   });
+
+  // Atlassian-specific: use their JSON API directly
+  if (new URL(careersUrl).hostname.includes("atlassian.com")) {
+    console.log("Detected Atlassian careers page, using API scraper");
+    await browser.close();
+    return scrapeAtlassianCareers();
+  }
 
   // DoorDash-specific: use custom scraper for careersatdoordash.com
   if (new URL(careersUrl).hostname.includes("doordash.com") ||

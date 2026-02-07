@@ -36,7 +36,7 @@ const US_PATTERNS = [
 ];
 
 function isUSLocation(location: string | null): boolean {
-  if (!location) return false;
+  if (!location || !location.trim()) return true; // Show jobs with unknown location
   return US_PATTERNS.some((pattern) => pattern.test(location));
 }
 
