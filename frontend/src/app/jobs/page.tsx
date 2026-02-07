@@ -50,7 +50,6 @@ interface FlatJob {
   jobTitle: string;
   jobLocation: string | null;
   jobUrlPath: string;
-  lastCheckedAt: string | null;
   firstSeenAt: string;
 }
 
@@ -91,7 +90,6 @@ export default function AllJobsPage() {
               jobTitle: job.job_title,
               jobLocation: job.job_location,
               jobUrlPath: job.job_url_path,
-              lastCheckedAt: detail.last_checked_at,
               firstSeenAt: job.first_seen_at,
             });
           }
@@ -188,7 +186,7 @@ export default function AllJobsPage() {
                 <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Company</th>
                 <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Job Title</th>
                 <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Location</th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Last Checked</th>
+                <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Date Added</th>
                 <th className="text-right px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">View</th>
               </tr>
             </thead>
@@ -215,14 +213,11 @@ export default function AllJobsPage() {
                     )}
                   </td>
                   <td className="px-5 py-3.5 text-sm text-stone-500 whitespace-nowrap">
-                    {job.lastCheckedAt
-                      ? new Date(job.lastCheckedAt).toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          hour: "numeric",
-                          minute: "2-digit",
-                        })
-                      : "Never"}
+                    {new Date(job.firstSeenAt).toLocaleDateString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
                   </td>
                   <td className="px-5 py-3.5 text-right">
                     <a
