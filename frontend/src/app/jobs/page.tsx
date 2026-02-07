@@ -175,7 +175,14 @@ export default function AllJobsPage() {
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
-          <table className="w-full">
+          <table className="w-full table-fixed">
+            <colgroup>
+              <col className="w-[12%]" />
+              <col className="w-[35%]" />
+              <col className="w-[28%]" />
+              <col className="w-[15%]" />
+              <col className="w-[10%]" />
+            </colgroup>
             <thead>
               <tr className="border-b border-stone-200 bg-stone-50">
                 <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Company</th>
@@ -188,20 +195,20 @@ export default function AllJobsPage() {
             <tbody className="divide-y divide-stone-100">
               {filteredJobs.map((job) => (
                 <tr key={job.id} className="hover:bg-stone-50 transition-colors">
-                  <td className="px-5 py-3.5 text-sm font-bold text-stone-800 whitespace-nowrap">
+                  <td className="px-5 py-3.5 text-sm font-bold text-stone-800 truncate" title={job.companyName}>
                     {job.companyName}
                   </td>
-                  <td className="px-5 py-3.5 text-sm text-stone-700">
+                  <td className="px-5 py-3.5 text-sm text-stone-700 truncate" title={job.jobTitle}>
                     {job.jobTitle}
                   </td>
-                  <td className="px-5 py-3.5 text-sm text-stone-500 whitespace-nowrap">
+                  <td className="px-5 py-3.5 text-sm text-stone-500">
                     {job.jobLocation ? (
-                      <span className="flex items-center gap-1">
+                      <span className="flex items-center gap-1 truncate" title={job.jobLocation}>
                         <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                         </svg>
-                        {job.jobLocation}
+                        <span className="truncate">{job.jobLocation}</span>
                       </span>
                     ) : (
                       <span className="text-stone-300">&mdash;</span>

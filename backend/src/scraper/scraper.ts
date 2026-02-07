@@ -357,16 +357,23 @@ async function scrapeStripeCareers(): Promise<ScrapedJob[]> {
             const title = (link.textContent || "").trim();
             const lower = title.toLowerCase();
 
-            // Filter for Product Manager/Lead roles
-            if (
+            // Filter for Product Manager/Lead roles, exclude sales roles
+            const isProductRole =
               lower.includes("product manager") ||
               lower.includes("product lead") ||
               lower.includes("product director") ||
               lower.includes("head of product") ||
               lower.includes("vp of product") ||
               lower.includes("vp, product") ||
-              lower.includes("chief product")
-            ) {
+              lower.includes("chief product");
+
+            const isExcluded =
+              lower.includes("account executive") ||
+              lower.includes("sales engineer") ||
+              lower.includes("sales representative") ||
+              lower.includes("account manager");
+
+            if (isProductRole && !isExcluded) {
               results.push({ title, url: href });
             }
           });
