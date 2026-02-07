@@ -425,6 +425,240 @@ async function scrapeStripeCareers(): Promise<ScrapedJob[]> {
 }
 
 /**
+ * Slack uses Salesforce's Workday platform.
+ * Fetches all jobs via the Workday API and filters for Product Manager roles.
+ */
+async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
+  console.log("Slack: Fetching jobs from Salesforce Workday API");
+
+  const baseUrl = "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/Slack/jobs";
+  const allJobs: ScrapedJob[] = [];
+  let offset = 0;
+  const limit = 20;
+  let totalJobs = 0;
+
+  // Product Manager keywords to filter by
+  const pmKeywords = [
+    "product manager",
+    "product lead",
+    "group product manager",
+    "senior product manager",
+    "staff product manager",
+    "principal product manager",
+    "director of product",
+    "director, product",
+    "head of product",
+    "vp of product",
+    "vp, product",
+    "vp product",
+    "chief product officer",
+    "chief product",
+  ];
+
+  interface WorkdayJob {
+    title: string;
+    locationsText?: string;
+    externalPath: string;
+  }
+
+  interface WorkdayResponse {
+    total: number;
+    jobPostings: WorkdayJob[];
+  }
+
+  while (true) {
+    try {
+      const response = await fetch(baseUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json",
+        },
+        body: JSON.stringify({
+          limit,
+          offset,
+        }),
+      });
+
+      if (!response.ok) {
+        console.log(`Slack: API returned status ${response.status}`);
+        break;
+      }
+
+      const data: WorkdayResponse = await response.json();
+
+      // Store total from first request
+      if (offset === 0) {
+        totalJobs = data.total || 0;
+        console.log(`Slack: Total jobs available: ${totalJobs}`);
+      }
+
+      console.log(`Slack: Fetched offset=${offset}, got ${data.jobPostings?.length || 0} jobs`);
+
+      if (!data.jobPostings || data.jobPostings.length === 0) {
+        break;
+      }
+
+      // Filter for PM roles and add to results
+      for (const job of data.jobPostings) {
+        if (!job || !job.title) continue;
+
+        const lowerTitle = job.title.toLowerCase();
+        const isPM = pmKeywords.some((kw) => lowerTitle.includes(kw));
+
+        if (isPM) {
+          allJobs.push({
+            title: job.title,
+            location: job.locationsText || "",
+            urlPath: `https://salesforce.wd12.myworkdayjobs.com/Slack${job.externalPath}`,
+          });
+        }
+      }
+
+      offset += data.jobPostings.length;
+
+      // Stop if we've fetched all jobs
+      if (offset >= totalJobs) {
+        break;
+      }
+
+      // Rate limiting
+      await new Promise((r) => setTimeout(r, 300));
+    } catch (err) {
+      console.log(`Slack: Error at offset=${offset}:`, err);
+      break;
+    }
+  }
+
+  console.log(`Slack: Found ${allJobs.length} Product Manager roles out of ${totalJobs} total jobs`);
+  return allJobs;
+}
+
+/**
+ * OpenAI uses Ashby (jobs.ashbyhq.com/openai).
+ * Fetches jobs via GraphQL API and filters for Product Management roles.
+ */
+async function scrapeOpenAICareers(): Promise<ScrapedJob[]> {
+  console.log("OpenAI: Fetching jobs from Ashby GraphQL API");
+
+  const query = {
+    operationName: "ApiJobBoardWithTeams",
+    variables: {
+      organizationHostedJobsPageName: "openai",
+    },
+    query: `query ApiJobBoardWithTeams($organizationHostedJobsPageName: String!) {
+      jobBoard: jobBoardWithTeams(organizationHostedJobsPageName: $organizationHostedJobsPageName) {
+        teams {
+          id
+          name
+          parentTeamId
+          __typename
+        }
+        jobPostings {
+          id
+          title
+          teamId
+          locationId
+          locationName
+          employmentType
+          secondaryLocations {
+            locationId
+            locationName
+            __typename
+          }
+          compensationTierSummary
+          __typename
+        }
+        __typename
+      }
+    }`,
+  };
+
+  interface AshbyTeam {
+    id: string;
+    name: string;
+    parentTeamId: string | null;
+  }
+
+  interface AshbySecondaryLocation {
+    locationId: string;
+    locationName: string;
+  }
+
+  interface AshbyJobPosting {
+    id: string;
+    title: string;
+    teamId: string;
+    locationId: string;
+    locationName: string;
+    employmentType: string;
+    secondaryLocations: AshbySecondaryLocation[];
+    compensationTierSummary: string | null;
+  }
+
+  interface AshbyResponse {
+    data: {
+      jobBoard: {
+        teams: AshbyTeam[];
+        jobPostings: AshbyJobPosting[];
+      };
+    };
+  }
+
+  const response = await fetch(
+    "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+      body: JSON.stringify(query),
+    }
+  );
+
+  const data: AshbyResponse = await response.json();
+  const { teams, jobPostings } = data.data.jobBoard;
+
+  console.log(`OpenAI: Found ${jobPostings.length} total jobs across ${teams.length} teams`);
+
+  // Find Product Management team and related product teams
+  const productTeamIds = new Set<string>();
+  const productKeywords = ["product management", "product design", "product policy", "product partnerships"];
+
+  for (const team of teams) {
+    const lowerName = team.name.toLowerCase();
+    if (productKeywords.some((kw) => lowerName.includes(kw))) {
+      productTeamIds.add(team.id);
+      console.log(`OpenAI: Including team "${team.name}" (${team.id})`);
+    }
+  }
+
+  // Filter for product team jobs
+  const productJobs = jobPostings.filter((job) => productTeamIds.has(job.teamId));
+
+  console.log(`OpenAI: Found ${productJobs.length} product-related jobs`);
+
+  return productJobs.map((job) => {
+    // Combine primary and secondary locations
+    const allLocations = [job.locationName];
+    for (const secondary of job.secondaryLocations || []) {
+      if (secondary.locationName && !allLocations.includes(secondary.locationName)) {
+        allLocations.push(secondary.locationName);
+      }
+    }
+
+    return {
+      title: job.title,
+      location: allLocations.join(" | "),
+      urlPath: `https://jobs.ashbyhq.com/openai/${job.id}`,
+    };
+  });
+}
+
+/**
  * Discord uses Greenhouse API. Since there's no product filter in the URL,
  * we fetch all jobs and filter by title for product-related roles.
  */
@@ -468,6 +702,65 @@ async function scrapeDiscordCareers(): Promise<ScrapedJob[]> {
   });
 
   console.log(`Discord: Found ${productJobs.length} product manager roles`);
+
+  return productJobs.map((job) => ({
+    title: job.title,
+    location: job.location?.name || "",
+    urlPath: job.absolute_url,
+  }));
+}
+
+/**
+ * Reddit uses Greenhouse API. Fetches all jobs and filters by title for PM roles.
+ */
+async function scrapeRedditCareers(): Promise<ScrapedJob[]> {
+  console.log("Reddit: Fetching jobs from Greenhouse API");
+
+  const response = await fetch(
+    "https://api.greenhouse.io/v1/boards/reddit/jobs"
+  );
+
+  interface GreenhouseJob {
+    id: number;
+    title: string;
+    absolute_url: string;
+    location: {
+      name: string;
+    };
+  }
+
+  interface GreenhouseResponse {
+    jobs: GreenhouseJob[];
+  }
+
+  const data: GreenhouseResponse = await response.json();
+  console.log(`Reddit: Found ${data.jobs.length} total jobs`);
+
+  // Filter for Product Manager roles by title
+  // Note: We check for "product manager" as a phrase to avoid matching "Product Designer"
+  const productKeywords = [
+    "product manager",
+    "product lead",
+    "group product manager",
+    "senior product manager",
+    "staff product manager",
+    "principal product manager",
+    "director of product",
+    "director, product",
+    "head of product",
+    "vp of product",
+    "vp, product",
+    "vp product",
+    "chief product officer",
+    "chief product",
+  ];
+
+  const productJobs = data.jobs.filter((job) => {
+    const lowerTitle = job.title.toLowerCase();
+    return productKeywords.some((kw) => lowerTitle.includes(kw));
+  });
+
+  console.log(`Reddit: Found ${productJobs.length} product manager roles`);
 
   return productJobs.map((job) => ({
     title: job.title,
@@ -887,6 +1180,217 @@ async function scrapeUberCareers(careersUrl: string): Promise<ScrapedJob[]> {
   return allJobs;
 }
 
+/**
+ * DoorDash uses a custom careers site at careersatdoordash.com.
+ * The Product career area page lists PM roles with title and location.
+ */
+async function scrapeDoorDashCareers(careersUrl: string): Promise<ScrapedJob[]> {
+  console.log("DoorDash: Starting careers scraper");
+
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+
+    // Determine which URL to use based on input
+    // If it's the base careers page or product page, use product page
+    // If it has a department filter, use that
+    let targetUrl = careersUrl;
+    const url = new URL(careersUrl);
+
+    if (url.pathname === "/" || url.pathname === "") {
+      // Base careers URL - default to product page
+      targetUrl = "https://careersatdoordash.com/career-areas/product/";
+    } else if (url.pathname.includes("/career-areas/product")) {
+      // Already targeting product area
+      targetUrl = careersUrl;
+    } else if (url.pathname.includes("/job-search")) {
+      // Job search page - add Product filter if not present
+      if (!url.searchParams.has("department")) {
+        url.searchParams.set("department", "Product");
+        targetUrl = url.toString();
+      }
+    }
+
+    console.log(`DoorDash: Navigating to ${targetUrl}`);
+    await page.goto(targetUrl, { waitUntil: "networkidle2", timeout: 60000 });
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // Scroll to ensure all content is loaded
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const jobs = await page.evaluate(() => {
+      const results: { title: string; location: string; urlPath: string }[] = [];
+      const seen = new Set<string>();
+
+      // Find job items on the page
+      const jobItems = Array.from(document.querySelectorAll(".job-item"));
+
+      for (const item of jobItems) {
+        const titleLink = item.querySelector('a[href*="/jobs/"]');
+        if (titleLink === null) continue;
+
+        const title = (titleLink.textContent || "").trim();
+        const href = titleLink.getAttribute("href") || "";
+
+        if (!title || !href) continue;
+
+        // Build full URL
+        const fullUrl = href.startsWith("http")
+          ? href
+          : "https://careersatdoordash.com" + href;
+
+        // Skip duplicates
+        if (seen.has(fullUrl)) continue;
+        seen.add(fullUrl);
+
+        // Extract location from the location container
+        let location = "";
+        const allDivs = Array.from(item.querySelectorAll("div"));
+
+        for (const div of allDivs) {
+          const text = (div.textContent || "").trim();
+          // Look for location patterns: contains state abbreviations or Remote
+          if (
+            (text.includes(", CA") ||
+              text.includes(", NY") ||
+              text.includes(", WA") ||
+              text.includes(", IL") ||
+              text.includes(", TX") ||
+              text.includes("Remote") ||
+              text.includes("United States")) &&
+            text.length < 200 &&
+            !text.includes("Manager") &&
+            !text.includes("Engineer") &&
+            !text.includes("Designer")
+          ) {
+            // Clean up the location text
+            location = text
+              .replace(/^Location\s*/i, "")
+              .replace(/\s+/g, " ")
+              .trim();
+            break;
+          }
+        }
+
+        results.push({ title, location, urlPath: fullUrl });
+      }
+
+      return results;
+    });
+
+    console.log(`DoorDash: Found ${jobs.length} jobs on product page`);
+
+    // Also check the job search page with Product filter for additional jobs
+    if (!targetUrl.includes("/job-search")) {
+      console.log("DoorDash: Also checking job search page...");
+      await page.goto(
+        "https://careersatdoordash.com/job-search/?department=Product",
+        { waitUntil: "networkidle2", timeout: 60000 }
+      );
+      await new Promise((r) => setTimeout(r, 3000));
+
+      const searchJobs = await page.evaluate(() => {
+        const results: { title: string; location: string; urlPath: string }[] = [];
+        const seen = new Set<string>();
+
+        const jobItems = Array.from(document.querySelectorAll(".job-item"));
+
+        for (const item of jobItems) {
+          const titleLink = item.querySelector('a[href*="/jobs/"]');
+          if (titleLink === null) continue;
+
+          const title = (titleLink.textContent || "").trim();
+          const href = titleLink.getAttribute("href") || "";
+
+          if (!title || !href) continue;
+
+          const fullUrl = href.startsWith("http")
+            ? href
+            : "https://careersatdoordash.com" + href;
+
+          if (seen.has(fullUrl)) continue;
+          seen.add(fullUrl);
+
+          let location = "";
+          const allDivs = Array.from(item.querySelectorAll("div"));
+
+          for (const div of allDivs) {
+            const text = (div.textContent || "").trim();
+            if (
+              (text.includes(", CA") ||
+                text.includes(", NY") ||
+                text.includes(", WA") ||
+                text.includes(", IL") ||
+                text.includes(", TX") ||
+                text.includes("Remote") ||
+                text.includes("United States")) &&
+              text.length < 200 &&
+              !text.includes("Manager") &&
+              !text.includes("Engineer") &&
+              !text.includes("Designer")
+            ) {
+              location = text
+                .replace(/^Location\s*/i, "")
+                .replace(/\s+/g, " ")
+                .trim();
+              break;
+            }
+          }
+
+          results.push({ title, location, urlPath: fullUrl });
+        }
+
+        return results;
+      });
+
+      console.log(`DoorDash: Found ${searchJobs.length} additional jobs from search`);
+
+      // Merge results, avoiding duplicates
+      const seenUrls = new Set(jobs.map((j) => j.urlPath));
+      for (const job of searchJobs) {
+        if (!seenUrls.has(job.urlPath)) {
+          seenUrls.add(job.urlPath);
+          jobs.push(job);
+        }
+      }
+    }
+
+    // Filter to only include Product Manager roles
+    const pmJobs = jobs.filter((job) => {
+      const lowerTitle = job.title.toLowerCase();
+      return (
+        lowerTitle.includes("product manager") ||
+        lowerTitle.includes("product lead") ||
+        lowerTitle.includes("product director") ||
+        lowerTitle.includes("head of product") ||
+        lowerTitle.includes("vp of product") ||
+        lowerTitle.includes("vp, product") ||
+        lowerTitle.includes("chief product") ||
+        lowerTitle.includes("group product")
+      );
+    });
+
+    console.log(`DoorDash: Found ${pmJobs.length} PM roles from ${jobs.length} total Product jobs`);
+
+    return pmJobs;
+  } finally {
+    await browser.close();
+  }
+}
+
 export async function scrapeCompanyCareers(
   careersUrl: string
 ): Promise<ScrapedJob[]> {
@@ -899,6 +1403,14 @@ export async function scrapeCompanyCareers(
       "--disable-gpu",
     ],
   });
+
+  // DoorDash-specific: use custom scraper for careersatdoordash.com
+  if (new URL(careersUrl).hostname.includes("doordash.com") ||
+      new URL(careersUrl).hostname.includes("careersatdoordash.com")) {
+    console.log("Detected DoorDash careers page, using custom scraper");
+    await browser.close();
+    return scrapeDoorDashCareers(careersUrl);
+  }
 
   // Netflix-specific: use their API
   if (new URL(careersUrl).hostname.includes("netflix.net") || new URL(careersUrl).hostname.includes("netflix.com")) {
@@ -914,11 +1426,39 @@ export async function scrapeCompanyCareers(
     return scrapeDiscordCareers();
   }
 
+  // Reddit-specific: use Greenhouse API and filter for PM roles
+  if (new URL(careersUrl).hostname.includes("reddit.com") ||
+      new URL(careersUrl).hostname.includes("redditinc.com") ||
+      new URL(careersUrl).hostname.includes("greenhouse.io/reddit") ||
+      careersUrl.includes("greenhouse.io/reddit")) {
+    console.log("Detected Reddit careers page, using Greenhouse API scraper");
+    await browser.close();
+    return scrapeRedditCareers();
+  }
+
   // Instacart-specific: handle accordions
   if (new URL(careersUrl).hostname.includes("instacart.careers")) {
     console.log("Detected Instacart careers page, using accordion scraper");
     await browser.close();
     return scrapeInstacartCareers();
+  }
+
+  // OpenAI-specific: use Ashby GraphQL API
+  if (new URL(careersUrl).hostname.includes("openai.com") ||
+      new URL(careersUrl).hostname.includes("ashbyhq.com/openai") ||
+      careersUrl.includes("ashbyhq.com/openai")) {
+    console.log("Detected OpenAI careers page, using Ashby API scraper");
+    await browser.close();
+    return scrapeOpenAICareers();
+  }
+
+  // Slack-specific: use Salesforce Workday API and filter for PM roles
+  if (new URL(careersUrl).hostname.includes("slack.com") ||
+      careersUrl.includes("myworkdayjobs.com/Slack") ||
+      careersUrl.toLowerCase().includes("/slack")) {
+    console.log("Detected Slack careers page, using Workday API scraper");
+    await browser.close();
+    return scrapeSlackCareers();
   }
 
   // Stripe-specific: paginate through all pages and filter for PM roles
