@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -53,11 +54,24 @@ interface FlatJob {
   firstSeenAt: string;
 }
 
-export default function AllJobsPage() {
+export default function AllJobsPageWrapper() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center py-20">
+        <div className="animate-pulse flex items-center gap-2 text-stone-500">Loading...</div>
+      </div>
+    }>
+      <AllJobsPage />
+    </Suspense>
+  );
+}
+
+function AllJobsPage() {
+  const searchParams = useSearchParams();
   const [jobs, setJobs] = useState<FlatJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [usOnly, setUsOnly] = useState(true);
-  const [starredOnly, setStarredOnly] = useState(false);
+  const starredOnly = searchParams.get("filter") === "starred";
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -188,31 +202,20 @@ export default function AllJobsPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-stone-800">
-          All Jobs
+          {starredOnly ? "Starred Jobs" : "All Jobs"}
           <span className="text-base font-normal text-stone-500 ml-3">
-            {filteredJobs.length} jobs{starredOnly ? " starred" : " across all companies"}
+            {filteredJobs.length} jobs{starredOnly ? " in your shortlist" : " across all companies"}
           </span>
         </h1>
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
-            <input
-              type="checkbox"
-              checked={starredOnly}
-              onChange={(e) => setStarredOnly(e.target.checked)}
-              className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
-            />
-            Starred only
-          </label>
-          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
-            <input
-              type="checkbox"
-              checked={usOnly}
-              onChange={(e) => setUsOnly(e.target.checked)}
-              className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
-            />
-            US only
-          </label>
-        </div>
+        <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
+          <input
+            type="checkbox"
+            checked={usOnly}
+            onChange={(e) => setUsOnly(e.target.checked)}
+            className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
+          />
+          US only
+        </label>
       </div>
 
       {filteredJobs.length === 0 ? (
@@ -225,12 +228,12 @@ export default function AllJobsPage() {
               : "No jobs found."}
           </p>
           {starredOnly && (
-            <button
-              onClick={() => setStarredOnly(false)}
-              className="mt-2 text-[var(--brand)] hover:underline text-sm"
+            <a
+              href="/jobs"
+              className="mt-2 text-[var(--brand)] hover:underline text-sm inline-block"
             >
-              Show all jobs
-            </button>
+              View all jobs
+            </a>
           )}
           {!starredOnly && usOnly && (
             <button
@@ -266,8 +269,11 @@ export default function AllJobsPage() {
               {filteredJobs.map((job, idx) => {
                 const isFirstInGroup = idx === 0 || filteredJobs[idx - 1].companyName !== job.companyName;
                 const isFav = favorites.has(job.id);
-                return (
-                <tr key={job.id} className={`hover:bg-stone-50 transition-colors ${isFirstInGroup && idx !== 0 ? "border-t-2 border-stone-300" : ""}`}>
+                return (<>
+                {isFirstInGroup && idx !== 0 && (
+                  <tr key={`divider-${job.id}`} className="border-t-4 border-stone-300"><td colSpan={6} className="h-0 p-0"></td></tr>
+                )}
+                <tr key={job.id} className="hover:bg-stone-50 transition-colors">
                   <td className="px-3 py-3.5 text-center">
                     <button
                       onClick={() => toggleFavorite(job.id)}
@@ -286,7 +292,7 @@ export default function AllJobsPage() {
                     </button>
                   </td>
                   <td className="px-5 py-3.5 text-sm font-bold text-stone-800 truncate" title={job.companyName}>
-                    {isFirstInGroup ? job.companyName : ""}
+                    {job.companyName}
                   </td>
                   <td className="px-5 py-3.5 text-sm text-stone-700 truncate" title={job.jobTitle}>
                     {job.jobTitle}
@@ -325,7 +331,7 @@ export default function AllJobsPage() {
                     </a>
                   </td>
                 </tr>
-                );
+                </>);
               })}
             </tbody>
           </table>
