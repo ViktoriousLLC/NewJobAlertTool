@@ -57,15 +57,29 @@ export default function AllJobsPage() {
   const [jobs, setJobs] = useState<FlatJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [usOnly, setUsOnly] = useState(true);
+  const [starredOnly, setStarredOnly] = useState(false);
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     async function fetchAllJobs() {
       try {
-        // Step 1: Get all companies
-        const res = await fetch(`${API_URL}/api/companies`);
-        const companies: CompanySummary[] = await res.json();
+        // Fetch companies and favorites in parallel
+        const [companiesRes, favoritesRes] = await Promise.all([
+          fetch(`${API_URL}/api/companies`),
+          fetch(`${API_URL}/api/favorites`),
+        ]);
 
-        // Step 2: Fetch each company's detail in parallel
+        const companies: CompanySummary[] = await companiesRes.json();
+
+        // Load favorites
+        try {
+          const favIds: string[] = await favoritesRes.json();
+          setFavorites(new Set(favIds));
+        } catch {
+          // Favorites table may not exist yet — ignore
+        }
+
+        // Fetch each company's detail in parallel
         const details = await Promise.all(
           companies.map(async (c) => {
             try {
@@ -78,7 +92,7 @@ export default function AllJobsPage() {
           })
         );
 
-        // Step 3: Flatten into a single list
+        // Flatten into a single list
         const flat: FlatJob[] = [];
         for (const detail of details) {
           if (!detail) continue;
@@ -95,7 +109,7 @@ export default function AllJobsPage() {
           }
         }
 
-        // Step 4: Sort by company name (alpha), then newest first within each company
+        // Sort by company name (alpha), then newest first within each company
         flat.sort((a, b) => {
           const cmp = a.companyName.localeCompare(b.companyName);
           if (cmp !== 0) return cmp;
@@ -112,6 +126,33 @@ export default function AllJobsPage() {
     fetchAllJobs();
   }, []);
 
+  async function toggleFavorite(jobId: string) {
+    const isFav = favorites.has(jobId);
+    // Optimistic update
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      if (isFav) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+
+    try {
+      if (isFav) {
+        await fetch(`${API_URL}/api/favorites/${jobId}`, { method: "DELETE" });
+      } else {
+        await fetch(`${API_URL}/api/favorites/${jobId}`, { method: "POST" });
+      }
+    } catch {
+      // Revert on failure
+      setFavorites((prev) => {
+        const next = new Set(prev);
+        if (isFav) next.add(jobId);
+        else next.delete(jobId);
+        return next;
+      });
+    }
+  }
+
   function buildJobUrl(urlPath: string, careersUrl: string) {
     if (urlPath.startsWith("http")) return urlPath;
     try {
@@ -121,9 +162,13 @@ export default function AllJobsPage() {
     }
   }
 
-  const filteredJobs = usOnly
+  let filteredJobs = usOnly
     ? jobs.filter((job) => isUSLocation(job.jobLocation))
     : jobs;
+
+  if (starredOnly) {
+    filteredJobs = filteredJobs.filter((job) => favorites.has(job.id));
+  }
 
   if (loading) {
     return (
@@ -145,24 +190,49 @@ export default function AllJobsPage() {
         <h1 className="text-2xl font-bold text-stone-800">
           All Jobs
           <span className="text-base font-normal text-stone-500 ml-3">
-            {filteredJobs.length} jobs across all companies
+            {filteredJobs.length} jobs{starredOnly ? " starred" : " across all companies"}
           </span>
         </h1>
-        <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
-          <input
-            type="checkbox"
-            checked={usOnly}
-            onChange={(e) => setUsOnly(e.target.checked)}
-            className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
-          />
-          US only
-        </label>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
+            <input
+              type="checkbox"
+              checked={starredOnly}
+              onChange={(e) => setStarredOnly(e.target.checked)}
+              className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
+            />
+            Starred only
+          </label>
+          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
+            <input
+              type="checkbox"
+              checked={usOnly}
+              onChange={(e) => setUsOnly(e.target.checked)}
+              className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
+            />
+            US only
+          </label>
+        </div>
       </div>
 
       {filteredJobs.length === 0 ? (
         <div className="bg-white rounded-xl border border-stone-200 p-8 text-center">
-          <p className="text-stone-600">No jobs found{usOnly ? " in the US." : "."}</p>
-          {usOnly && (
+          <p className="text-stone-600">
+            {starredOnly
+              ? "No starred jobs yet. Click the star icon on any job to add it to your shortlist."
+              : usOnly
+              ? "No jobs found in the US."
+              : "No jobs found."}
+          </p>
+          {starredOnly && (
+            <button
+              onClick={() => setStarredOnly(false)}
+              className="mt-2 text-[var(--brand)] hover:underline text-sm"
+            >
+              Show all jobs
+            </button>
+          )}
+          {!starredOnly && usOnly && (
             <button
               onClick={() => setUsOnly(false)}
               className="mt-2 text-[var(--brand)] hover:underline text-sm"
@@ -175,14 +245,16 @@ export default function AllJobsPage() {
         <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
           <table className="w-full table-fixed">
             <colgroup>
-              <col className="w-[12%]" />
-              <col className="w-[35%]" />
-              <col className="w-[28%]" />
-              <col className="w-[15%]" />
+              <col className="w-[5%]" />
+              <col className="w-[11%]" />
+              <col className="w-[34%]" />
+              <col className="w-[26%]" />
+              <col className="w-[14%]" />
               <col className="w-[10%]" />
             </colgroup>
             <thead>
               <tr className="border-b border-stone-200 bg-stone-50">
+                <th className="px-3 py-3"></th>
                 <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Company</th>
                 <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Job Title</th>
                 <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Location</th>
@@ -193,8 +265,26 @@ export default function AllJobsPage() {
             <tbody className="divide-y divide-stone-100">
               {filteredJobs.map((job, idx) => {
                 const isFirstInGroup = idx === 0 || filteredJobs[idx - 1].companyName !== job.companyName;
+                const isFav = favorites.has(job.id);
                 return (
                 <tr key={job.id} className={`hover:bg-stone-50 transition-colors ${isFirstInGroup && idx !== 0 ? "border-t-2 border-stone-300" : ""}`}>
+                  <td className="px-3 py-3.5 text-center">
+                    <button
+                      onClick={() => toggleFavorite(job.id)}
+                      className="hover:scale-110 transition-transform"
+                      title={isFav ? "Remove from starred" : "Add to starred"}
+                    >
+                      {isFav ? (
+                        <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5 text-stone-300 hover:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                        </svg>
+                      )}
+                    </button>
+                  </td>
                   <td className="px-5 py-3.5 text-sm font-bold text-stone-800 truncate" title={job.companyName}>
                     {isFirstInGroup ? job.companyName : ""}
                   </td>

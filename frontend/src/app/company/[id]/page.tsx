@@ -52,19 +52,29 @@ export default function CompanyDetailPage() {
   const [loading, setLoading] = useState(true);
   const [usOnly, setUsOnly] = useState(true);
   const [nextCompany, setNextCompany] = useState<CompanySummary | null>(null);
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     async function fetchData() {
       try {
-        // Fetch company detail and all companies in parallel
-        const [detailRes, listRes] = await Promise.all([
+        // Fetch company detail, all companies, and favorites in parallel
+        const [detailRes, listRes, favRes] = await Promise.all([
           fetch(`${API_URL}/api/companies/${id}`),
           fetch(`${API_URL}/api/companies`),
+          fetch(`${API_URL}/api/favorites`),
         ]);
 
         if (!detailRes.ok) throw new Error("Not found");
         const detail = await detailRes.json();
         setCompany(detail);
+
+        // Load favorites
+        try {
+          const favIds: string[] = await favRes.json();
+          setFavorites(new Set(favIds));
+        } catch {
+          // Favorites table may not exist yet
+        }
 
         // Determine next company alphabetically
         const allCompanies: CompanySummary[] = await listRes.json();
@@ -84,6 +94,31 @@ export default function CompanyDetailPage() {
     }
     fetchData();
   }, [id]);
+
+  async function toggleFavorite(jobId: string) {
+    const isFav = favorites.has(jobId);
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      if (isFav) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+
+    try {
+      if (isFav) {
+        await fetch(`${API_URL}/api/favorites/${jobId}`, { method: "DELETE" });
+      } else {
+        await fetch(`${API_URL}/api/favorites/${jobId}`, { method: "POST" });
+      }
+    } catch {
+      setFavorites((prev) => {
+        const next = new Set(prev);
+        if (isFav) next.add(jobId);
+        else next.delete(jobId);
+        return next;
+      });
+    }
+  }
 
   if (loading) {
     return (
@@ -273,9 +308,26 @@ export default function CompanyDetailPage() {
                 {date}
               </h3>
               <div className="bg-white rounded-xl border border-stone-200 divide-y divide-stone-100 overflow-hidden">
-                {jobs.map((job) => (
+                {jobs.map((job) => {
+                  const isFav = favorites.has(job.id);
+                  return (
                   <div key={job.id} className="px-5 py-4 flex items-center justify-between gap-4 hover:bg-stone-50 transition-colors">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <button
+                        onClick={() => toggleFavorite(job.id)}
+                        className="shrink-0 hover:scale-110 transition-transform"
+                        title={isFav ? "Remove from starred" : "Add to starred"}
+                      >
+                        {isFav ? (
+                          <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5 text-stone-300 hover:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                          </svg>
+                        )}
+                      </button>
                       {!job.is_baseline && (
                         <span
                           className="px-2 py-0.5 rounded text-xs font-semibold shrink-0"
@@ -307,7 +359,8 @@ export default function CompanyDetailPage() {
                       </svg>
                     </a>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}

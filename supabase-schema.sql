@@ -36,3 +36,15 @@ ALTER TABLE seen_jobs ENABLE ROW LEVEL SECURITY;
 -- Open policies (allow all operations without auth for V1)
 CREATE POLICY "Allow all on companies" ON companies FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all on seen_jobs" ON seen_jobs FOR ALL USING (true) WITH CHECK (true);
+
+-- Favorites table (for starring jobs)
+CREATE TABLE favorites (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id uuid NOT NULL REFERENCES seen_jobs(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX idx_favorites_job_id ON favorites(job_id);
+
+ALTER TABLE favorites ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all on favorites" ON favorites FOR ALL USING (true) WITH CHECK (true);
