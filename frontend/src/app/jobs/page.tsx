@@ -191,10 +191,12 @@ export default function AllJobsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-100">
-              {filteredJobs.map((job) => (
-                <tr key={job.id} className="hover:bg-stone-50 transition-colors">
+              {filteredJobs.map((job, idx) => {
+                const isFirstInGroup = idx === 0 || filteredJobs[idx - 1].companyName !== job.companyName;
+                return (
+                <tr key={job.id} className={`hover:bg-stone-50 transition-colors ${isFirstInGroup && idx !== 0 ? "border-t-2 border-stone-300" : ""}`}>
                   <td className="px-5 py-3.5 text-sm font-bold text-stone-800 truncate" title={job.companyName}>
-                    {job.companyName}
+                    {isFirstInGroup ? job.companyName : ""}
                   </td>
                   <td className="px-5 py-3.5 text-sm text-stone-700 truncate" title={job.jobTitle}>
                     {job.jobTitle}
@@ -233,7 +235,8 @@ export default function AllJobsPage() {
                     </a>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
