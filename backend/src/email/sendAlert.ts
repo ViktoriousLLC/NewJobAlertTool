@@ -58,7 +58,7 @@ export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
   }
 
   await resend.emails.send({
-    from: "vik@viktoriousllc.com",
+    from: "onboarding@resend.dev",
     to: "vik@viktoriousllc.com",
     subject: `Job Alert: ${totalNewJobs} new product job(s) — ${now}`,
     html,
