@@ -35,19 +35,19 @@ export default function RootLayout({
               </Link>
               <div className="flex items-center gap-3">
                 <Link
-                  href="/jobs"
-                  className="border border-[var(--brand)] text-[var(--brand)] px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-[var(--brand)] hover:text-white transition-all"
-                >
-                  View All Jobs
-                </Link>
-                <Link
                   href="/jobs?filter=starred"
-                  className="border border-amber-400 text-amber-500 px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-amber-400 hover:text-white transition-all flex items-center gap-1.5"
+                  className="border border-stone-300 text-stone-700 px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-stone-700 hover:text-white hover:border-stone-700 transition-all flex items-center gap-1.5"
                 >
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
                   </svg>
                   Starred
+                </Link>
+                <Link
+                  href="/jobs"
+                  className="border border-[var(--brand)] text-[var(--brand)] px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-[var(--brand)] hover:text-white transition-all"
+                >
+                  View All Jobs
                 </Link>
                 <Link
                   href="/add"
