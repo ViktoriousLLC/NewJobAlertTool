@@ -60,7 +60,7 @@ app.get("/api/test-email", async (req, res) => {
   try {
     const resend = new Resend(process.env.RESEND_API_KEY);
     const result = await resend.emails.send({
-      from: "onboarding@resend.dev",
+      from: "vik@viktoriousllc.com",
       to: "vik@viktoriousllc.com",
       subject: "Test Email from Job Alert Tool",
       html: "<h2>It works!</h2><p>If you see this, daily email alerts are configured correctly.</p>",
