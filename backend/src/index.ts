@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import cron from "node-cron";
 import dotenv from "dotenv";
 import companiesRouter from "./routes/companies";
 import favoritesRouter from "./routes/favorites";
@@ -44,14 +43,6 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-
-// Schedule daily check: 10:00 UTC (2am PT)
-cron.schedule("0 10 * * *", () => {
-  console.log("Cron triggered: running daily check");
-  runDailyCheck().catch((err) =>
-    console.error("Cron daily check failed:", err)
-  );
-});
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
