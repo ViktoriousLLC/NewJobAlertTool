@@ -288,8 +288,8 @@ export default function Dashboard() {
         {sorted.map((company, index) => {
           const brand = getBrandColor(company.name);
           const cardBg = softenColor(brand, 0.94);
-          const headerFrom = softenColor(brand, 0.60);
-          const headerTo = softenColor(brand, 0.35);
+          const headerFrom = softenColor(brand, 0.40);
+          const headerTo = softenColor(brand, 0.15);
 
           return (
             <div
@@ -336,18 +336,18 @@ export default function Dashboard() {
                     }}
                   />
                 </div>
-                <span className="text-[14px] font-bold text-white truncate drop-shadow-sm">
+                <span className="text-[15px] font-bold text-white truncate drop-shadow-sm">
                   {company.name}
                 </span>
               </div>
 
-              {/* Card body */}
-              <div className="px-3.5 pt-2 pb-1 flex flex-col flex-1">
+              {/* Card body — centered, fixed layout */}
+              <div className="flex flex-col items-center justify-center flex-1 px-3.5">
                 {/* Badge row — fixed 28px height */}
-                <div className="h-[28px] flex items-center">
+                <div className="h-[28px] flex items-center justify-center">
                   {company.new_jobs_today > 0 && (
                     <span
-                      className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold"
+                      className="px-3 py-0.5 rounded-full text-[13px] font-bold"
                       style={{
                         backgroundColor: "var(--badge-bg)",
                         color: "var(--badge-text)",
@@ -358,17 +358,19 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* Role count */}
-                <div className="text-[13px] text-[#6B7280] mt-0.5">
-                  <span className="text-[18px] font-bold text-[#1A1A2E]">
+                {/* Role count — centered */}
+                <div className="text-center mt-1">
+                  <span className="text-[20px] font-bold text-[#1A1A2E]">
                     {company.total_product_jobs}
-                  </span>{" "}
-                  roles
+                  </span>
+                  <span className="text-[13px] text-[#6B7280] ml-1">
+                    roles
+                  </span>
                 </div>
               </div>
 
-              {/* Timestamp footer */}
-              <div className="px-3.5 pb-3 flex items-center gap-1.5">
+              {/* Timestamp footer — centered */}
+              <div className="pb-3 flex items-center justify-center gap-1.5">
                 {company.last_check_status?.startsWith("success") ? (
                   <span
                     className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
