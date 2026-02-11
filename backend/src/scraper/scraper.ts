@@ -529,6 +529,41 @@ async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
     jobPostings: WorkdayJob[];
   }
 
+  interface WorkdayJobDetail {
+    jobPostingInfo: {
+      location?: string;
+      additionalLocations?: string[];
+    };
+  }
+
+  // Fetches actual location names from the job detail endpoint
+  async function fetchJobLocation(externalPath: string): Promise<string> {
+    try {
+      const detailUrl = `https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/Slack${externalPath}`;
+      const resp = await fetch(detailUrl, {
+        headers: {
+          "Accept": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+      });
+      if (!resp.ok) return "";
+      const detail: WorkdayJobDetail = await resp.json();
+      const locations: string[] = [];
+      if (detail.jobPostingInfo?.location) {
+        locations.push(detail.jobPostingInfo.location);
+      }
+      if (detail.jobPostingInfo?.additionalLocations) {
+        locations.push(...detail.jobPostingInfo.additionalLocations);
+      }
+      return locations.join(", ");
+    } catch {
+      return "";
+    }
+  }
+
+  // Collect PM job candidates first, then fetch their real locations
+  const pmCandidates: { title: string; externalPath: string; locationsText: string }[] = [];
+
   while (true) {
     try {
       const response = await fetch(baseUrl, {
@@ -563,7 +598,7 @@ async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
         break;
       }
 
-      // Filter for PM roles and add to results
+      // Filter for PM roles
       for (const job of data.jobPostings) {
         if (!job || !job.title) continue;
 
@@ -571,10 +606,10 @@ async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
         const isPM = pmKeywords.some((kw) => lowerTitle.includes(kw));
 
         if (isPM) {
-          allJobs.push({
+          pmCandidates.push({
             title: job.title,
-            location: job.locationsText || "",
-            urlPath: `https://salesforce.wd12.myworkdayjobs.com/Slack${job.externalPath}`,
+            externalPath: job.externalPath,
+            locationsText: job.locationsText || "",
           });
         }
       }
@@ -592,6 +627,21 @@ async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
       console.log(`Slack: Error at offset=${offset}:`, err);
       break;
     }
+  }
+
+  // For PM jobs with vague location text (e.g. "2 Locations"), fetch detail for real names
+  for (const candidate of pmCandidates) {
+    let location = candidate.locationsText;
+    if (/^\d+ Locations?$/i.test(location)) {
+      console.log(`Slack: Fetching detail for "${candidate.title}" (was "${location}")`);
+      location = await fetchJobLocation(candidate.externalPath);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    allJobs.push({
+      title: candidate.title,
+      location,
+      urlPath: `https://salesforce.wd12.myworkdayjobs.com/Slack${candidate.externalPath}`,
+    });
   }
 
   console.log(`Slack: Found ${allJobs.length} Product Manager roles out of ${totalJobs} total jobs`);
