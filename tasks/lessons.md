@@ -42,3 +42,39 @@ The user is often AFK. They want to come back to a finished result, not a to-do 
 **Mistake:** All Jobs table used auto-width columns. Long location strings (e.g., "South San Francisco HQ, New York, Seattle, or Chicago | Remote in United States") expanded the location column and pushed Last Checked and View off-screen.
 
 **Rule:** For data tables, use `table-fixed` layout with explicit `<colgroup>` column widths and `truncate` on cell content. Add `title` attributes so users can hover to see full text.
+
+## 2026-02-10: Supabase DDL cannot be run through REST API or supabase-js
+
+**Mistake:** Spent extensive time trying to create the `favorites` table programmatically — REST API, Management API, pg-meta, SQL endpoint, direct postgres (IPv6 failed), pooler (JWT can't be used as DB password). None worked.
+
+**Rule:** For schema changes (CREATE TABLE, ALTER TABLE), use the Supabase SQL Editor in the dashboard. No way around it without the actual DB password or the Supabase CLI logged in. Don't waste time trying programmatic approaches.
+
+## 2026-02-10: Next.js useSearchParams() requires a Suspense boundary
+
+**Mistake:** Added `?filter=starred` URL param parsing with `useSearchParams()` — build broke because the hook must be wrapped in `<Suspense>`.
+
+**Rule:** Any component using `useSearchParams()` needs a wrapper component that renders it inside `<Suspense fallback={...}>`. Create a thin wrapper that renders the actual component inside Suspense.
+
+## 2026-02-10: Dual cron triggers cause duplicate work
+
+**Mistake:** Backend had both an in-process `node-cron` schedule AND a Railway Cron service calling the same endpoint. Both triggered `runDailyCheck()`, causing duplicate emails at 2am and 6am.
+
+**Rule:** Pick ONE cron mechanism. Railway Cron is better — survives restarts, visible in dashboard, configurable schedule. Remove any in-process cron schedulers (node-cron) to avoid duplication.
+
+## 2026-02-10: Windows timeout command fails in non-interactive shells
+
+**Mistake:** Used Windows `timeout` command to wait after deploy — exits with code 125 in non-interactive terminals.
+
+**Rule:** Use `powershell -command "Start-Sleep -Seconds N"` instead of `timeout` on Windows.
+
+## 2026-02-10: Resend API key is production-only
+
+**Mistake:** Tried to send a one-off email locally but `RESEND_API_KEY` is empty in local `.env` — only set in Railway env vars.
+
+**Rule:** To send one-off emails, add a temporary protected endpoint to the backend, push to deploy on Railway, call it via curl with CRON_SECRET, then clean up the endpoint.
+
+## 2026-02-10: Optimistic UI updates need revert logic
+
+**Pattern:** Star toggle uses optimistic updates — immediate UI state change, then API call in background. If the API call fails, the state change must be reverted.
+
+**Rule:** When doing optimistic updates, always include a catch block that reverts the state to its previous value on failure.

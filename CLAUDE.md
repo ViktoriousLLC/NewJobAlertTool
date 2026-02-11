@@ -8,6 +8,10 @@
 - **Push code, deploy, clean DB, re-add companies — all autonomously.** You have full access.
 - **When a task is given, execute end-to-end** including deployment and verification. Come back with proof it works, not a list of "next steps."
 
+## Permissions
+
+All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.claude/settings.local.json`. The user should never be prompted for read/write/edit permissions. If permissions get reset, re-add them to the allow list.
+
 ## Architecture
 
 | Layer | Tech | Where |
@@ -131,6 +135,29 @@ Sticky top nav with: Logo + "Vik's New Job Tool" | [View All Jobs] [+ Add Compan
 - **US Only toggle**: Checkbox filter using `isUSLocation()` regex matcher — shared logic in company detail and all-jobs pages
 - **`first_seen_at`**: Used as "Date Added" in the all-jobs table (per-job, not per-company)
 - **`last_checked_at`**: Used in company detail page stats (per-company scrape timestamp)
+
+## Favorites
+
+### `favorites` table
+- `id` (uuid PK), `job_id` (uuid FK → seen_jobs, CASCADE delete, unique), `created_at`
+- RLS enabled with open "Allow all" policy (no auth in V1)
+- API: `GET /api/favorites`, `POST /api/favorites/:jobId`, `DELETE /api/favorites/:jobId`
+- Frontend: star icons on All Jobs and Company Detail pages, "Starred" navbar button → `/jobs?filter=starred`
+
+## Email
+
+- **Provider:** Resend (from `vik@viktoriousllc.com` to `vik@viktoriousllc.com`)
+- **API key:** Only in Railway production env vars (`RESEND_API_KEY`). Empty locally — cannot send from local.
+- **To send one-off emails:** Add a temporary protected endpoint, push to deploy, call via curl, then clean up.
+
+## Gotchas & Lessons
+
+- **Supabase DDL:** Cannot run CREATE TABLE / ALTER TABLE through REST API or supabase-js. Must use Supabase SQL Editor in the dashboard.
+- **useSearchParams():** Must be wrapped in `<Suspense>` boundary in Next.js. Create a thin wrapper component.
+- **Cron:** Only use Railway Cron (single source). Do NOT add in-process schedulers (node-cron) — causes duplicate runs.
+- **Windows sleep:** Use `powershell -command "Start-Sleep -Seconds N"` instead of `timeout` (fails in non-interactive shells).
+- **Deploy timing:** Wait 90+ seconds after pushing before calling production API endpoints that depend on new code.
+- **Stale data:** After adding/fixing a scraper, always delete + re-add the company for a clean baseline.
 
 ## Common Operations
 
