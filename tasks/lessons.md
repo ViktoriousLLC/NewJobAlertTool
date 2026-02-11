@@ -138,3 +138,21 @@ The user is often AFK. They want to come back to a finished result, not a to-do 
 **Mistake:** Added stricter PM title filtering (hard exclusions) but user still saw "Head of Product Design" for Cisco. The data was scraped before the validation fix — changing validation logic doesn't retroactively clean the DB.
 
 **Rule:** After tightening validation/filtering rules, existing data in the DB is stale. Users must delete and re-add the company to get a clean scrape with the new rules. Call this out proactively when deploying filter changes.
+
+## 2026-02-11: useSearchParams() in shared layout components needs Suspense
+
+**Pattern:** NavBar used `usePathname()` to detect active route, but both "Starred" and "View All Jobs" link to `/jobs` — only the `?filter=starred` query param distinguishes them. Adding `useSearchParams()` to the NavBar required wrapping in `<Suspense>` because NavBar renders on every page (including static ones).
+
+**Rule:** When a layout-level component (nav, sidebar) needs `useSearchParams()`, split it into an inner component + outer wrapper with `<Suspense fallback={...}>`. The fallback should match the component's dimensions to avoid layout shift.
+
+## 2026-02-11: Use replace_all for systematic color token migrations
+
+**Pattern:** Migrating from `stone-800` → `#1A1A2E` across multiple pages. Using `Edit` with `replace_all: true` was fast and safe because the old tokens were consistent.
+
+**Rule:** When doing design system color migrations, batch-replace with `replace_all` per file. Review the count of replacements to catch unexpected matches. This is faster and less error-prone than manual find-and-replace across files.
+
+## 2026-02-11: Google Favicons API needs domain overrides for ATS-hosted companies
+
+**Pattern:** Companies whose careers pages are on ATS domains (boards.greenhouse.io, jobs.lever.co) get the ATS favicon instead of the company's. Discord's careers_url is `boards.greenhouse.io/discord` — Google returns Greenhouse's favicon.
+
+**Rule:** Maintain a `DOMAIN_OVERRIDES` map for companies on ATS platforms, mapping company name → real domain (e.g., `discord` → `discord.com`). Only needed for companies on Greenhouse, Lever, Ashby, etc.

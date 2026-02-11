@@ -7,6 +7,17 @@
 - [x] Design a better logo for the site (PM square logo)
 - [x] Customize magic link email template (template created in tasks/magic-link-email-template.html)
 
+## Priority: Do Next
+- [ ] Apply magic link email template to Supabase — template ready at `tasks/magic-link-email-template.html`, paste into Supabase Dashboard → Auth → Email Templates → Magic Link
+- [x] UI redesign — dark navy nav, branded company cards with favicons, Outfit font, sky blue palette, stat boxes, filter bar, responsive grid (completed 2026-02-11)
+
+## Priority: High
+- [ ] Mixpanel/PostHog analytics — track page views, companies added, jobs starred, filter usage, daily return rate
+
+## Priority: Low / Future
+- [ ] Stripe premium tier — link from existing Stripe account. Potential features: unlimited companies, salary alerts. Defer until 5K+ users.
+- [ ] AdSense / affiliate monetization — not worth it at small scale, revisit at 5K+ users
+
 ## Auth / Multi-user
 - [x] Middleware redirects authenticated users on `/login` to `/` — verified working (2026-02-10). Middleware checks `getUser()`, redirects to `/` if authenticated. Handles expired sessions, failed magic links, and sign-out correctly.
 - [x] Set `newpmjobs.com` as primary Vercel domain — requires Vercel dashboard change (see instructions below)
