@@ -2,8 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+import { apiFetch } from "@/lib/api";
 
 interface Job {
   id: string;
@@ -79,8 +78,8 @@ function AllJobsPage() {
       try {
         // Fetch companies and favorites in parallel
         const [companiesRes, favoritesRes] = await Promise.all([
-          fetch(`${API_URL}/api/companies`),
-          fetch(`${API_URL}/api/favorites`),
+          apiFetch("/api/companies"),
+          apiFetch("/api/favorites"),
         ]);
 
         const companies: CompanySummary[] = await companiesRes.json();
@@ -97,7 +96,7 @@ function AllJobsPage() {
         const details = await Promise.all(
           companies.map(async (c) => {
             try {
-              const r = await fetch(`${API_URL}/api/companies/${c.id}`);
+              const r = await apiFetch(`/api/companies/${c.id}`);
               if (!r.ok) return null;
               return (await r.json()) as CompanyDetail;
             } catch {
@@ -152,9 +151,9 @@ function AllJobsPage() {
 
     try {
       if (isFav) {
-        await fetch(`${API_URL}/api/favorites/${jobId}`, { method: "DELETE" });
+        await apiFetch(`/api/favorites/${jobId}`, { method: "DELETE" });
       } else {
-        await fetch(`${API_URL}/api/favorites/${jobId}`, { method: "POST" });
+        await apiFetch(`/api/favorites/${jobId}`, { method: "POST" });
       }
     } catch {
       // Revert on failure

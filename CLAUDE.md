@@ -20,6 +20,18 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 | Backend | Express + Puppeteer | Railway (auto-deploys from `main`) |
 | Database | PostgreSQL | Supabase |
 | Scheduler | Railway Cron | Triggers daily scrape at 10:00 UTC |
+| Auth | Supabase Auth | Magic link via Resend SMTP |
+
+## Authentication
+
+- **Method:** Magic link (email-based, no passwords) via Supabase Auth
+- **SMTP:** Resend custom SMTP configured in Supabase dashboard
+- **Flow:** User enters email → magic link sent → clicks link → `/auth/callback` exchanges code for session → JWT stored in cookies
+- **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes (redirects to `/login`)
+- **Backend:** `requireAuth` middleware extracts `Bearer <token>` from `Authorization` header, verifies via `supabase.auth.getUser(token)`, attaches `req.userId`
+- **Data scoping:** `companies` and `favorites` have `user_id` column. `seen_jobs` scoped through company's `user_id`
+- **Cron/scraper:** Uses service key (bypasses RLS), no user context needed — scrapes all companies across all users
+- **Env vars:** Backend needs `SUPABASE_ANON_KEY` (for auth verification) in addition to existing `SUPABASE_SERVICE_KEY`
 
 ## Production URLs
 
@@ -57,13 +69,15 @@ The CRON_SECRET is set in Railway env vars (local .env has `test-secret-123`).
 ## Database Schema
 
 ### `companies` table
-- `id` (uuid PK), `name`, `careers_url`, `created_at`, `last_checked_at`, `last_check_status`, `total_product_jobs`
+- `id` (uuid PK), `name`, `careers_url`, `created_at`, `last_checked_at`, `last_check_status`, `total_product_jobs`, `user_id` (FK → auth.users)
+- Index on `user_id`
 
 ### `seen_jobs` table
 - `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `job_url_path`, `job_title`, `job_location`, `first_seen_at`, `is_baseline`
 - Unique index on `(company_id, job_url_path)`
 - `is_baseline = true` for initial scrape, `false` for newly discovered jobs
 - Non-baseline jobs older than 30 days are auto-cleaned
+- No `user_id` — scoped through company's `user_id`
 
 ## Scraper Architecture (backend/src/scraper/scraper.ts)
 
@@ -109,13 +123,21 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 
 - `backend/src/scraper/scraper.ts` — All scraper logic
 - `backend/src/jobs/dailyCheck.ts` — Daily cron job logic
-- `backend/src/routes/companies.ts` — API route handlers
+- `backend/src/routes/companies.ts` — API route handlers (user-scoped)
+- `backend/src/routes/favorites.ts` — Favorites API (user-scoped)
+- `backend/src/middleware/auth.ts` — JWT verification middleware
 - `backend/src/index.ts` — Express server entry point
+- `frontend/src/lib/supabase.ts` — Browser Supabase client (`@supabase/ssr`)
+- `frontend/src/lib/api.ts` — Authenticated fetch wrapper (attaches JWT)
+- `frontend/src/app/login/page.tsx` — Magic link login page
+- `frontend/src/app/auth/callback/route.ts` — Magic link code exchange
+- `frontend/middleware.ts` — Route protection (redirects to /login if unauthenticated)
+- `frontend/src/components/AuthNav.tsx` — User email + sign out in navbar
 - `frontend/src/app/page.tsx` — Dashboard UI (tile grid)
 - `frontend/src/app/add/page.tsx` — Add company UI
 - `frontend/src/app/company/[id]/page.tsx` — Company detail page (with next-company nav)
 - `frontend/src/app/jobs/page.tsx` — "View All Jobs" flat table across all companies
-- `frontend/src/app/layout.tsx` — Root layout with navbar (View All Jobs + Add Company buttons)
+- `frontend/src/app/layout.tsx` — Root layout with navbar
 - `cron/index.js` — Railway cron trigger script
 - `supabase-schema.sql` — Database schema
 
@@ -123,6 +145,8 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 
 | Route | File | Description |
 |-------|------|-------------|
+| `/login` | `login/page.tsx` | Magic link login (email input + send link) |
+| `/auth/callback` | `auth/callback/route.ts` | Exchanges magic link code for session |
 | `/` | `page.tsx` | Dashboard — tile grid of all tracked companies, sorted by activity |
 | `/add` | `add/page.tsx` | Add a new company form |
 | `/company/[id]` | `company/[id]/page.tsx` | Company detail — jobs grouped by date, US filter, "Next Company" nav |
@@ -139,9 +163,10 @@ Sticky top nav with: Logo + "Vik's New Job Tool" | [View All Jobs] [+ Add Compan
 ## Favorites
 
 ### `favorites` table
-- `id` (uuid PK), `job_id` (uuid FK → seen_jobs, CASCADE delete, unique), `created_at`
-- RLS enabled with open "Allow all" policy (no auth in V1)
-- API: `GET /api/favorites`, `POST /api/favorites/:jobId`, `DELETE /api/favorites/:jobId`
+- `id` (uuid PK), `job_id` (uuid FK → seen_jobs, CASCADE delete), `user_id` (uuid FK → auth.users), `created_at`
+- Unique index on `(user_id, job_id)` — each user can star a job once
+- RLS policies scoped to `auth.uid() = user_id`
+- API: `GET /api/favorites`, `POST /api/favorites/:jobId`, `DELETE /api/favorites/:jobId` (all require auth, scoped by user)
 - Frontend: star icons on All Jobs and Company Detail pages, "Starred" navbar button → `/jobs?filter=starred`
 
 ## Email

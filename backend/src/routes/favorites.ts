@@ -3,12 +3,13 @@ import { supabase } from "../lib/supabase";
 
 const router = Router();
 
-// GET /api/favorites — list all favorited job IDs
-router.get("/", async (_req: Request, res: Response) => {
+// GET /api/favorites — list user's favorited job IDs
+router.get("/", async (req: Request, res: Response) => {
   try {
     const { data, error } = await supabase
       .from("favorites")
-      .select("job_id");
+      .select("job_id")
+      .eq("user_id", req.userId!);
 
     if (error) throw error;
 
@@ -27,7 +28,10 @@ router.post("/:jobId", async (req: Request, res: Response) => {
 
     const { error } = await supabase
       .from("favorites")
-      .upsert({ job_id: jobId }, { onConflict: "job_id" });
+      .upsert(
+        { job_id: jobId, user_id: req.userId! },
+        { onConflict: "user_id,job_id" }
+      );
 
     if (error) throw error;
 
@@ -46,7 +50,8 @@ router.delete("/:jobId", async (req: Request, res: Response) => {
     const { error } = await supabase
       .from("favorites")
       .delete()
-      .eq("job_id", jobId);
+      .eq("job_id", jobId)
+      .eq("user_id", req.userId!);
 
     if (error) throw error;
 

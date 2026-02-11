@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+import { apiFetch } from "@/lib/api";
 
 interface Company {
   id: string;
@@ -45,7 +44,7 @@ export default function Dashboard() {
 
   async function fetchCompanies() {
     try {
-      const res = await fetch(`${API_URL}/api/companies`);
+      const res = await apiFetch("/api/companies");
       const data = await res.json();
       setCompanies(data);
     } catch (err) {
@@ -59,7 +58,7 @@ export default function Dashboard() {
     if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
 
     try {
-      await fetch(`${API_URL}/api/companies/${id}`, { method: "DELETE" });
+      await apiFetch(`/api/companies/${id}`, { method: "DELETE" });
       setCompanies((prev) => prev.filter((c) => c.id !== id));
     } catch (err) {
       console.error("Failed to delete company:", err);

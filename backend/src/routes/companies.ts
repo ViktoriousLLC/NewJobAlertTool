@@ -4,12 +4,13 @@ import { scrapeCompanyCareers } from "../scraper/scraper";
 
 const router = Router();
 
-// GET /api/companies — list all companies
-router.get("/", async (_req: Request, res: Response) => {
+// GET /api/companies — list user's companies
+router.get("/", async (req: Request, res: Response) => {
   try {
     const { data: companies, error } = await supabase
       .from("companies")
       .select("*")
+      .eq("user_id", req.userId!)
       .order("created_at", { ascending: false });
 
     if (error) throw error;
@@ -18,9 +19,12 @@ router.get("/", async (_req: Request, res: Response) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    const companyIds = (companies || []).map((c) => c.id);
+
     const { data: newJobCounts } = await supabase
       .from("seen_jobs")
       .select("company_id")
+      .in("company_id", companyIds)
       .eq("is_baseline", false)
       .gte("first_seen_at", today.toISOString());
 
@@ -33,6 +37,7 @@ router.get("/", async (_req: Request, res: Response) => {
     const { data: latestNewJobs } = await supabase
       .from("seen_jobs")
       .select("company_id, first_seen_at")
+      .in("company_id", companyIds)
       .eq("is_baseline", false)
       .order("first_seen_at", { ascending: false });
 
@@ -56,7 +61,7 @@ router.get("/", async (_req: Request, res: Response) => {
   }
 });
 
-// GET /api/companies/:id — company detail with new jobs
+// GET /api/companies/:id — company detail with jobs (user-scoped)
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -65,6 +70,7 @@ router.get("/:id", async (req: Request, res: Response) => {
       .from("companies")
       .select("*")
       .eq("id", id)
+      .eq("user_id", req.userId!)
       .single();
 
     if (error || !company) {
@@ -96,10 +102,10 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
-    // Insert company
+    // Insert company with user_id
     const { data: company, error: insertError } = await supabase
       .from("companies")
-      .insert({ name, careers_url })
+      .insert({ name, careers_url, user_id: req.userId! })
       .select()
       .single();
 
@@ -153,7 +159,7 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/companies/:id — remove company and its jobs
+// DELETE /api/companies/:id — remove company and its jobs (user-scoped)
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -162,7 +168,8 @@ router.delete("/:id", async (req: Request, res: Response) => {
     const { error } = await supabase
       .from("companies")
       .delete()
-      .eq("id", id);
+      .eq("id", id)
+      .eq("user_id", req.userId!);
 
     if (error) throw error;
 

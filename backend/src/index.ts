@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import companiesRouter from "./routes/companies";
 import favoritesRouter from "./routes/favorites";
 import { runDailyCheck } from "./jobs/dailyCheck";
+import { requireAuth } from "./middleware/auth";
 
 dotenv.config();
 
@@ -18,9 +19,9 @@ app.use(
 );
 app.use(express.json());
 
-// Routes
-app.use("/api/companies", companiesRouter);
-app.use("/api/favorites", favoritesRouter);
+// Routes (protected by auth)
+app.use("/api/companies", requireAuth, companiesRouter);
+app.use("/api/favorites", requireAuth, favoritesRouter);
 
 // Manual trigger for daily check (protected by secret)
 app.get("/api/cron/trigger", async (req, res) => {

@@ -3,8 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+import { apiFetch } from "@/lib/api";
 
 export default function AddCompany() {
   const router = useRouter();
@@ -19,7 +18,7 @@ export default function AddCompany() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/api/companies`, {
+      const res = await apiFetch("/api/companies", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, careers_url: careersUrl }),
@@ -38,7 +37,7 @@ export default function AddCompany() {
         );
         if (!proceed) {
           // Delete the company if user cancels
-          await fetch(`${API_URL}/api/companies/${company.id}`, {
+          await apiFetch(`/api/companies/${company.id}`, {
             method: "DELETE",
           });
           setLoading(false);

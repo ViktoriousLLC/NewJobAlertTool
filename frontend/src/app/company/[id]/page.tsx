@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+import { apiFetch } from "@/lib/api";
 
 interface Job {
   id: string;
@@ -59,9 +58,9 @@ export default function CompanyDetailPage() {
       try {
         // Fetch company detail, all companies, and favorites in parallel
         const [detailRes, listRes, favRes] = await Promise.all([
-          fetch(`${API_URL}/api/companies/${id}`),
-          fetch(`${API_URL}/api/companies`),
-          fetch(`${API_URL}/api/favorites`),
+          apiFetch(`/api/companies/${id}`),
+          apiFetch("/api/companies"),
+          apiFetch("/api/favorites"),
         ]);
 
         if (!detailRes.ok) throw new Error("Not found");
@@ -106,9 +105,9 @@ export default function CompanyDetailPage() {
 
     try {
       if (isFav) {
-        await fetch(`${API_URL}/api/favorites/${jobId}`, { method: "DELETE" });
+        await apiFetch(`/api/favorites/${jobId}`, { method: "DELETE" });
       } else {
-        await fetch(`${API_URL}/api/favorites/${jobId}`, { method: "POST" });
+        await apiFetch(`/api/favorites/${jobId}`, { method: "POST" });
       }
     } catch {
       setFavorites((prev) => {
