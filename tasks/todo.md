@@ -24,11 +24,28 @@
 
 ### Post-Deploy Verification
 
-- [ ] Push to main → Railway + Vercel auto-deploy
-- [ ] Verify health check: `curl https://api.<domain>/api/health`
+- [x] Push to main → Railway + Vercel auto-deploy
+- [x] Verify health check
+- [x] Test platform detection + scrape (Cisco: Workday detected, 29 PM jobs, quality 100)
 - [ ] Test adding a Lever company (e.g., Cloudflare)
 - [ ] Verify existing companies still scrape correctly (trigger cron)
 - [ ] Verify Report Issue button works on company detail page
+
+### UX Polish (completed 2026-02-11)
+
+- [x] Changed "+" icon to building icon on Add Company page
+- [x] Redirect to company detail page after adding with `?added=true` success toast
+- [x] Randomized placeholder company examples (8 popular tech companies)
+- [x] Animated 4-step stepper with live counters during scrape
+- [x] Stricter PM title validation — hard exclusions with no exceptions
+- [x] Fixed delete button hit area on dashboard tiles (stopPropagation on wrapper div)
+
+### Remaining
+
+- [ ] Cloudflare Email Routing — Set up `feedback@newpmjobs.com` forwarding (optional)
+- [ ] Run SQL migration in Supabase for `scrape_issues` table (needed for Report Issue to work)
+- [ ] Test Report Issue end-to-end after SQL migration
+- [ ] Re-add Cisco with new validation rules for clean data
 
 ## Files Changed
 

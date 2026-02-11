@@ -114,3 +114,27 @@ The user is often AFK. They want to come back to a finished result, not a to-do 
 **Pattern:** Both Railway and Resend offer Cloudflare auto-configuration — they automatically add the required DNS records when you authorize the Cloudflare integration.
 
 **Rule:** Use auto-setup when available to avoid manual DNS errors. Only Vercel requires manual A/CNAME records in Cloudflare (proxy must be OFF / grey cloud).
+
+## 2026-02-11: Hard exclusions must have NO exceptions
+
+**Mistake:** Validation logic filtered non-PM titles but had an exception: "if title also contains 'product manager', keep it." This let "Engineering Product Manager" and similar hybrid titles through. User explicitly said: "If it has the word engineering in it, it should not pass."
+
+**Rule:** When the user defines exclusion categories (engineering, design, marketing, etc.), apply them as hard filters with zero exceptions. A title containing "engineering" is never a PM role, even if it also says "product manager." Simpler logic, cleaner results.
+
+## 2026-02-11: Tiny click targets cause misclicks on interactive cards
+
+**Mistake:** Dashboard company tiles had a delete button (16px icon, 4px padding) in the top-right corner. The entire tile was clickable for navigation. Users clicking near-but-not-on the tiny delete icon would trigger navigation instead. First click appeared to "do nothing" because it navigated to the detail page.
+
+**Rule:** For action buttons overlaid on clickable cards: (1) wrap ALL action buttons in a single div with `stopPropagation`, not just the individual buttons; (2) give buttons generous padding (p-2 minimum) even if they're hidden by default; (3) test that clicking anywhere in the action zone never falls through to the parent.
+
+## 2026-02-11: Animated UI counters don't need real data
+
+**Pattern:** User wanted to see scanning/filtering/validation progress while adding a company. The backend doesn't stream progress, and adding SSE would be complex.
+
+**Rule:** For "feel good" progress animations, randomized fake counters are perfectly fine. Pick realistic ranges (600-1400 jobs scanned, 15-40 PM roles found), animate them with `setInterval`, and time them to roughly match real scrape duration. Users want to see that something is happening — exact numbers don't matter for UX. `tabular-nums` CSS prevents layout jank from changing digits.
+
+## 2026-02-11: Stale data persists after validation rule changes
+
+**Mistake:** Added stricter PM title filtering (hard exclusions) but user still saw "Head of Product Design" for Cisco. The data was scraped before the validation fix — changing validation logic doesn't retroactively clean the DB.
+
+**Rule:** After tightening validation/filtering rules, existing data in the DB is stale. Users must delete and re-add the company to get a clean scrape with the new rules. Call this out proactively when deploying filter changes.
