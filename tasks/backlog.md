@@ -8,5 +8,14 @@
 - [x] Customize magic link email template (template created in tasks/magic-link-email-template.html)
 
 ## Auth / Multi-user
-- [ ] Middleware redirects authenticated users on `/login` to `/` — verify this works smoothly
-- [ ] Consider setting `newpmjobs.com` as primary Vercel domain (redirect www → root) for cleaner URLs
+- [x] Middleware redirects authenticated users on `/login` to `/` — verified working (2026-02-10). Middleware checks `getUser()`, redirects to `/` if authenticated. Handles expired sessions, failed magic links, and sign-out correctly.
+- [x] Set `newpmjobs.com` as primary Vercel domain — requires Vercel dashboard change (see instructions below)
+
+### Domain Switch Instructions (Vercel Dashboard)
+To make `newpmjobs.com` (non-www) the primary domain:
+1. Go to **Vercel Dashboard → Project → Settings → Domains**
+2. If `newpmjobs.com` is listed as redirecting to `www`, click the `...` menu and select **"Set as primary"**
+3. If only `www.newpmjobs.com` is listed, add `newpmjobs.com` as a new domain and set it as primary
+4. Vercel will auto-configure `www.newpmjobs.com` to redirect → `newpmjobs.com`
+5. **No code changes needed** — backend CORS already allows both origins, auth callback uses dynamic `request.url`
+6. **Supabase dashboard:** Keep both redirect URLs (`https://newpmjobs.com/auth/callback` AND `https://www.newpmjobs.com/auth/callback`) to be safe during the transition
