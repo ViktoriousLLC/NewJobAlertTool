@@ -1,14 +1,18 @@
 "use client";
 
+import { Suspense } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import AuthNav from "./AuthNav";
 
-export default function NavBar() {
+function NavBarInner() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const isHome = pathname === "/";
   const isJobs = pathname === "/jobs";
+  const isStarred = isJobs && searchParams.get("filter") === "starred";
+  const isAllJobs = isJobs && !isStarred;
   const isAdd = pathname === "/add";
 
   const navBtn =
@@ -54,7 +58,7 @@ export default function NavBar() {
 
           <Link
             href="/jobs?filter=starred"
-            className={isJobs ? navActive : navDefault}
+            className={isStarred ? navActive : navDefault}
           >
             <svg
               className="w-3.5 h-3.5"
@@ -68,7 +72,7 @@ export default function NavBar() {
 
           <Link
             href="/jobs"
-            className={isJobs ? navActive : navDefault}
+            className={isAllJobs ? navActive : navDefault}
           >
             <svg
               className="w-3.5 h-3.5"
@@ -120,5 +124,20 @@ export default function NavBar() {
         </div>
       </div>
     </nav>
+  );
+}
+
+export default function NavBar() {
+  return (
+    <Suspense
+      fallback={
+        <nav
+          className="bg-[#0C1E3A] sticky top-0 z-10"
+          style={{ height: 54 }}
+        />
+      }
+    >
+      <NavBarInner />
+    </Suspense>
   );
 }

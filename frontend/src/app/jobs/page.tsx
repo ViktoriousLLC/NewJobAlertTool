@@ -287,9 +287,9 @@ function AllJobsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-stone-800">
+        <h1 className="text-[24px] font-[800] text-[#1A1A2E]">
           {starredOnly ? "Starred Jobs" : "All Jobs"}
-          <span className="text-base font-normal text-stone-500 ml-3">
+          <span className="text-[13px] font-normal text-[#6B7280] ml-3">
             {filteredJobs.length} jobs{starredOnly ? " in your shortlist" : " across all companies"}
           </span>
         </h1>
@@ -297,7 +297,7 @@ function AllJobsPage() {
           {ALL_LEVELS.map((level) => (
             <label
               key={level}
-              className="flex items-center gap-1.5 text-sm cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors"
+              className="flex items-center gap-1.5 text-sm cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors"
             >
               <input
                 type="checkbox"
@@ -313,7 +313,7 @@ function AllJobsPage() {
               </span>
             </label>
           ))}
-          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
+          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors">
             <input
               type="checkbox"
               checked={usOnly}
@@ -323,7 +323,7 @@ function AllJobsPage() {
             US only
           </label>
           {starredOnly && (
-            <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
+            <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors">
               <input
                 type="checkbox"
                 checked={showSalary}
@@ -377,7 +377,7 @@ function AllJobsPage() {
                 <col className="w-[8%]" />
               </colgroup>
               <thead>
-                <tr className="border-b border-stone-200 bg-stone-50">
+                <tr className="border-b border-stone-200 bg-[#F8FAFC]">
                   <th className="px-3 py-3"></th>
                   <SortHeader label="Company" sortKeyName="company" />
                   <SortHeader label="Job Title" sortKeyName="title" />
@@ -397,7 +397,7 @@ function AllJobsPage() {
                   {isFirstInGroup && idx !== 0 && (
                     <tr key={`divider-${job.id}`} className="border-t-4 border-stone-300"><td colSpan={showSalaryCol ? 8 : 7} className="h-0 p-0"></td></tr>
                   )}
-                  <tr key={job.id} className="hover:bg-stone-50 transition-colors">
+                  <tr key={job.id} className="hover:bg-[#F8FAFC] transition-colors">
                     <td className="px-3 py-3.5 text-center">
                       <button
                         onClick={() => toggleFavorite(job.id)}
@@ -415,7 +415,7 @@ function AllJobsPage() {
                         )}
                       </button>
                     </td>
-                    <td className="px-5 py-3.5 text-sm font-bold text-stone-800 truncate" title={job.companyName}>
+                    <td className="px-5 py-3.5 text-sm font-bold text-[#1A1A2E] truncate" title={job.companyName}>
                       {job.companyName}
                     </td>
                     <td className="px-5 py-3.5 text-sm text-stone-700 truncate" title={job.jobTitle}>

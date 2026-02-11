@@ -64,6 +64,7 @@ export default function Dashboard() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterKey>("all");
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     fetchCompanies();
@@ -184,7 +185,12 @@ export default function Dashboard() {
     c.last_check_status?.startsWith("error")
   ).length;
 
-  const sorted = sortCompanies(filterCompanies(companies, filter));
+  const searched = search
+    ? companies.filter((c) =>
+        c.name.toLowerCase().includes(search.toLowerCase())
+      )
+    : companies;
+  const sorted = sortCompanies(filterCompanies(searched, filter));
 
   const filters: { key: FilterKey; label: string }[] = [
     { key: "all", label: "All" },
@@ -254,8 +260,9 @@ export default function Dashboard() {
           <input
             type="text"
             placeholder="Search companies..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
-            readOnly
           />
         </div>
 
@@ -277,7 +284,7 @@ export default function Dashboard() {
       </div>
 
       {/* Card grid — 5 columns */}
-      <div className="grid grid-cols-5 gap-[14px]">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-[14px]">
         {sorted.map((company, index) => {
           const brand = getBrandColor(company.name);
           const cardBg = softenColor(brand, 0.94);

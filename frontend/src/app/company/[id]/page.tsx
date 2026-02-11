@@ -204,7 +204,7 @@ function CompanyDetailContent() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
         </div>
-        <h2 className="text-xl font-semibold text-stone-800 mb-4">
+        <h2 className="text-xl font-semibold text-[#1A1A2E] mb-4">
           Company not found
         </h2>
         <Link href="/" className="text-[var(--brand)] hover:underline">
@@ -287,7 +287,7 @@ function CompanyDetailContent() {
       <div className="bg-white rounded-xl border border-stone-200 p-6 mb-6 shadow-sm">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-stone-800 mb-2">
+            <h1 className="text-[24px] font-[800] text-[#1A1A2E] mb-2">
               {company.name}
             </h1>
             <a
@@ -348,7 +348,7 @@ function CompanyDetailContent() {
                     <button
                       key={item.type}
                       onClick={() => reportIssue(item.type)}
-                      className="w-full text-left px-3 py-2 text-sm text-stone-700 hover:bg-stone-50 transition-colors"
+                      className="w-full text-left px-3 py-2 text-sm text-stone-700 hover:bg-[#F8FAFC] transition-colors"
                     >
                       {item.label}
                     </button>
@@ -368,15 +368,15 @@ function CompanyDetailContent() {
         </div>
 
         <div className="mt-6 grid grid-cols-3 gap-4">
-          <div className="bg-stone-50 rounded-lg p-4 text-center">
-            <div className="text-3xl font-bold text-stone-800">{company.total_product_jobs}</div>
+          <div className="bg-[#F8FAFC] rounded-lg p-4 text-center">
+            <div className="text-3xl font-bold text-[#1A1A2E]">{company.total_product_jobs}</div>
             <div className="text-stone-500 text-sm">Total Jobs</div>
           </div>
-          <div className="bg-stone-50 rounded-lg p-4 text-center">
+          <div className="bg-[#F8FAFC] rounded-lg p-4 text-center">
             <div className="text-3xl font-bold text-[var(--brand)]">{filteredJobs.length}</div>
             <div className="text-stone-500 text-sm">{usOnly ? "US Jobs" : "Showing All"}</div>
           </div>
-          <div className="bg-stone-50 rounded-lg p-4 text-center">
+          <div className="bg-[#F8FAFC] rounded-lg p-4 text-center">
             <div className="text-lg font-semibold text-stone-700">
               {company.last_checked_at
                 ? new Date(company.last_checked_at).toLocaleDateString("en-US", {
@@ -395,20 +395,20 @@ function CompanyDetailContent() {
       {/* Compensation section */}
       {compData && (
         <div className="bg-white rounded-xl border border-stone-200 p-6 mb-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-stone-800 mb-4">
+          <h2 className="text-lg font-semibold text-[#1A1A2E] mb-4">
             PM Compensation at {company.name}
           </h2>
           <div className="overflow-hidden rounded-lg border border-stone-200">
             <table className="w-full">
               <thead>
-                <tr className="bg-stone-50 border-b border-stone-200">
+                <tr className="bg-[#F8FAFC] border-b border-stone-200">
                   <th className="text-left px-4 py-2.5 text-xs font-semibold text-stone-500 uppercase tracking-wider">Level</th>
                   <th className="text-right px-4 py-2.5 text-xs font-semibold text-stone-500 uppercase tracking-wider">Median Total Comp</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
                 {compData.levels.map((l) => (
-                  <tr key={l.level} className="hover:bg-stone-50">
+                  <tr key={l.level} className="hover:bg-[#F8FAFC]">
                     <td className="px-4 py-2.5 text-sm text-stone-700 font-medium">{l.level}</td>
                     <td className="px-4 py-2.5 text-sm text-stone-800 text-right font-semibold">{formatComp(l.medianTC)}</td>
                   </tr>
@@ -434,14 +434,14 @@ function CompanyDetailContent() {
       )}
 
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-stone-800">
+        <h2 className="text-lg font-semibold text-[#1A1A2E]">
           Product Jobs
         </h2>
         <div className="flex items-center gap-2">
           {ALL_LEVELS.map((level) => (
             <label
               key={level}
-              className="flex items-center gap-1.5 text-sm cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors"
+              className="flex items-center gap-1.5 text-sm cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors"
             >
               <input
                 type="checkbox"
@@ -457,7 +457,7 @@ function CompanyDetailContent() {
               </span>
             </label>
           ))}
-          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
+          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors">
             <input
               type="checkbox"
               checked={usOnly}
@@ -503,7 +503,7 @@ function CompanyDetailContent() {
                   const isFav = favorites.has(job.id);
                   const level = (job.job_level || "early") as JobLevel;
                   return (
-                  <div key={job.id} className="px-5 py-4 flex items-center justify-between gap-4 hover:bg-stone-50 transition-colors">
+                  <div key={job.id} className="px-5 py-4 flex items-center justify-between gap-4 hover:bg-[#F8FAFC] transition-colors">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
                       <button
                         onClick={() => toggleFavorite(job.id)}
@@ -534,7 +534,7 @@ function CompanyDetailContent() {
                       >
                         {LEVEL_LABELS[level]}
                       </span>
-                      <span className="text-stone-800 font-medium truncate">{job.job_title}</span>
+                      <span className="text-[#1A1A2E] font-medium truncate">{job.job_title}</span>
                     </div>
                     {job.job_location && (
                       <span className="text-stone-500 text-sm shrink-0 max-w-[250px] truncate flex items-center gap-1">

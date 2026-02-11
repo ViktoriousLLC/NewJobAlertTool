@@ -192,7 +192,7 @@ export default function AddCompany() {
             </svg>
           </div>
           <div>
-            <h1 className="text-xl font-bold text-stone-800">Add Company</h1>
+            <h1 className="text-xl font-bold text-[#1A1A2E]">Add Company</h1>
             <p className="text-sm text-stone-500">Track product job postings from a new company</p>
           </div>
         </div>
@@ -213,7 +213,7 @@ export default function AddCompany() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder={`e.g. ${example.name}`}
-              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-stone-50 text-stone-900 placeholder-stone-400 disabled:opacity-60"
+              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-[#F8FAFC] text-stone-900 placeholder-stone-400 disabled:opacity-60"
             />
           </div>
 
@@ -232,7 +232,7 @@ export default function AddCompany() {
               value={careersUrl}
               onChange={(e) => setCareersUrl(e.target.value)}
               placeholder={`e.g. ${example.url}`}
-              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-stone-50 text-stone-900 placeholder-stone-400 disabled:opacity-60"
+              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-[#F8FAFC] text-stone-900 placeholder-stone-400 disabled:opacity-60"
             />
             <p className="mt-2 text-xs text-stone-500">
               Enter the URL of the company&apos;s careers page that lists job openings
@@ -259,7 +259,7 @@ export default function AddCompany() {
               <button
                 type="button"
                 onClick={() => router.push("/")}
-                className="px-6 py-3 rounded-lg font-medium border border-stone-200 text-stone-700 hover:bg-stone-50 transition-colors"
+                className="px-6 py-3 rounded-lg font-medium border border-stone-200 text-stone-700 hover:bg-[#F8FAFC] transition-colors"
               >
                 Cancel
               </button>
@@ -299,7 +299,7 @@ export default function AddCompany() {
                     <span
                       className={`text-sm tabular-nums ${
                         isActive
-                          ? "text-stone-800 font-medium"
+                          ? "text-[#1A1A2E] font-medium"
                           : isDone
                           ? "text-green-700"
                           : "text-stone-400"
