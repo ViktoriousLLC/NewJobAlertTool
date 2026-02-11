@@ -151,6 +151,12 @@ The user is often AFK. They want to come back to a finished result, not a to-do 
 
 **Rule:** When doing design system color migrations, batch-replace with `replace_all` per file. Review the count of replacements to catch unexpected matches. This is faster and less error-prone than manual find-and-replace across files.
 
+## 2026-02-11: Suppress CRLF warnings on Windows
+
+**Annoyance:** Every git commit showed "LF will be replaced by CRLF" warnings because files were written with Unix-style line endings on a Windows machine.
+
+**Fix:** `git config --global core.autocrlf true` — tells git to silently handle the conversion. Already applied globally.
+
 ## 2026-02-11: Google Favicons API needs domain overrides for ATS-hosted companies
 
 **Pattern:** Companies whose careers pages are on ATS domains (boards.greenhouse.io, jobs.lever.co) get the ATS favicon instead of the company's. Discord's careers_url is `boards.greenhouse.io/discord` — Google returns Greenhouse's favicon.
