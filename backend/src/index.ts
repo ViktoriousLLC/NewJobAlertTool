@@ -12,9 +12,15 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 // Middleware
+const allowedOrigins = [
+  process.env.FRONTEND_URL || "http://localhost:3000",
+  // Also allow www variant for Vercel domain redirect
+  (process.env.FRONTEND_URL || "").replace("https://", "https://www."),
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: allowedOrigins,
   })
 );
 app.use(express.json());
