@@ -36,13 +36,11 @@ export default function LoginPage() {
       <div className="bg-white rounded-xl border border-stone-200 p-8 shadow-sm max-w-md w-full">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 bg-[var(--brand)] rounded-lg flex items-center justify-center">
-            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-            </svg>
+            <span className="text-white font-bold text-sm">PM</span>
           </div>
           <div>
             <h1 className="text-xl font-bold text-stone-800">Sign In</h1>
-            <p className="text-sm text-stone-500">New Job Alert Tool</p>
+            <p className="text-sm text-stone-500">NewPMJobs.com</p>
           </div>
         </div>
 

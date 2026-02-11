@@ -28,7 +28,7 @@ export default function AuthNav() {
       </span>
       <button
         onClick={handleSignOut}
-        className="text-sm text-stone-400 hover:text-stone-700 transition-colors"
+        className="border border-stone-300 text-stone-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-stone-700 hover:text-white hover:border-stone-700 transition-all"
       >
         Sign Out
       </button>
