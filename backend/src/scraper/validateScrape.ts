@@ -1,5 +1,42 @@
 import { ScrapedJob, PM_KEYWORDS } from "./scraper";
 
+/**
+ * Titles containing these words are NOT PM roles, even if they match a PM keyword.
+ * Exception: if the title explicitly contains "product manager", exclusions don't apply
+ * (e.g., "Engineering Product Manager" is a valid PM role).
+ */
+const PM_TITLE_EXCLUSIONS = [
+  "product design",
+  "product designer",
+  "product marketing",
+  "product analyst",
+  "product counsel",
+  "product counsel",
+  "product support",
+  "product operations",
+  "product engineer",
+  "design manager",
+  "ux manager",
+  "research manager",
+  "marketing manager",
+  "data product",
+];
+
+function isPMTitle(title: string): boolean {
+  const lower = title.toLowerCase();
+  const matchesKeyword = PM_KEYWORDS.some((kw) => lower.includes(kw));
+  if (!matchesKeyword) return false;
+
+  // If title explicitly contains "product manager" or "product lead", always include
+  if (lower.includes("product manager") || lower.includes("product lead")) {
+    return true;
+  }
+
+  // Otherwise check exclusions (catches "Head of Product Design", "VP Product Marketing", etc.)
+  const excluded = PM_TITLE_EXCLUSIONS.some((ex) => lower.includes(ex));
+  return !excluded;
+}
+
 export interface ValidationResult {
   isValid: boolean;
   warnings: string[];
@@ -36,11 +73,8 @@ export function validateScrapeResults(
     };
   }
 
-  // Filter out non-PM jobs
-  const pmJobs = jobs.filter((job) => {
-    const lowerTitle = job.title.toLowerCase();
-    return PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
-  });
+  // Filter out non-PM jobs (with exclusion logic for design/marketing roles)
+  const pmJobs = jobs.filter((job) => isPMTitle(job.title));
 
   const nonPmCount = jobs.length - pmJobs.length;
   if (nonPmCount > 0) {

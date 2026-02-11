@@ -1,9 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
+
+const EXAMPLE_COMPANIES = [
+  { name: "Spotify", url: "https://jobs.lever.co/spotify" },
+  { name: "Cloudflare", url: "https://jobs.lever.co/cloudflare" },
+  { name: "Cisco", url: "https://careers.cisco.com" },
+  { name: "Shopify", url: "https://www.shopify.com/careers" },
+  { name: "Databricks", url: "https://jobs.lever.co/databricks" },
+  { name: "Coinbase", url: "https://boards.greenhouse.io/coinbase" },
+  { name: "Square", url: "https://boards.greenhouse.io/squareup" },
+  { name: "Notion", url: "https://jobs.lever.co/notion" },
+];
+
+const SCRAPE_STEPS = [
+  { label: "Detecting platform...", duration: 4000 },
+  { label: "Scanning job listings...", duration: 25000 },
+  { label: "Filtering PM roles...", duration: 8000 },
+  { label: "Validating results...", duration: 5000 },
+];
 
 export default function AddCompany() {
   const router = useRouter();
@@ -11,6 +29,36 @@ export default function AddCompany() {
   const [careersUrl, setCareersUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [currentStep, setCurrentStep] = useState(-1);
+  const stepTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const [example] = useState(() =>
+    EXAMPLE_COMPANIES[Math.floor(Math.random() * EXAMPLE_COMPANIES.length)]
+  );
+
+  // Advance through steps on timed intervals while loading
+  useEffect(() => {
+    if (!loading) {
+      setCurrentStep(-1);
+      stepTimers.current.forEach(clearTimeout);
+      stepTimers.current = [];
+      return;
+    }
+
+    // Start step 0 immediately
+    setCurrentStep(0);
+
+    let elapsed = 0;
+    for (let i = 1; i < SCRAPE_STEPS.length; i++) {
+      elapsed += SCRAPE_STEPS[i - 1].duration;
+      const timer = setTimeout(() => setCurrentStep(i), elapsed);
+      stepTimers.current.push(timer);
+    }
+
+    return () => {
+      stepTimers.current.forEach(clearTimeout);
+      stepTimers.current = [];
+    };
+  }, [loading]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -36,7 +84,6 @@ export default function AddCompany() {
           `Warning: ${company.total_product_jobs} product jobs were found. This is a lot — the initial baseline has been saved. Continue?`
         );
         if (!proceed) {
-          // Delete the company if user cancels
           await apiFetch(`/api/companies/${company.id}`, {
             method: "DELETE",
           });
@@ -90,10 +137,11 @@ export default function AddCompany() {
               id="name"
               type="text"
               required
+              disabled={loading}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Roblox"
-              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-stone-50 text-stone-900 placeholder-stone-400"
+              placeholder={`e.g. ${example.name}`}
+              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-stone-50 text-stone-900 placeholder-stone-400 disabled:opacity-60"
             />
           </div>
 
@@ -108,13 +156,14 @@ export default function AddCompany() {
               id="url"
               type="url"
               required
+              disabled={loading}
               value={careersUrl}
               onChange={(e) => setCareersUrl(e.target.value)}
-              placeholder="e.g. https://careers.roblox.com/jobs"
-              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-stone-50 text-stone-900 placeholder-stone-400"
+              placeholder={`e.g. ${example.url}`}
+              className="w-full px-4 py-3 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--brand)] focus:border-transparent bg-stone-50 text-stone-900 placeholder-stone-400 disabled:opacity-60"
             />
             <p className="mt-2 text-xs text-stone-500">
-              Enter the URL of the company's careers page that lists job openings
+              Enter the URL of the company&apos;s careers page that lists job openings
             </p>
           </div>
 
@@ -127,40 +176,70 @@ export default function AddCompany() {
             </div>
           )}
 
-          <div className="flex gap-3 pt-2">
-            <button
-              type="submit"
-              disabled={loading}
-              className="flex-1 bg-[var(--brand)] text-white px-6 py-3 rounded-lg font-semibold hover:bg-[var(--brand-hover)] transition-all shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  Scraping...
-                </>
-              ) : (
-                "Add Company"
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() => router.push("/")}
-              className="px-6 py-3 rounded-lg font-medium border border-stone-200 text-stone-700 hover:bg-stone-50 transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
+          {!loading && (
+            <div className="flex gap-3 pt-2">
+              <button
+                type="submit"
+                className="flex-1 bg-[var(--brand)] text-white px-6 py-3 rounded-lg font-semibold hover:bg-[var(--brand-hover)] transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2"
+              >
+                Add Company
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push("/")}
+                className="px-6 py-3 rounded-lg font-medium border border-stone-200 text-stone-700 hover:bg-stone-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
 
           {loading && (
-            <div className="bg-[var(--brand)]/10 border border-[var(--brand)]/20 rounded-lg p-4">
-              <p className="text-sm text-[var(--brand)] flex items-center gap-2">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Running initial scrape — this may take up to a minute...
+            <div className="border border-stone-200 rounded-lg p-5 space-y-3">
+              {SCRAPE_STEPS.map((step, i) => {
+                const isActive = i === currentStep;
+                const isDone = i < currentStep;
+                const isPending = i > currentStep;
+
+                return (
+                  <div
+                    key={i}
+                    className={`flex items-center gap-3 transition-all duration-300 ${
+                      isPending ? "opacity-30" : "opacity-100"
+                    }`}
+                  >
+                    {isDone ? (
+                      <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+                        <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                        </svg>
+                      </div>
+                    ) : isActive ? (
+                      <div className="w-6 h-6 flex items-center justify-center shrink-0">
+                        <svg className="animate-spin h-5 w-5 text-[var(--brand)]" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                      </div>
+                    ) : (
+                      <div className="w-6 h-6 rounded-full border-2 border-stone-200 shrink-0" />
+                    )}
+                    <span
+                      className={`text-sm ${
+                        isActive
+                          ? "text-stone-800 font-medium"
+                          : isDone
+                          ? "text-green-700"
+                          : "text-stone-400"
+                      }`}
+                    >
+                      {isDone ? step.label.replace("...", "") : step.label}
+                    </span>
+                  </div>
+                );
+              })}
+              <p className="text-xs text-stone-400 pt-2 border-t border-stone-100 mt-3">
+                This usually takes 30–60 seconds
               </p>
             </div>
           )}
