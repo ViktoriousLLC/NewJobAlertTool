@@ -134,13 +134,16 @@ export default function Dashboard() {
             onClick={() => router.push(`/company/${company.id}`)}
             className="group relative bg-white rounded-xl border border-stone-200 p-5 hover:shadow-md hover:border-[var(--brand)]/30 transition-all cursor-pointer flex flex-col items-center text-center h-[180px] justify-between"
           >
-            {/* Action buttons — top right, hover only */}
-            <div className="flex justify-end w-full h-5 gap-1">
+            {/* Action buttons — top right, hover only. The wrapper stops propagation
+                so any click in this zone never navigates to the detail page. */}
+            <div
+              className="flex justify-end w-full gap-1"
+              onClick={(e) => e.stopPropagation()}
+            >
               {company.last_check_status?.startsWith("error") && (
                 <a
                   href={`mailto:feedback@newpmjobs.com?subject=Issue with ${encodeURIComponent(company.name)}&body=Company: ${encodeURIComponent(company.name)}%0AURL: ${encodeURIComponent(company.careers_url)}%0A%0ADescribe the issue:%0A`}
-                  onClick={(e) => e.stopPropagation()}
-                  className="text-amber-400 hover:text-amber-600 transition-all p-1 rounded-md hover:bg-amber-50 opacity-0 group-hover:opacity-100"
+                  className="text-amber-400 hover:text-amber-600 transition-all p-2 -m-1 rounded-md hover:bg-amber-50 opacity-0 group-hover:opacity-100"
                   title="Report issue"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -149,11 +152,8 @@ export default function Dashboard() {
                 </a>
               )}
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteCompany(company.id, company.name);
-                }}
-                className="text-stone-300 hover:text-red-500 transition-all p-1 rounded-md hover:bg-red-50 opacity-0 group-hover:opacity-100"
+                onClick={() => deleteCompany(company.id, company.name)}
+                className="text-stone-300 hover:text-red-500 transition-all p-2 -m-1 rounded-md hover:bg-red-50 opacity-0 group-hover:opacity-100"
                 title="Delete company"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
