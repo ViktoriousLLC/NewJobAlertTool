@@ -1,15 +1,14 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f5f3f0;
-  --background-to: #ede9f6;
-  --foreground: #292524;
-  --brand: #7c6caa;
-  --brand-hover: #6b5c96;
+  --background: #FBFBFC;
+  --foreground: #1A1A2E;
+  --brand: #0EA5E9;
+  --brand-hover: #0284C7;
   --badge-bg: #b2dfdb;
   --badge-text: #00695c;
-  --status-ok: #81c784;
-  --status-error: #e57373;
+  --status-ok: #16874D;
+  --status-error: #A14B38;
   --status-neutral: #bdbdbd;
 }
 
@@ -23,7 +22,7 @@
 }
 
 body {
-  background: linear-gradient(135deg, var(--background) 0%, var(--background-to) 100%);
+  background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
   min-height: 100vh;
@@ -36,4 +35,9 @@ body {
 
 .animate-fade-in {
   animation: fade-in 0.3s ease-out;
+}
+
+@keyframes card-enter {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
 }
