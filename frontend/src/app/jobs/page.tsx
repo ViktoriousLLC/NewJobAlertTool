@@ -5,29 +5,17 @@ import { useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { isUSLocation, JobLevel, LEVEL_LABELS, LEVEL_COLORS, ALL_LEVELS } from "@/lib/jobFilters";
 
-interface Job {
+interface ApiJob {
   id: string;
+  company_id: string;
+  company_name: string;
+  careers_url: string;
   job_title: string;
   job_location: string | null;
   job_url_path: string;
   first_seen_at: string;
   is_baseline: boolean;
   job_level?: string;
-}
-
-interface CompanyDetail {
-  id: string;
-  name: string;
-  careers_url: string;
-  last_checked_at: string | null;
-  last_check_status: string | null;
-  total_product_jobs: number;
-  jobs: Job[];
-}
-
-interface CompanySummary {
-  id: string;
-  name: string;
 }
 
 interface CompTier {
@@ -86,50 +74,49 @@ function AllJobsPage() {
   useEffect(() => {
     async function fetchAllJobs() {
       try {
-        const [companiesRes, favoritesRes] = await Promise.all([
-          apiFetch("/api/companies"),
+        // Single /api/jobs call replaces N+1 company detail fetches
+        const fetches: Promise<Response>[] = [
+          apiFetch("/api/jobs"),
           apiFetch("/api/favorites"),
-        ]);
+        ];
 
-        const companies: CompanySummary[] = await companiesRes.json();
+        // Fetch comp data in parallel if starred mode
+        const isStarred = searchParams.get("filter") === "starred";
+        if (isStarred) {
+          fetches.push(apiFetch("/api/compensation"));
+        }
+
+        const responses = await Promise.all(fetches);
+
+        const apiJobs: ApiJob[] = await responses[0].json();
 
         try {
-          const favIds: string[] = await favoritesRes.json();
+          const favIds: string[] = await responses[1].json();
           setFavorites(new Set(favIds));
         } catch {
           // ignore
         }
 
-        // Fetch each company's detail in parallel
-        const details = await Promise.all(
-          companies.map(async (c) => {
-            try {
-              const r = await apiFetch(`/api/companies/${c.id}`);
-              if (!r.ok) return null;
-              return (await r.json()) as CompanyDetail;
-            } catch {
-              return null;
-            }
-          })
-        );
-
-        // Flatten into a single list
-        const flat: FlatJob[] = [];
-        for (const detail of details) {
-          if (!detail) continue;
-          for (const job of detail.jobs) {
-            flat.push({
-              id: job.id,
-              companyName: detail.name,
-              careersUrl: detail.careers_url,
-              jobTitle: job.job_title,
-              jobLocation: job.job_location,
-              jobUrlPath: job.job_url_path,
-              firstSeenAt: job.first_seen_at,
-              jobLevel: (job.job_level || "early") as JobLevel,
-            });
+        if (isStarred && responses[2]) {
+          try {
+            const data = await responses[2].json();
+            setCompData(data || {});
+          } catch {
+            // No comp data — that's fine
           }
         }
+
+        // Map API response to FlatJob format
+        const flat: FlatJob[] = apiJobs.map((j) => ({
+          id: j.id,
+          companyName: j.company_name,
+          careersUrl: j.careers_url,
+          jobTitle: j.job_title,
+          jobLocation: j.job_location,
+          jobUrlPath: j.job_url_path,
+          firstSeenAt: j.first_seen_at,
+          jobLevel: (j.job_level || "early") as JobLevel,
+        }));
 
         // Default sort by company name, then newest first
         flat.sort((a, b) => {
@@ -139,19 +126,6 @@ function AllJobsPage() {
         });
 
         setJobs(flat);
-
-        // Fetch comp data for starred mode
-        if (searchParams.get("filter") === "starred") {
-          try {
-            const compRes = await apiFetch("/api/compensation");
-            if (compRes.ok) {
-              const data = await compRes.json();
-              setCompData(data || {});
-            }
-          } catch {
-            // No comp data — that's fine
-          }
-        }
       } catch (err) {
         console.error("Failed to fetch jobs:", err);
       } finally {
