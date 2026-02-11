@@ -10,16 +10,16 @@ export async function apiFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  // Try getSession first, then fall back to getUser + refreshSession
-  let {
-    data: { session },
-  } = await supabase.auth.getSession();
+  // getUser() reliably reads from cookies and populates the session in memory
+  const { data: { user } } = await supabase.auth.getUser();
 
-  if (!session) {
-    // Session not in memory — try refreshing from cookies
-    const { data } = await supabase.auth.refreshSession();
-    session = data.session;
+  if (!user) {
+    window.location.href = "/login";
+    return new Promise(() => {});
   }
+
+  // After getUser(), the session should be in memory
+  const { data: { session } } = await supabase.auth.getSession();
 
   if (!session) {
     window.location.href = "/login";
@@ -35,13 +35,6 @@ export async function apiFetch(
   });
 
   if (res.status === 401) {
-    // Token may have expired — try one refresh
-    const { data } = await supabase.auth.refreshSession();
-    if (data.session) {
-      headers.set("Authorization", `Bearer ${data.session.access_token}`);
-      const retry = await fetch(`${API_URL}${path}`, { ...options, headers });
-      if (retry.status !== 401) return retry;
-    }
     window.location.href = "/login";
     return new Promise(() => {});
   }
