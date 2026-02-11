@@ -1,39 +1,36 @@
 import { ScrapedJob, PM_KEYWORDS } from "./scraper";
 
 /**
- * Titles containing these words are NOT PM roles, even if they match a PM keyword.
- * Exception: if the title explicitly contains "product manager", exclusions don't apply
- * (e.g., "Engineering Product Manager" is a valid PM role).
+ * If a title contains ANY of these words, it is NOT a PM role — no exceptions.
+ * This catches engineering, design, marketing, and other roles that happen
+ * to contain PM keywords like "product manager" or "head of product".
  */
-const PM_TITLE_EXCLUSIONS = [
-  "product design",
-  "product designer",
-  "product marketing",
-  "product analyst",
-  "product counsel",
-  "product counsel",
-  "product support",
-  "product operations",
-  "product engineer",
-  "design manager",
-  "ux manager",
-  "research manager",
-  "marketing manager",
-  "data product",
+const HARD_EXCLUSIONS = [
+  "engineering",
+  "engineer",
+  "design",
+  "designer",
+  "marketing",
+  "analyst",
+  "counsel",
+  "support",
+  "operations",
+  "ux ",
+  "research",
+  "data ",
+  "security",
+  "technical program",
 ];
 
 function isPMTitle(title: string): boolean {
   const lower = title.toLowerCase();
+
+  // Must match at least one PM keyword
   const matchesKeyword = PM_KEYWORDS.some((kw) => lower.includes(kw));
   if (!matchesKeyword) return false;
 
-  // If title explicitly contains "product manager" or "product lead", always include
-  if (lower.includes("product manager") || lower.includes("product lead")) {
-    return true;
-  }
-
-  // Otherwise check exclusions (catches "Head of Product Design", "VP Product Marketing", etc.)
-  const excluded = PM_TITLE_EXCLUSIONS.some((ex) => lower.includes(ex));
+  // Hard exclusions — if any of these words appear, reject regardless
+  const excluded = HARD_EXCLUSIONS.some((ex) => lower.includes(ex));
   return !excluded;
 }
 
