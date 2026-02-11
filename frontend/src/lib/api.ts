@@ -8,33 +8,51 @@ export async function apiFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  // Get access token from server-side route (reads session from cookies)
-  const tokenRes = await fetch("/api/auth/token");
+  console.log("[apiFetch] starting for path:", path);
+  console.log("[apiFetch] API_URL:", API_URL);
 
-  if (!tokenRes.ok) {
-    window.location.href = "/login";
-    return new Promise(() => {});
+  try {
+    // Get access token from server-side route (reads session from cookies)
+    const tokenRes = await fetch("/api/auth/token");
+    console.log("[apiFetch] token response status:", tokenRes.status);
+
+    if (!tokenRes.ok) {
+      console.log("[apiFetch] token not ok, redirecting to login");
+      window.location.href = "/login";
+      return new Promise(() => {});
+    }
+
+    const tokenData = await tokenRes.json();
+    console.log("[apiFetch] got token:", tokenData.access_token ? "yes (length: " + tokenData.access_token.length + ")" : "null");
+
+    if (!tokenData.access_token) {
+      console.log("[apiFetch] no access_token, redirecting to login");
+      window.location.href = "/login";
+      return new Promise(() => {});
+    }
+
+    const headers = new Headers(options.headers);
+    headers.set("Authorization", `Bearer ${tokenData.access_token}`);
+
+    const fullUrl = `${API_URL}${path}`;
+    console.log("[apiFetch] fetching:", fullUrl);
+
+    const res = await fetch(fullUrl, {
+      ...options,
+      headers,
+    });
+
+    console.log("[apiFetch] API response status:", res.status);
+
+    if (res.status === 401) {
+      console.log("[apiFetch] got 401, redirecting to login");
+      window.location.href = "/login";
+      return new Promise(() => {});
+    }
+
+    return res;
+  } catch (err) {
+    console.error("[apiFetch] error:", err);
+    throw err;
   }
-
-  const { access_token } = await tokenRes.json();
-
-  if (!access_token) {
-    window.location.href = "/login";
-    return new Promise(() => {});
-  }
-
-  const headers = new Headers(options.headers);
-  headers.set("Authorization", `Bearer ${access_token}`);
-
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers,
-  });
-
-  if (res.status === 401) {
-    window.location.href = "/login";
-    return new Promise(() => {});
-  }
-
-  return res;
 }
