@@ -1,10 +1,12 @@
 import { Request, Response, NextFunction } from "express";
 import { createClient } from "@supabase/supabase-js";
+import jwt from "jsonwebtoken";
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY!;
+const jwtSecret = process.env.SUPABASE_JWT_SECRET;
 
-// Separate client using anon key for verifying user JWTs
+// Separate client using anon key for verifying user JWTs (fallback only)
 const authClient = createClient(supabaseUrl, supabaseAnonKey);
 
 // Extend Express Request to include userId
@@ -30,6 +32,25 @@ export async function requireAuth(
 
   const token = authHeader.slice(7);
 
+  // Try local JWT verification first (no network call, ~0ms)
+  if (jwtSecret) {
+    try {
+      const payload = jwt.verify(token, jwtSecret, {
+        algorithms: ["HS256"],
+      }) as jwt.JwtPayload;
+
+      if (payload.sub) {
+        req.userId = payload.sub;
+        next();
+        return;
+      }
+    } catch {
+      // Local verification failed — fall back to Supabase API call
+      console.warn("Local JWT verification failed, falling back to Supabase getUser()");
+    }
+  }
+
+  // Fallback: verify via Supabase API (~50-150ms network call)
   const {
     data: { user },
     error,

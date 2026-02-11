@@ -25,10 +25,13 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  // Refresh the session (important for keeping tokens alive)
+  // Check session from local cookie (no network call to Supabase)
+  // Safe: backend still verifies JWT on every API request
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  const user = session?.user ?? null;
 
   // If authenticated and on login page, redirect to dashboard
   if (user && request.nextUrl.pathname.startsWith("/login")) {

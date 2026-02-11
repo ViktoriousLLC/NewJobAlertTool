@@ -88,3 +88,25 @@ CREATE POLICY "Users can insert their own issues"
   ON scrape_issues FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users can view their own issues"
   ON scrape_issues FOR SELECT USING (auth.uid() = user_id);
+
+-- =============================================================================
+-- Migration: Dashboard job stats RPC function (performance optimization)
+-- =============================================================================
+
+-- Single aggregation query replaces 2 sequential queries on dashboard load
+CREATE OR REPLACE FUNCTION get_company_job_stats(company_ids uuid[])
+RETURNS TABLE (
+  company_id uuid,
+  new_jobs_today bigint,
+  latest_new_job_at timestamptz
+)
+LANGUAGE sql STABLE AS $$
+  SELECT
+    sj.company_id,
+    COUNT(*) FILTER (WHERE sj.first_seen_at >= CURRENT_DATE) AS new_jobs_today,
+    MAX(sj.first_seen_at) AS latest_new_job_at
+  FROM seen_jobs sj
+  WHERE sj.company_id = ANY(company_ids)
+    AND sj.is_baseline = false
+  GROUP BY sj.company_id;
+$$;

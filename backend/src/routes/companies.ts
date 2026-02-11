@@ -18,43 +18,28 @@ router.get("/", async (req: Request, res: Response) => {
 
     if (error) throw error;
 
-    // Get new job counts (found today, non-baseline) for each company
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
     const companyIds = (companies || []).map((c) => c.id);
 
-    const { data: newJobCounts } = await supabase
-      .from("seen_jobs")
-      .select("company_id")
-      .in("company_id", companyIds)
-      .eq("is_baseline", false)
-      .gte("first_seen_at", today.toISOString());
+    // Single RPC call replaces 2 sequential queries for job stats
+    const statsMap = new Map<string, { new_jobs_today: number; latest_new_job_at: string | null }>();
 
-    const countMap = new Map<string, number>();
-    for (const row of newJobCounts || []) {
-      countMap.set(row.company_id, (countMap.get(row.company_id) || 0) + 1);
-    }
+    if (companyIds.length > 0) {
+      const { data: stats } = await supabase.rpc("get_company_job_stats", {
+        company_ids: companyIds,
+      });
 
-    // Get latest new job timestamp per company (most recent non-baseline job)
-    const { data: latestNewJobs } = await supabase
-      .from("seen_jobs")
-      .select("company_id, first_seen_at")
-      .in("company_id", companyIds)
-      .eq("is_baseline", false)
-      .order("first_seen_at", { ascending: false });
-
-    const latestNewJobMap = new Map<string, string>();
-    for (const row of latestNewJobs || []) {
-      if (!latestNewJobMap.has(row.company_id)) {
-        latestNewJobMap.set(row.company_id, row.first_seen_at);
+      for (const row of stats || []) {
+        statsMap.set(row.company_id, {
+          new_jobs_today: Number(row.new_jobs_today) || 0,
+          latest_new_job_at: row.latest_new_job_at,
+        });
       }
     }
 
     const result = (companies || []).map((c) => ({
       ...c,
-      new_jobs_today: countMap.get(c.id) || 0,
-      latest_new_job_at: latestNewJobMap.get(c.id) || null,
+      new_jobs_today: statsMap.get(c.id)?.new_jobs_today || 0,
+      latest_new_job_at: statsMap.get(c.id)?.latest_new_job_at || null,
     }));
 
     res.json(result);
