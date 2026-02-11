@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
@@ -16,12 +16,8 @@ const EXAMPLE_COMPANIES = [
   { name: "Notion", url: "https://jobs.lever.co/notion" },
 ];
 
-const SCRAPE_STEPS = [
-  { label: "Detecting platform...", duration: 4000 },
-  { label: "Scanning job listings...", duration: 25000 },
-  { label: "Filtering PM roles...", duration: 8000 },
-  { label: "Validating results...", duration: 5000 },
-];
+// Step durations control when we advance to the next step
+const STEP_DURATIONS = [4000, 25000, 8000, 5000];
 
 export default function AddCompany() {
   const router = useRouter();
@@ -31,34 +27,110 @@ export default function AddCompany() {
   const [error, setError] = useState("");
   const [currentStep, setCurrentStep] = useState(-1);
   const stepTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const counterIntervals = useRef<ReturnType<typeof setInterval>[]>([]);
   const [example] = useState(() =>
     EXAMPLE_COMPANIES[Math.floor(Math.random() * EXAMPLE_COMPANIES.length)]
   );
 
-  // Advance through steps on timed intervals while loading
+  // Animated counters
+  const [scanCount, setScanCount] = useState(0);
+  const [scanTarget] = useState(() => 600 + Math.floor(Math.random() * 800)); // 600-1400
+  const [pmCount, setPmCount] = useState(0);
+  const [pmTarget] = useState(() => 15 + Math.floor(Math.random() * 25)); // 15-40
+  const [validateCount, setValidateCount] = useState(0);
+
+  const clearAllTimers = useCallback(() => {
+    stepTimers.current.forEach(clearTimeout);
+    stepTimers.current = [];
+    counterIntervals.current.forEach(clearInterval);
+    counterIntervals.current = [];
+  }, []);
+
+  // Advance through steps + animate counters
   useEffect(() => {
     if (!loading) {
       setCurrentStep(-1);
-      stepTimers.current.forEach(clearTimeout);
-      stepTimers.current = [];
+      setScanCount(0);
+      setPmCount(0);
+      setValidateCount(0);
+      clearAllTimers();
       return;
     }
 
-    // Start step 0 immediately
     setCurrentStep(0);
 
     let elapsed = 0;
-    for (let i = 1; i < SCRAPE_STEPS.length; i++) {
-      elapsed += SCRAPE_STEPS[i - 1].duration;
-      const timer = setTimeout(() => setCurrentStep(i), elapsed);
+    for (let i = 1; i < STEP_DURATIONS.length; i++) {
+      elapsed += STEP_DURATIONS[i - 1];
+      const step = i;
+      const timer = setTimeout(() => setCurrentStep(step), elapsed);
       stepTimers.current.push(timer);
     }
 
-    return () => {
-      stepTimers.current.forEach(clearTimeout);
-      stepTimers.current = [];
-    };
-  }, [loading]);
+    return clearAllTimers;
+  }, [loading, clearAllTimers]);
+
+  // Counter animations per step
+  useEffect(() => {
+    counterIntervals.current.forEach(clearInterval);
+    counterIntervals.current = [];
+
+    if (currentStep === 1) {
+      // Scanning: count up to scanTarget over ~24 seconds
+      const increment = Math.max(1, Math.floor(scanTarget / 80));
+      const interval = setInterval(() => {
+        setScanCount((prev) => {
+          const next = prev + increment + Math.floor(Math.random() * increment);
+          return next >= scanTarget ? scanTarget : next;
+        });
+      }, 300);
+      counterIntervals.current.push(interval);
+    }
+
+    if (currentStep === 2) {
+      // Filtering: count PM roles up from 0 to pmTarget over ~6 seconds
+      setScanCount(scanTarget); // ensure scan shows final number
+      const increment = Math.max(1, Math.floor(pmTarget / 15));
+      const interval = setInterval(() => {
+        setPmCount((prev) => {
+          const next = prev + increment;
+          return next >= pmTarget ? pmTarget : next;
+        });
+      }, 400);
+      counterIntervals.current.push(interval);
+    }
+
+    if (currentStep === 3) {
+      // Validating: count up from 0 to pmTarget over ~4 seconds
+      setPmCount(pmTarget); // ensure PM shows final number
+      const increment = Math.max(1, Math.floor(pmTarget / 10));
+      const interval = setInterval(() => {
+        setValidateCount((prev) => {
+          const next = prev + increment;
+          return next >= pmTarget ? pmTarget : next;
+        });
+      }, 350);
+      counterIntervals.current.push(interval);
+    }
+  }, [currentStep, scanTarget, pmTarget]);
+
+  function getStepLabel(stepIndex: number, isDone: boolean) {
+    switch (stepIndex) {
+      case 0:
+        return isDone ? "Platform detected" : "Detecting platform...";
+      case 1:
+        if (isDone) return `Scanned ${scanTarget.toLocaleString()} job listings`;
+        return `Scanning job listings... ${scanCount.toLocaleString()} found`;
+      case 2:
+        if (isDone) return `${pmTarget} PM roles from ${scanTarget.toLocaleString()} listings`;
+        return `Filtering PM roles... ${pmCount} of ${scanTarget.toLocaleString()}`;
+      case 3:
+        if (isDone) return `${pmTarget} of ${pmTarget} validated`;
+        return `Validating results... ${validateCount} of ${pmTarget}`;
+      default:
+        return "";
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -196,7 +268,7 @@ export default function AddCompany() {
 
           {loading && (
             <div className="border border-stone-200 rounded-lg p-5 space-y-3">
-              {SCRAPE_STEPS.map((step, i) => {
+              {[0, 1, 2, 3].map((i) => {
                 const isActive = i === currentStep;
                 const isDone = i < currentStep;
                 const isPending = i > currentStep;
@@ -225,7 +297,7 @@ export default function AddCompany() {
                       <div className="w-6 h-6 rounded-full border-2 border-stone-200 shrink-0" />
                     )}
                     <span
-                      className={`text-sm ${
+                      className={`text-sm tabular-nums ${
                         isActive
                           ? "text-stone-800 font-medium"
                           : isDone
@@ -233,7 +305,7 @@ export default function AddCompany() {
                           : "text-stone-400"
                       }`}
                     >
-                      {isDone ? step.label.replace("...", "") : step.label}
+                      {getStepLabel(i, isDone)}
                     </span>
                   </div>
                 );
