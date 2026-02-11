@@ -1,5 +1,6 @@
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
+import { validateScrapeResults } from "../scraper/validateScrape";
 import { sendAlert } from "../email/sendAlert";
 
 function delay(ms: number) {
@@ -29,8 +30,19 @@ export async function runDailyCheck(): Promise<void> {
   for (const company of companies) {
     try {
       console.log(`Scraping: ${company.name} (${company.careers_url})`);
-      const jobs = await scrapeCompanyCareers(company.careers_url);
-      console.log(`Found ${jobs.length} product jobs for ${company.name}`);
+      const rawJobs = await scrapeCompanyCareers(
+        company.careers_url,
+        company.platform_type || null,
+        company.platform_config || null
+      );
+
+      // Run quality validation to filter non-PM jobs
+      const validation = validateScrapeResults(rawJobs, company.name);
+      const jobs = validation.filteredJobs;
+      if (validation.warnings.length > 0) {
+        console.log(`Quality warnings for ${company.name}:`, validation.warnings);
+      }
+      console.log(`Found ${jobs.length} product jobs for ${company.name} (${rawJobs.length} raw)`);
 
       // Get existing seen jobs for this company
       const { data: existingJobs } = await supabase
@@ -65,11 +77,14 @@ export async function runDailyCheck(): Promise<void> {
       }
 
       // Update company status
+      const checkStatus = validation.warnings.length > 0
+        ? `success (quality: ${validation.qualityScore}/100)`
+        : "success";
       await supabase
         .from("companies")
         .update({
           last_checked_at: new Date().toISOString(),
-          last_check_status: "success",
+          last_check_status: checkStatus,
           total_product_jobs: jobs.length,
         })
         .eq("id", company.id);

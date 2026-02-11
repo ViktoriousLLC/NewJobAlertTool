@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import companiesRouter from "./routes/companies";
 import favoritesRouter from "./routes/favorites";
+import issuesRouter from "./routes/issues";
 import { runDailyCheck } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 
@@ -36,6 +37,7 @@ app.use((_req, res, next) => {
 // Routes (protected by auth)
 app.use("/api/companies", requireAuth, companiesRouter);
 app.use("/api/favorites", requireAuth, favoritesRouter);
+app.use("/api/issues", requireAuth, issuesRouter);
 
 // Manual trigger for daily check (protected by secret)
 app.get("/api/cron/trigger", async (req, res) => {

@@ -134,8 +134,20 @@ export default function Dashboard() {
             onClick={() => router.push(`/company/${company.id}`)}
             className="group relative bg-white rounded-xl border border-stone-200 p-5 hover:shadow-md hover:border-[var(--brand)]/30 transition-all cursor-pointer flex flex-col items-center text-center h-[180px] justify-between"
           >
-            {/* Delete button — top right, hover only */}
-            <div className="flex justify-end w-full h-5">
+            {/* Action buttons — top right, hover only */}
+            <div className="flex justify-end w-full h-5 gap-1">
+              {company.last_check_status?.startsWith("error") && (
+                <a
+                  href={`mailto:feedback@newpmjobs.com?subject=Issue with ${encodeURIComponent(company.name)}&body=Company: ${encodeURIComponent(company.name)}%0AURL: ${encodeURIComponent(company.careers_url)}%0A%0ADescribe the issue:%0A`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-amber-400 hover:text-amber-600 transition-all p-1 rounded-md hover:bg-amber-50 opacity-0 group-hover:opacity-100"
+                  title="Report issue"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                  </svg>
+                </a>
+              )}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -172,7 +184,7 @@ export default function Dashboard() {
 
             {/* Bottom: status dot + timestamp */}
             <div className="flex items-center gap-1.5 w-full justify-center">
-              {company.last_check_status === "success" ? (
+              {company.last_check_status?.startsWith("success") ? (
                 <span
                   className="w-2 h-2 rounded-full inline-block shrink-0"
                   style={{ backgroundColor: "var(--status-ok)" }}

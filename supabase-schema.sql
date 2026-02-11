@@ -63,3 +63,28 @@ CREATE POLICY "Users see own jobs" ON seen_jobs FOR SELECT USING (
 CREATE POLICY "Users see own favorites" ON favorites FOR SELECT USING (auth.uid() = user_id);
 CREATE POLICY "Users insert own favorites" ON favorites FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users delete own favorites" ON favorites FOR DELETE USING (auth.uid() = user_id);
+
+-- =============================================================================
+-- Migration: Platform detection + scrape issues (run as ALTER on existing DB)
+-- =============================================================================
+
+-- Add platform detection columns to companies
+ALTER TABLE companies
+  ADD COLUMN platform_type text,
+  ADD COLUMN platform_config jsonb DEFAULT '{}';
+
+-- Scrape issue reporting table
+CREATE TABLE scrape_issues (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid REFERENCES companies(id) ON DELETE CASCADE,
+  user_id uuid REFERENCES auth.users(id),
+  issue_type text NOT NULL,
+  description text,
+  created_at timestamptz DEFAULT now()
+);
+
+ALTER TABLE scrape_issues ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can insert their own issues"
+  ON scrape_issues FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can view their own issues"
+  ON scrape_issues FOR SELECT USING (auth.uid() = user_id);

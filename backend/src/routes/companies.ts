@@ -1,6 +1,8 @@
 import { Router, Request, Response } from "express";
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
+import { detectPlatform } from "../scraper/detectPlatform";
+import { validateScrapeResults } from "../scraper/validateScrape";
 
 const router = Router();
 
@@ -143,12 +145,35 @@ router.post("/", async (req: Request, res: Response) => {
       throw insertError || new Error("Failed to insert company");
     }
 
-    // Run initial scrape
+    // Detect ATS platform
+    let platformType: string | null = null;
+    let platformConfig: Record<string, string> = {};
+    try {
+      const detection = await detectPlatform(careers_url);
+      platformType = detection.platformType;
+      platformConfig = detection.platformConfig;
+      console.log(`Platform detected for ${name}: ${platformType} (${detection.confidence})`);
+    } catch (err) {
+      console.error("Platform detection failed:", err);
+    }
+
+    // Run initial scrape (with detected platform info if available)
     let jobs: { title: string; location: string; urlPath: string }[] = [];
     let scrapeStatus = "success";
+    let qualityWarnings: string[] = [];
 
     try {
-      jobs = await scrapeCompanyCareers(careers_url);
+      jobs = await scrapeCompanyCareers(careers_url, platformType, platformConfig);
+
+      // Run quality validation
+      const validation = validateScrapeResults(jobs, name);
+      jobs = validation.filteredJobs; // Use filtered (PM-only) jobs
+      qualityWarnings = validation.warnings;
+
+      if (validation.warnings.length > 0) {
+        console.log(`Quality warnings for ${name}:`, validation.warnings);
+        scrapeStatus = `success (quality: ${validation.qualityScore}/100)`;
+      }
     } catch (err) {
       scrapeStatus = `error: ${err instanceof Error ? err.message : "unknown"}`;
       console.error("Initial scrape failed:", err);
@@ -167,14 +192,22 @@ router.post("/", async (req: Request, res: Response) => {
       );
     }
 
-    // Update company with scrape results
+    // Update company with scrape results + platform info
+    const updateData: Record<string, unknown> = {
+      last_checked_at: new Date().toISOString(),
+      last_check_status: scrapeStatus,
+      total_product_jobs: jobs.length,
+    };
+
+    // Save platform info if columns exist (graceful — won't fail if columns not yet added)
+    if (platformType) {
+      updateData.platform_type = platformType;
+      updateData.platform_config = platformConfig;
+    }
+
     await supabase
       .from("companies")
-      .update({
-        last_checked_at: new Date().toISOString(),
-        last_check_status: scrapeStatus,
-        total_product_jobs: jobs.length,
-      })
+      .update(updateData)
       .eq("id", company.id);
 
     res.json({
@@ -182,6 +215,7 @@ router.post("/", async (req: Request, res: Response) => {
       last_checked_at: new Date().toISOString(),
       last_check_status: scrapeStatus,
       total_product_jobs: jobs.length,
+      platform_type: platformType,
     });
   } catch (err) {
     console.error("POST /api/companies error:", err);

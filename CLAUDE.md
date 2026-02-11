@@ -62,6 +62,12 @@ POST   /api/companies                    — Add company (triggers initial scrap
 DELETE /api/companies/{id}               — Delete company (cascades to jobs)
 ```
 
+### Scrape Issues
+```
+POST   /api/issues                       — Report a scrape issue
+         Body: {"company_id": "uuid", "issue_type": "wrong_jobs|missing_jobs|bad_locations|other", "description": "..."}
+```
+
 ### Scraping
 ```
 GET    /api/cron/trigger                 — Trigger full scrape (requires Authorization: Bearer <CRON_SECRET> header)
@@ -71,8 +77,10 @@ The CRON_SECRET is set in Railway env vars.
 ## Database Schema
 
 ### `companies` table
-- `id` (uuid PK), `name`, `careers_url`, `created_at`, `last_checked_at`, `last_check_status`, `total_product_jobs`, `user_id` (FK → auth.users)
+- `id` (uuid PK), `name`, `careers_url`, `created_at`, `last_checked_at`, `last_check_status`, `total_product_jobs`, `user_id` (FK → auth.users), `platform_type` (text), `platform_config` (jsonb)
 - Index on `user_id`
+- `platform_type`: detected ATS platform (greenhouse, lever, ashby, workday, eightfold, custom_api, generic)
+- `platform_config`: ATS-specific config (e.g., `{ "boardName": "discord" }` for Greenhouse)
 
 ### `seen_jobs` table
 - `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `job_url_path`, `job_title`, `job_location`, `first_seen_at`, `is_baseline`
@@ -80,6 +88,11 @@ The CRON_SECRET is set in Railway env vars.
 - `is_baseline = true` for initial scrape, `false` for newly discovered jobs
 - Non-baseline jobs older than 30 days are auto-cleaned
 - No `user_id` — scoped through company's `user_id`
+
+### `scrape_issues` table
+- `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `user_id` (FK → auth.users), `issue_type` (text), `description` (text), `created_at`
+- RLS: users can insert/view their own issues
+- Issue types: `wrong_jobs`, `missing_jobs`, `bad_locations`, `other`
 
 ## Scraper Architecture (backend/src/scraper/scraper.ts)
 
@@ -96,14 +109,33 @@ The CRON_SECRET is set in Railway env vars.
 | Instacart | Greenhouse helper | `instacart` |
 | Figma | Greenhouse helper | `figma` |
 | Airbnb | Greenhouse helper | `airbnb` |
-| OpenAI | Ashby GraphQL API | ashbyhq.com/openai |
-| Slack | Salesforce Workday API | wd12.myworkdayjobs.com |
+| OpenAI | Ashby GraphQL API (generalized) | ashbyhq.com/openai |
+| Slack | Workday API (generalized) | wd12.myworkdayjobs.com |
 | Stripe | Puppeteer pagination | stripe.com/jobs |
 | Uber | Custom JSON API | uber.com/api |
 | Google | Puppeteer pagination | google.com/careers |
-| Netflix | Custom JSON API | explore.jobs.netflix.net |
+| Netflix | Custom JSON API + PM filter | explore.jobs.netflix.net |
 | PayPal | Eightfold.ai API | paypal.eightfold.ai |
+| *Any Lever* | Lever API (auto-detected) | jobs.lever.co/{handle} |
+| *Any Ashby* | Ashby GraphQL (auto-detected) | jobs.ashbyhq.com/{org} |
+| *Any Workday* | Workday API (auto-detected) | *.myworkdayjobs.com |
 | Others | Generic Puppeteer | Fallback HTML scraper |
+
+### Platform Auto-Detection
+When a new company is added, `detectPlatform(url)` runs to identify the ATS:
+1. **Known custom hostnames** — Atlassian, Stripe, Uber, Google, Netflix → `custom_api`
+2. **Direct ATS URLs** — greenhouse.io, lever.co, ashbyhq.com, myworkdayjobs.com, eightfold.ai
+3. **HTML embed detection** — fetches page HTML and looks for Greenhouse/Lever/Ashby/Workday/Eightfold embed signatures
+4. **Puppeteer fallback** — renders SPA and re-checks for embeds
+5. **Generic** — falls back to Puppeteer scraper
+
+Detected platform is cached in `companies.platform_type` + `companies.platform_config` (jsonb) for daily checks.
+
+### Post-Scrape Quality Validation
+`validateScrapeResults()` runs after every scrape:
+- Filters out non-PM jobs using PM_KEYWORDS
+- Flags zero results, vague locations, duplicates, invalid URLs
+- Returns quality score (0-100) stored in `last_check_status`
 
 ### Stripe scraper notes
 - Puppeteer-based, paginates `stripe.com/jobs/search?skip=0` through `skip=1200`
@@ -123,10 +155,13 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 
 ## Key Files
 
-- `backend/src/scraper/scraper.ts` — All scraper logic
+- `backend/src/scraper/scraper.ts` — All scraper logic (Greenhouse, Lever, Ashby, Workday, Eightfold, custom APIs, generic Puppeteer)
+- `backend/src/scraper/detectPlatform.ts` — ATS platform auto-detection engine
+- `backend/src/scraper/validateScrape.ts` — Post-scrape quality validation
 - `backend/src/jobs/dailyCheck.ts` — Daily cron job logic
-- `backend/src/routes/companies.ts` — API route handlers (user-scoped)
+- `backend/src/routes/companies.ts` — API route handlers (user-scoped, with platform detection + validation)
 - `backend/src/routes/favorites.ts` — Favorites API (user-scoped)
+- `backend/src/routes/issues.ts` — Scrape issue reporting API (user-scoped)
 - `backend/src/middleware/auth.ts` — JWT verification middleware
 - `backend/src/index.ts` — Express server entry point
 - `frontend/src/lib/supabase.ts` — Browser Supabase client (`@supabase/ssr`)

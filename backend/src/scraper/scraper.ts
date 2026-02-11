@@ -252,7 +252,7 @@ async function scrapeAtlassianCareers(): Promise<ScrapedJob[]> {
  * Shared Greenhouse API scraper.
  * Fetches all jobs from a Greenhouse board and filters for PM roles.
  */
-const PM_KEYWORDS = [
+export const PM_KEYWORDS = [
   "product manager",
   "product lead",
   "group product manager",
@@ -488,35 +488,22 @@ async function scrapeStripeCareers(): Promise<ScrapedJob[]> {
 }
 
 /**
- * Slack uses Salesforce's Workday platform.
+ * Workday ATS scraper (used by Slack/Salesforce, etc.)
  * Fetches all jobs via the Workday API and filters for Product Manager roles.
  */
-async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
-  console.log("Slack: Fetching jobs from Salesforce Workday API");
+async function scrapeWorkdayCareers(
+  tenant: string,
+  subdomain: string,
+  boardPath: string,
+  companyLabel: string
+): Promise<ScrapedJob[]> {
+  console.log(`${companyLabel}: Fetching jobs from Workday API (${tenant}.${subdomain}/${boardPath})`);
 
-  const baseUrl = "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/Slack/jobs";
+  const baseUrl = `https://${tenant}.${subdomain}.myworkdayjobs.com/wday/cxs/${tenant}/${boardPath}/jobs`;
   const allJobs: ScrapedJob[] = [];
   let offset = 0;
   const limit = 20;
   let totalJobs = 0;
-
-  // Product Manager keywords to filter by
-  const pmKeywords = [
-    "product manager",
-    "product lead",
-    "group product manager",
-    "senior product manager",
-    "staff product manager",
-    "principal product manager",
-    "director of product",
-    "director, product",
-    "head of product",
-    "vp of product",
-    "vp, product",
-    "vp product",
-    "chief product officer",
-    "chief product",
-  ];
 
   interface WorkdayJob {
     title: string;
@@ -539,7 +526,7 @@ async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
   // Fetches actual location names from the job detail endpoint
   async function fetchJobLocation(externalPath: string): Promise<string> {
     try {
-      const detailUrl = `https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/Slack${externalPath}`;
+      const detailUrl = `https://${tenant}.${subdomain}.myworkdayjobs.com/wday/cxs/${tenant}/${boardPath}${externalPath}`;
       const resp = await fetch(detailUrl, {
         headers: {
           "Accept": "application/json",
@@ -580,7 +567,7 @@ async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
       });
 
       if (!response.ok) {
-        console.log(`Slack: API returned status ${response.status}`);
+        console.log(`${companyLabel}: API returned status ${response.status}`);
         break;
       }
 
@@ -589,10 +576,10 @@ async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
       // Store total from first request
       if (offset === 0) {
         totalJobs = data.total || 0;
-        console.log(`Slack: Total jobs available: ${totalJobs}`);
+        console.log(`${companyLabel}: Total jobs available: ${totalJobs}`);
       }
 
-      console.log(`Slack: Fetched offset=${offset}, got ${data.jobPostings?.length || 0} jobs`);
+      console.log(`${companyLabel}: Fetched offset=${offset}, got ${data.jobPostings?.length || 0} jobs`);
 
       if (!data.jobPostings || data.jobPostings.length === 0) {
         break;
@@ -603,7 +590,7 @@ async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
         if (!job || !job.title) continue;
 
         const lowerTitle = job.title.toLowerCase();
-        const isPM = pmKeywords.some((kw) => lowerTitle.includes(kw));
+        const isPM = PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
 
         if (isPM) {
           pmCandidates.push({
@@ -624,41 +611,58 @@ async function scrapeSlackCareers(): Promise<ScrapedJob[]> {
       // Rate limiting
       await new Promise((r) => setTimeout(r, 300));
     } catch (err) {
-      console.log(`Slack: Error at offset=${offset}:`, err);
+      console.log(`${companyLabel}: Error at offset=${offset}:`, err);
       break;
     }
   }
 
-  // For PM jobs with vague location text (e.g. "2 Locations"), fetch detail for real names
+  // For PM jobs with vague/missing location text, fetch detail for real names
   for (const candidate of pmCandidates) {
     let location = candidate.locationsText;
-    if (/^\d+ Locations?$/i.test(location)) {
-      console.log(`Slack: Fetching detail for "${candidate.title}" (was "${location}")`);
-      location = await fetchJobLocation(candidate.externalPath);
+    const isVague =
+      !location ||
+      location.trim().length === 0 ||
+      /^\d+ Locations?$/i.test(location) ||
+      /^Multiple Locations?$/i.test(location) ||
+      /^Hybrid$/i.test(location) ||
+      /^Remote$/i.test(location.trim()) ||
+      // Single word without comma/space = likely not a real city
+      (!location.includes(",") && !location.includes(" ") && location.length < 20);
+
+    if (isVague) {
+      console.log(`${companyLabel}: Fetching detail for "${candidate.title}" (was "${location || "(empty)"}")`);
+      const detailLocation = await fetchJobLocation(candidate.externalPath);
+      // Only use detail result if it's non-empty; otherwise keep original
+      if (detailLocation) {
+        location = detailLocation;
+      }
       await new Promise((r) => setTimeout(r, 200));
     }
     allJobs.push({
       title: candidate.title,
       location,
-      urlPath: `https://salesforce.wd12.myworkdayjobs.com/Slack${candidate.externalPath}`,
+      urlPath: `https://${tenant}.${subdomain}.myworkdayjobs.com/${boardPath}${candidate.externalPath}`,
     });
   }
 
-  console.log(`Slack: Found ${allJobs.length} Product Manager roles out of ${totalJobs} total jobs`);
+  console.log(`${companyLabel}: Found ${allJobs.length} Product Manager roles out of ${totalJobs} total jobs`);
   return allJobs;
 }
 
 /**
- * OpenAI uses Ashby (jobs.ashbyhq.com/openai).
+ * Ashby ATS scraper (used by OpenAI, etc.)
  * Fetches jobs via GraphQL API and filters for Product Management roles.
  */
-async function scrapeOpenAICareers(): Promise<ScrapedJob[]> {
-  console.log("OpenAI: Fetching jobs from Ashby GraphQL API");
+async function scrapeAshbyCareers(
+  orgName: string,
+  companyLabel: string
+): Promise<ScrapedJob[]> {
+  console.log(`${companyLabel}: Fetching jobs from Ashby GraphQL API (org: ${orgName})`);
 
   const query = {
     operationName: "ApiJobBoardWithTeams",
     variables: {
-      organizationHostedJobsPageName: "openai",
+      organizationHostedJobsPageName: orgName,
     },
     query: `query ApiJobBoardWithTeams($organizationHostedJobsPageName: String!) {
       jobBoard: jobBoardWithTeams(organizationHostedJobsPageName: $organizationHostedJobsPageName) {
@@ -735,7 +739,7 @@ async function scrapeOpenAICareers(): Promise<ScrapedJob[]> {
   const data: AshbyResponse = await response.json();
   const { teams, jobPostings } = data.data.jobBoard;
 
-  console.log(`OpenAI: Found ${jobPostings.length} total jobs across ${teams.length} teams`);
+  console.log(`${companyLabel}: Found ${jobPostings.length} total jobs across ${teams.length} teams`);
 
   // Find Product Management team and related product teams
   const productTeamIds = new Set<string>();
@@ -745,14 +749,14 @@ async function scrapeOpenAICareers(): Promise<ScrapedJob[]> {
     const lowerName = team.name.toLowerCase();
     if (productKeywords.some((kw) => lowerName.includes(kw))) {
       productTeamIds.add(team.id);
-      console.log(`OpenAI: Including team "${team.name}" (${team.id})`);
+      console.log(`${companyLabel}: Including team "${team.name}" (${team.id})`);
     }
   }
 
   // Filter for product team jobs
   const productJobs = jobPostings.filter((job) => productTeamIds.has(job.teamId));
 
-  console.log(`OpenAI: Found ${productJobs.length} product-related jobs`);
+  console.log(`${companyLabel}: Found ${productJobs.length} product-related jobs`);
 
   return productJobs.map((job) => {
     // Combine primary and secondary locations
@@ -766,7 +770,7 @@ async function scrapeOpenAICareers(): Promise<ScrapedJob[]> {
     return {
       title: job.title,
       location: allLocations.join(" | "),
-      urlPath: `https://jobs.ashbyhq.com/openai/${job.id}`,
+      urlPath: `https://jobs.ashbyhq.com/${orgName}/${job.id}`,
     };
   });
 }
@@ -919,8 +923,15 @@ async function scrapeNetflixCareers(careersUrl: string): Promise<ScrapedJob[]> {
     await new Promise((r) => setTimeout(r, 200));
   }
 
-  console.log(`Netflix: Scraped ${allJobs.length} jobs successfully`);
-  return allJobs;
+  // Filter for PM-titled jobs only (the "Product Management" team filter
+  // can include designers, engineers, and analysts)
+  const pmJobs = allJobs.filter((job) => {
+    const lowerTitle = job.title.toLowerCase();
+    return PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
+  });
+
+  console.log(`Netflix: Scraped ${allJobs.length} jobs, ${pmJobs.length} after PM keyword filter`);
+  return pmJobs;
 }
 
 /**
@@ -1020,6 +1031,69 @@ async function scrapeEightfoldCareers(careersUrl: string): Promise<ScrapedJob[]>
 
   console.log(`Eightfold: Found ${allJobs.length} total jobs`);
   return allJobs;
+}
+
+/**
+ * Lever public API scraper (used by Cloudflare, Notion, Databricks, etc.)
+ * Fetches all postings via GET and filters for PM roles.
+ */
+async function scrapeLeverCareers(
+  handle: string,
+  companyLabel: string
+): Promise<ScrapedJob[]> {
+  console.log(`${companyLabel}: Fetching jobs from Lever API (handle: ${handle})`);
+
+  const response = await fetch(
+    `https://api.lever.co/v0/postings/${handle}?mode=json`,
+    {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "application/json",
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`${companyLabel}: Lever API returned ${response.status}`);
+  }
+
+  interface LeverPosting {
+    id: string;
+    text: string;
+    categories: {
+      team?: string;
+      department?: string;
+      location?: string;
+    };
+    hostedUrl: string;
+    workplaceType?: string;
+  }
+
+  const postings: LeverPosting[] = await response.json();
+  console.log(`${companyLabel}: Found ${postings.length} total postings`);
+
+  const pmJobs = postings.filter((posting) => {
+    const lowerTitle = posting.text.toLowerCase();
+    return PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
+  });
+
+  console.log(`${companyLabel}: Found ${pmJobs.length} PM roles after keyword filter`);
+
+  return pmJobs.map((posting) => {
+    let location = posting.categories?.location || "";
+    if (posting.workplaceType) {
+      const workplace = posting.workplaceType.toLowerCase();
+      if (workplace === "remote" && !location.toLowerCase().includes("remote")) {
+        location = location ? `${location} (Remote)` : "Remote";
+      }
+    }
+
+    return {
+      title: posting.text,
+      location,
+      urlPath: posting.hostedUrl,
+    };
+  });
 }
 
 /**
@@ -1242,8 +1316,46 @@ async function scrapeUberCareers(careersUrl: string): Promise<ScrapedJob[]> {
 
 
 export async function scrapeCompanyCareers(
-  careersUrl: string
+  careersUrl: string,
+  platformType?: string | null,
+  platformConfig?: Record<string, string> | null
 ): Promise<ScrapedJob[]> {
+  // Platform-based routing (for detected/cached platforms)
+  if (platformType && platformConfig) {
+    const label = platformConfig.company || platformConfig.boardName || platformConfig.handle || platformConfig.orgName || "Company";
+    switch (platformType) {
+      case "greenhouse":
+        if (platformConfig.boardName) {
+          return scrapeGreenhouseCareers(platformConfig.boardName, label);
+        }
+        break;
+      case "lever":
+        if (platformConfig.handle) {
+          return scrapeLeverCareers(platformConfig.handle, label);
+        }
+        break;
+      case "ashby":
+        if (platformConfig.orgName) {
+          return scrapeAshbyCareers(platformConfig.orgName, label);
+        }
+        break;
+      case "workday":
+        if (platformConfig.tenant && platformConfig.subdomain && platformConfig.boardPath) {
+          return scrapeWorkdayCareers(platformConfig.tenant, platformConfig.subdomain, platformConfig.boardPath, label);
+        }
+        break;
+      case "eightfold":
+        return scrapeEightfoldCareers(platformConfig.careersUrl || careersUrl);
+      case "custom_api":
+        // Fall through to hostname-based routing below
+        break;
+      case "generic":
+        // Fall through to generic Puppeteer below
+        break;
+    }
+  }
+
+  // Hostname-based routing (existing logic, zero regression for existing companies)
   const browser = await puppeteer.launch({
     headless: true,
     args: [
@@ -1317,14 +1429,14 @@ export async function scrapeCompanyCareers(
   if (hostname.includes("openai.com") || careersUrl.includes("ashbyhq.com/openai")) {
     console.log("Detected OpenAI careers page, using Ashby API scraper");
     await browser.close();
-    return scrapeOpenAICareers();
+    return scrapeAshbyCareers("openai", "OpenAI");
   }
 
   // Slack-specific: use Salesforce Workday API and filter for PM roles
   if (hostname.includes("slack.com") || careersUrl.includes("myworkdayjobs.com/Slack")) {
     console.log("Detected Slack careers page, using Workday API scraper");
     await browser.close();
-    return scrapeSlackCareers();
+    return scrapeWorkdayCareers("salesforce", "wd12", "Slack", "Slack");
   }
 
   // Stripe-specific: paginate through all pages and filter for PM roles
@@ -1348,6 +1460,37 @@ export async function scrapeCompanyCareers(
     return scrapeGoogleCareers(careersUrl);
   }
 
+  // Lever: jobs.lever.co/{handle}
+  if (hostname === "jobs.lever.co") {
+    const handle = new URL(careersUrl).pathname.split("/")[1];
+    if (handle) {
+      console.log(`Detected Lever careers page, using API scraper (handle: ${handle})`);
+      await browser.close();
+      return scrapeLeverCareers(handle, handle);
+    }
+  }
+
+  // Ashby: jobs.ashbyhq.com/{org}
+  if (hostname === "jobs.ashbyhq.com") {
+    const orgName = new URL(careersUrl).pathname.split("/")[1];
+    if (orgName && orgName !== "api") {
+      console.log(`Detected Ashby careers page, using API scraper (org: ${orgName})`);
+      await browser.close();
+      return scrapeAshbyCareers(orgName, orgName);
+    }
+  }
+
+  // Generic Workday: *.myworkdayjobs.com
+  if (hostname.endsWith(".myworkdayjobs.com") && !careersUrl.includes("myworkdayjobs.com/Slack")) {
+    const parts = hostname.split(".");
+    const wdTenant = parts[0];
+    const wdSubdomain = parts[1];
+    const wdBoardPath = new URL(careersUrl).pathname.split("/").filter(Boolean)[0] || "";
+    console.log(`Detected Workday careers page (${wdTenant}.${wdSubdomain}/${wdBoardPath})`);
+    await browser.close();
+    return scrapeWorkdayCareers(wdTenant, wdSubdomain, wdBoardPath, wdTenant);
+  }
+
   // Eightfold.ai platform (PayPal, etc.): use their JSON API with pagination
   if (hostname.includes("eightfold.ai")) {
     console.log("Detected Eightfold.ai careers page, using API scraper");
@@ -1366,17 +1509,78 @@ export async function scrapeCompanyCareers(
       timeout: 60000,
     });
 
-    // Try clicking "Show More" / "Load More" buttons repeatedly
+    // Try clicking department/category tabs with "Product" in the text
+    try {
+      const clickedTab = await page.evaluate(() => {
+        const candidates = Array.from(
+          document.querySelectorAll('button, a, [role="tab"], [class*="tab"], [class*="filter"], [class*="category"]')
+        );
+        for (const el of candidates) {
+          const text = (el.textContent || "").trim().toLowerCase();
+          if (/^product\b/.test(text) && text.length < 40) {
+            (el as HTMLElement).click();
+            return text;
+          }
+        }
+        return null;
+      });
+      if (clickedTab) {
+        console.log(`Generic: Clicked "${clickedTab}" tab/filter`);
+        await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    } catch {
+      // Tab clicking is best-effort
+    }
+
+    // Infinite scroll: scroll to bottom up to 15 times to load lazy content
+    let previousHeight = 0;
+    for (let i = 0; i < 15; i++) {
+      const currentHeight = await page.evaluate(() => document.body.scrollHeight);
+      if (currentHeight === previousHeight) break;
+      previousHeight = currentHeight;
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await new Promise((r) => setTimeout(r, 1500));
+      await page.waitForNetworkIdle({ timeout: 3000 }).catch(() => {});
+    }
+
+    // Try clicking "Show More" / "Load More" / "View More" buttons repeatedly
     for (let i = 0; i < 10; i++) {
       try {
-        const loadMoreBtn = await page.$(
-          '[class*="load-more"], [class*="show-more"]'
+        // CSS-based selectors
+        let loadMoreBtn = await page.$(
+          '[class*="load-more"], [class*="show-more"], [class*="view-more"], [class*="loadMore"], [class*="showMore"]'
         );
+
+        // Text-based matching fallback
+        if (!loadMoreBtn) {
+          const textBtn = await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll("button, a"));
+            const textPatterns = ["load more", "show more", "view more", "see more", "see all"];
+            for (const btn of buttons) {
+              const text = (btn.textContent || "").trim().toLowerCase();
+              if (textPatterns.some((p) => text === p || text.startsWith(p))) {
+                // Add a temporary attribute so we can select it
+                btn.setAttribute("data-load-more-found", "true");
+                return true;
+              }
+            }
+            return false;
+          });
+
+          if (textBtn) {
+            loadMoreBtn = await page.$('[data-load-more-found="true"]');
+          }
+
+          if (!loadMoreBtn) break;
+        }
+
         if (!loadMoreBtn) break;
         const isVisible = await loadMoreBtn.isVisible();
         if (!isVisible) break;
         await loadMoreBtn.click();
         await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 1000));
       } catch {
         break;
       }

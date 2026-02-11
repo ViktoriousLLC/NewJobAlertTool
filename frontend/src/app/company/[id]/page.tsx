@@ -52,6 +52,8 @@ export default function CompanyDetailPage() {
   const [usOnly, setUsOnly] = useState(true);
   const [nextCompany, setNextCompany] = useState<CompanySummary | null>(null);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [showReportMenu, setShowReportMenu] = useState(false);
+  const [reportSubmitted, setReportSubmitted] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
@@ -116,6 +118,25 @@ export default function CompanyDetailPage() {
         else next.delete(jobId);
         return next;
       });
+    }
+  }
+
+  async function reportIssue(issueType: string) {
+    if (!company) return;
+    try {
+      await apiFetch("/api/issues", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          company_id: company.id,
+          issue_type: issueType,
+        }),
+      });
+      setReportSubmitted(true);
+      setShowReportMenu(false);
+      setTimeout(() => setReportSubmitted(false), 3000);
+    } catch (err) {
+      console.error("Failed to report issue:", err);
     }
   }
 
@@ -221,9 +242,11 @@ export default function CompanyDetailPage() {
             </a>
           </div>
           <div className="flex items-center gap-2">
-            {company.last_check_status === "success" ? (
+            {company.last_check_status?.startsWith("success") ? (
               <span className="px-3 py-1 rounded-full text-xs font-medium" style={{ backgroundColor: "var(--badge-bg)", color: "var(--badge-text)" }}>
-                OK
+                {company.last_check_status.includes("quality:")
+                  ? company.last_check_status.replace("success ", "").replace("(", "").replace(")", "")
+                  : "OK"}
               </span>
             ) : company.last_check_status?.startsWith("error") ? (
               <span className="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-medium">
@@ -234,6 +257,52 @@ export default function CompanyDetailPage() {
                 Pending
               </span>
             )}
+
+            {/* Report Issue button */}
+            <div className="relative">
+              {reportSubmitted ? (
+                <span className="text-xs text-green-600 font-medium">Reported!</span>
+              ) : (
+                <button
+                  onClick={() => setShowReportMenu(!showReportMenu)}
+                  className="text-stone-400 hover:text-stone-600 p-1.5 rounded-lg hover:bg-stone-100 transition-colors"
+                  title="Report issue"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                  </svg>
+                </button>
+              )}
+              {showReportMenu && (
+                <div className="absolute right-0 top-full mt-1 bg-white border border-stone-200 rounded-lg shadow-lg py-1 w-52 z-10">
+                  <div className="px-3 py-1.5 text-xs font-medium text-stone-500 border-b border-stone-100">
+                    Report an issue
+                  </div>
+                  {[
+                    { type: "wrong_jobs", label: "Wrong jobs shown" },
+                    { type: "missing_jobs", label: "Missing jobs" },
+                    { type: "bad_locations", label: "Bad locations" },
+                    { type: "other", label: "Other issue" },
+                  ].map((item) => (
+                    <button
+                      key={item.type}
+                      onClick={() => reportIssue(item.type)}
+                      className="w-full text-left px-3 py-2 text-sm text-stone-700 hover:bg-stone-50 transition-colors"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                  <div className="border-t border-stone-100 px-3 py-2">
+                    <a
+                      href="mailto:feedback@newpmjobs.com"
+                      className="text-xs text-[var(--brand)] hover:underline"
+                    >
+                      Email detailed feedback
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
