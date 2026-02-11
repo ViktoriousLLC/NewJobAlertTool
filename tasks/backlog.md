@@ -8,7 +8,7 @@
 - [x] Customize magic link email template (template created in tasks/magic-link-email-template.html)
 
 ## Priority: Do Next
-- [ ] Apply magic link email template to Supabase — template ready at `tasks/magic-link-email-template.html`, paste into Supabase Dashboard → Auth → Email Templates → Magic Link
+- [x] Apply magic link email template to Supabase — pasted into Dashboard → Auth → Email Templates → Magic Link (completed 2026-02-11)
 - [x] UI redesign — dark navy nav, branded company cards with favicons, Outfit font, sky blue palette, stat boxes, filter bar, responsive grid (completed 2026-02-11)
 
 ## Priority: High
