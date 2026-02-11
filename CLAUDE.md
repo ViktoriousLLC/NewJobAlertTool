@@ -28,6 +28,7 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 - **SMTP:** Resend custom SMTP configured in Supabase dashboard
 - **Flow:** User enters email → magic link sent → clicks link → `/auth/callback` exchanges code for session → JWT stored in cookies
 - **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes (redirects to `/login`)
+- **Token flow:** Server-side cookies are HttpOnly, so browser JS can't read them. `apiFetch` calls `/api/auth/token` (a Next.js server route) to get the access token, then caches it in memory until near expiry.
 - **Backend:** `requireAuth` middleware extracts `Bearer <token>` from `Authorization` header, verifies via `supabase.auth.getUser(token)`, attaches `req.userId`
 - **Data scoping:** `companies` and `favorites` have `user_id` column. `seen_jobs` scoped through company's `user_id`
 - **Cron/scraper:** Uses service key (bypasses RLS), no user context needed — scrapes all companies across all users
@@ -35,9 +36,12 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 
 ## Production URLs
 
-- **Backend API**: `https://newjobalerttool-production.up.railway.app`
+- **Frontend**: `https://newpmjobs.com` (Vercel, redirects to `www.newpmjobs.com`)
+- **Backend API**: `https://api.newpmjobs.com` (Railway custom domain)
+- **Backend API (legacy)**: `https://newjobalerttool-production.up.railway.app`
 - **Supabase**: `https://lrmxjqijaenyzdjjzmmo.supabase.co`
 - **GitHub**: `https://github.com/ViktoriousLLC/NewJobAlertTool.git`
+- **Domain registrar/DNS**: Cloudflare (`newpmjobs.com`)
 
 ## Deployment
 
@@ -47,9 +51,9 @@ Pushing to `main` auto-deploys both:
 
 Workflow: `git add` → `git commit` → `git push origin main` → wait ~60s → verify via API.
 
-## API Endpoints (No Auth Required)
+## API Endpoints (Auth Required)
 
-All endpoints hit the Railway backend URL above.
+All endpoints hit `https://api.newpmjobs.com`. All `/api/companies` and `/api/favorites` routes require `Authorization: Bearer <token>` header.
 
 ### Companies
 ```
@@ -128,7 +132,8 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `backend/src/middleware/auth.ts` — JWT verification middleware
 - `backend/src/index.ts` — Express server entry point
 - `frontend/src/lib/supabase.ts` — Browser Supabase client (`@supabase/ssr`)
-- `frontend/src/lib/api.ts` — Authenticated fetch wrapper (attaches JWT)
+- `frontend/src/lib/api.ts` — Authenticated fetch wrapper (attaches JWT, caches token)
+- `frontend/src/app/api/auth/token/route.ts` — Server-side route to extract JWT from HttpOnly cookies
 - `frontend/src/app/login/page.tsx` — Magic link login page
 - `frontend/src/app/auth/callback/route.ts` — Magic link code exchange
 - `frontend/middleware.ts` — Route protection (redirects to /login if unauthenticated)
@@ -153,7 +158,7 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 | `/jobs` | `jobs/page.tsx` | All Jobs — flat table of every job across all companies |
 
 ### Navbar (`layout.tsx`)
-Sticky top nav with: Logo + "Vik's New Job Tool" | [View All Jobs] [+ Add Company]
+Sticky top nav with: Logo + "Vik's New Job Tool" | [Starred] [View All Jobs] [+ Add Company] | email + Sign Out
 
 ### Shared patterns
 - **US Only toggle**: Checkbox filter using `isUSLocation()` regex matcher — shared logic in company detail and all-jobs pages
@@ -171,7 +176,10 @@ Sticky top nav with: Logo + "Vik's New Job Tool" | [View All Jobs] [+ Add Compan
 
 ## Email
 
-- **Provider:** Resend (from `vik@viktoriousllc.com` to `vik@viktoriousllc.com`)
+- **Domain:** `newpmjobs.com` (DNS verified via Cloudflare auto-setup with Resend)
+- **Daily alerts:** Sent from `alerts@newpmjobs.com` (via Resend API in `sendAlert.ts`)
+- **Magic link emails:** Sent from `noreply@newpmjobs.com` (via Supabase custom SMTP → Resend)
+- **Recipient:** `vik@viktoriousllc.com`
 - **API key:** Only in Railway production env vars (`RESEND_API_KEY`). Empty locally — cannot send from local.
 - **To send one-off emails:** Add a temporary protected endpoint, push to deploy, call via curl, then clean up.
 
@@ -183,21 +191,26 @@ Sticky top nav with: Logo + "Vik's New Job Tool" | [View All Jobs] [+ Add Compan
 - **Windows sleep:** Use `powershell -command "Start-Sleep -Seconds N"` instead of `timeout` (fails in non-interactive shells).
 - **Deploy timing:** Wait 90+ seconds after pushing before calling production API endpoints that depend on new code.
 - **Stale data:** After adding/fixing a scraper, always delete + re-add the company for a clean baseline.
+- **SUPABASE_SERVICE_KEY:** Must be the `service_role` key, NOT the `anon` key. The anon key respects RLS and `auth.uid()` returns NULL, causing all user-scoped queries to return empty. The local `.env` previously had the anon key mislabeled — always verify the JWT `role` claim.
+- **HttpOnly cookies + browser JS:** `createServerClient` from `@supabase/ssr` sets HttpOnly cookies that `createBrowserClient` cannot read. Solution: use a Next.js server route (`/api/auth/token`) to extract the access token from cookies server-side, then cache it on the client.
+- **CORS with www redirect:** Vercel redirects `newpmjobs.com` → `www.newpmjobs.com`. Backend CORS must allow BOTH origins. Set `FRONTEND_URL=https://newpmjobs.com` and the code auto-adds the `www` variant.
+- **Supabase redirect URLs:** Must include both `https://newpmjobs.com/auth/callback` AND `https://www.newpmjobs.com/auth/callback` due to Vercel's www redirect.
+- **NEXT_PUBLIC_ env vars:** Baked at build time. After changing in Vercel, must trigger a redeploy for changes to take effect.
+- **Cloudflare proxy (orange cloud):** Must be OFF (grey cloud / DNS only) for Vercel and Railway custom domains — they manage their own SSL.
+- **Supabase SMTP location:** Dashboard → Authentication → Notifications → Email → SMTP Settings (not under "Project Settings").
 
 ## Common Operations
 
+### API calls now require auth
+All `/api/companies` and `/api/favorites` calls need a Bearer token. For CLI testing, either:
+1. Use the cron endpoint (secret-based, no JWT): `curl -s "https://api.newpmjobs.com/api/cron/trigger?secret=..."`
+2. Or use the app UI — CLI curl to protected endpoints requires a valid user JWT.
+
 ### Delete and re-add a company (to fix corrupted data)
+Best done via the app UI (delete button on dashboard tile, then Add Company page). For CLI:
 ```bash
-# Find company ID
-curl -s "https://newjobalerttool-production.up.railway.app/api/companies"
-
-# Delete it
-curl -s -X DELETE "https://newjobalerttool-production.up.railway.app/api/companies/{id}"
-
-# Re-add it (triggers fresh scrape)
-curl -s -X POST "https://newjobalerttool-production.up.railway.app/api/companies" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"CompanyName","careers_url":"https://..."}'
+# Health check (no auth needed)
+curl -s "https://api.newpmjobs.com/api/health"
 ```
 
 ### Test a Greenhouse board exists
@@ -207,5 +220,5 @@ curl -s "https://api.greenhouse.io/v1/boards/{boardname}/jobs" | head -c 200
 
 ### Verify deployment worked
 ```bash
-curl -s "https://newjobalerttool-production.up.railway.app/api/companies" | python3 -m json.tool
+curl -s "https://api.newpmjobs.com/api/health"
 ```

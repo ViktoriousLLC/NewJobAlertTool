@@ -78,3 +78,39 @@ The user is often AFK. They want to come back to a finished result, not a to-do 
 **Pattern:** Star toggle uses optimistic updates — immediate UI state change, then API call in background. If the API call fails, the state change must be reverted.
 
 **Rule:** When doing optimistic updates, always include a catch block that reverts the state to its previous value on failure.
+
+## 2026-02-11: Verify the SUPABASE_SERVICE_KEY is actually the service_role key
+
+**Mistake:** Local `.env` and Railway both had the **anon key** stored as `SUPABASE_SERVICE_KEY`. Before adding RLS policies, this didn't matter (open "Allow all" policies). After switching to user-scoped RLS, the anon key couldn't bypass RLS, and `auth.uid()` returned NULL — every query returned empty results.
+
+**Rule:** After any RLS change, verify the backend's `SUPABASE_SERVICE_KEY` is the service_role key (decode the JWT and check `"role":"service_role"`). The anon key has `"role":"anon"` and will silently return empty results instead of errors.
+
+## 2026-02-11: HttpOnly cookies block browser-side getSession()
+
+**Mistake:** Supabase `createServerClient` sets HttpOnly cookies by default. The browser-side `createBrowserClient` calls `getSession()` which tries to read cookies via `document.cookie` — but HttpOnly cookies are invisible to JavaScript. Result: `getSession()` returns null even though the user is authenticated, and no API calls fire.
+
+**Rule:** Don't rely on `getSession()` or `refreshSession()` from the browser client when server middleware sets HttpOnly cookies. Instead, create a Next.js server API route (`/api/auth/token`) that reads the session server-side and returns the access token. Cache the token on the client to avoid latency.
+
+## 2026-02-11: CORS must allow both www and non-www origins
+
+**Mistake:** Backend CORS was set to `https://newpmjobs.com` but Vercel redirects root to `www.newpmjobs.com`. Browser sent requests from `https://www.newpmjobs.com` which was blocked by CORS.
+
+**Rule:** When using a custom domain with Vercel, always allow both the root domain and `www` variant in the backend CORS config. The code now auto-generates both from `FRONTEND_URL`.
+
+## 2026-02-11: Supabase needs both www and non-www redirect URLs
+
+**Mistake:** Magic link callback URL was set to `https://newpmjobs.com/auth/callback` but Vercel's www redirect meant the actual request hit `https://www.newpmjobs.com/auth/callback`. Supabase rejected it because it wasn't in the allowed redirect URLs.
+
+**Rule:** Add both `https://domain.com/auth/callback` AND `https://www.domain.com/auth/callback` to Supabase's redirect URL allowlist.
+
+## 2026-02-11: Debug with logging before adding complexity
+
+**Mistake:** Spent multiple iterations trying to fix the session/token flow by adding `refreshSession()`, `getUser()` workarounds, and httpOnly overrides — none of which solved the root issue. Adding `console.log` statements would have immediately shown that the API call was succeeding but returning `[]` (a data/key issue, not an auth flow issue).
+
+**Rule:** When debugging production issues, add logging first to isolate WHERE the failure is before changing code. One deploy with console.logs saves multiple blind-fix deploys.
+
+## 2026-02-11: Cloudflare auto-setup for Railway and Resend
+
+**Pattern:** Both Railway and Resend offer Cloudflare auto-configuration — they automatically add the required DNS records when you authorize the Cloudflare integration.
+
+**Rule:** Use auto-setup when available to avoid manual DNS errors. Only Vercel requires manual A/CNAME records in Cloudflare (proxy must be OFF / grey cloud).
