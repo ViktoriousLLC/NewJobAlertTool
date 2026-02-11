@@ -68,15 +68,16 @@ export default function RootLayout({
             </div>
           </nav>
           <main className="max-w-[1800px] mx-auto px-6 py-8">{children}</main>
-          <footer className="border-t border-stone-200 py-4 text-center text-xs text-stone-400">
-            Built by{" "}
+          <footer className="border-t border-stone-200 py-5 text-center text-sm text-stone-400">
+            Built by Vik Agarwal
+            <span className="mx-2">·</span>
             <a
               href="https://www.linkedin.com/in/vik-agarwal/"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-stone-500 hover:text-[var(--brand)] transition-colors"
+              className="text-stone-500 hover:text-[var(--brand)] transition-colors underline underline-offset-2"
             >
-              Vik Agarwal
+              LinkedIn
             </a>
           </footer>
         </div>
