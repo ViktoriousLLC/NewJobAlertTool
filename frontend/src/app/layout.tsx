@@ -68,6 +68,17 @@ export default function RootLayout({
             </div>
           </nav>
           <main className="max-w-[1800px] mx-auto px-6 py-8">{children}</main>
+          <footer className="border-t border-stone-200 py-4 text-center text-xs text-stone-400">
+            Built by{" "}
+            <a
+              href="https://www.linkedin.com/in/vik-agarwal/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-stone-500 hover:text-[var(--brand)] transition-colors"
+            >
+              Vik Agarwal
+            </a>
+          </footer>
         </div>
       </body>
     </html>
