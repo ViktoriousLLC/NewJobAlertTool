@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 
@@ -45,7 +45,16 @@ function isUSLocation(location: string | null): boolean {
 }
 
 export default function CompanyDetailPage() {
+  return (
+    <Suspense>
+      <CompanyDetailContent />
+    </Suspense>
+  );
+}
+
+function CompanyDetailContent() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const id = params.id as string;
   const [company, setCompany] = useState<CompanyDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -54,6 +63,17 @@ export default function CompanyDetailPage() {
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [showReportMenu, setShowReportMenu] = useState(false);
   const [reportSubmitted, setReportSubmitted] = useState(false);
+  const [showAddedToast, setShowAddedToast] = useState(false);
+
+  useEffect(() => {
+    if (searchParams.get("added") === "true") {
+      setShowAddedToast(true);
+      // Clean URL without reload
+      window.history.replaceState({}, "", `/company/${id}`);
+      const timer = setTimeout(() => setShowAddedToast(false), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [searchParams, id]);
 
   useEffect(() => {
     async function fetchData() {
@@ -200,6 +220,17 @@ export default function CompanyDetailPage() {
 
   return (
     <div>
+      {showAddedToast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 animate-fade-in">
+          <div className="bg-green-600 text-white px-5 py-3 rounded-lg shadow-lg flex items-center gap-2 text-sm font-medium">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            Company added successfully!
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-6">
         <Link
           href="/"
