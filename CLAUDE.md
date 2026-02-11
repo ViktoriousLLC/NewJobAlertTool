@@ -36,12 +36,10 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 
 ## Production URLs
 
-- **Frontend**: `https://newpmjobs.com` (Vercel, redirects to `www.newpmjobs.com`)
-- **Backend API**: `https://api.newpmjobs.com` (Railway custom domain)
-- **Backend API (legacy)**: `https://newjobalerttool-production.up.railway.app`
-- **Supabase**: `https://lrmxjqijaenyzdjjzmmo.supabase.co`
-- **GitHub**: `https://github.com/ViktoriousLLC/NewJobAlertTool.git`
-- **Domain registrar/DNS**: Cloudflare (`newpmjobs.com`)
+- **Frontend**: `https://<your-domain>` (Vercel)
+- **Backend API**: `https://api.<your-domain>` (Railway custom domain)
+- **Supabase**: `https://<project-id>.supabase.co`
+- **Domain registrar/DNS**: Cloudflare
 
 ## Deployment
 
@@ -53,7 +51,7 @@ Workflow: `git add` → `git commit` → `git push origin main` → wait ~60s �
 
 ## API Endpoints (Auth Required)
 
-All endpoints hit `https://api.newpmjobs.com`. All `/api/companies` and `/api/favorites` routes require `Authorization: Bearer <token>` header.
+All `/api/companies` and `/api/favorites` routes require `Authorization: Bearer <token>` header.
 
 ### Companies
 ```
@@ -66,9 +64,9 @@ DELETE /api/companies/{id}               — Delete company (cascades to jobs)
 
 ### Scraping
 ```
-GET    /api/cron/trigger?secret={SECRET} — Trigger full scrape of all companies
+GET    /api/cron/trigger                 — Trigger full scrape (requires Authorization: Bearer <CRON_SECRET> header)
 ```
-The CRON_SECRET is set in Railway env vars (local .env has `test-secret-123`).
+The CRON_SECRET is set in Railway env vars.
 
 ## Database Schema
 
@@ -158,7 +156,7 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 | `/jobs` | `jobs/page.tsx` | All Jobs — flat table of every job across all companies |
 
 ### Navbar (`layout.tsx`)
-Sticky top nav with: Logo + "Vik's New Job Tool" | [Starred] [View All Jobs] [+ Add Company] | email + Sign Out
+Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Company] | email + Sign Out
 
 ### Shared patterns
 - **US Only toggle**: Checkbox filter using `isUSLocation()` regex matcher — shared logic in company detail and all-jobs pages
@@ -176,10 +174,9 @@ Sticky top nav with: Logo + "Vik's New Job Tool" | [Starred] [View All Jobs] [+ 
 
 ## Email
 
-- **Domain:** `newpmjobs.com` (DNS verified via Cloudflare auto-setup with Resend)
-- **Daily alerts:** Sent from `alerts@newpmjobs.com` (via Resend API in `sendAlert.ts`)
-- **Magic link emails:** Sent from `noreply@newpmjobs.com` (via Supabase custom SMTP → Resend)
-- **Recipient:** `vik@viktoriousllc.com`
+- **Daily alerts:** Sent from `alerts@<your-domain>` (via Resend API in `sendAlert.ts`)
+- **Magic link emails:** Sent from `noreply@<your-domain>` (via Supabase custom SMTP → Resend)
+- **Recipient:** Set via `ALERT_RECIPIENT_EMAIL` env var in Railway
 - **API key:** Only in Railway production env vars (`RESEND_API_KEY`). Empty locally — cannot send from local.
 - **To send one-off emails:** Add a temporary protected endpoint, push to deploy, call via curl, then clean up.
 
@@ -193,8 +190,8 @@ Sticky top nav with: Logo + "Vik's New Job Tool" | [Starred] [View All Jobs] [+ 
 - **Stale data:** After adding/fixing a scraper, always delete + re-add the company for a clean baseline.
 - **SUPABASE_SERVICE_KEY:** Must be the `service_role` key, NOT the `anon` key. The anon key respects RLS and `auth.uid()` returns NULL, causing all user-scoped queries to return empty. The local `.env` previously had the anon key mislabeled — always verify the JWT `role` claim.
 - **HttpOnly cookies + browser JS:** `createServerClient` from `@supabase/ssr` sets HttpOnly cookies that `createBrowserClient` cannot read. Solution: use a Next.js server route (`/api/auth/token`) to extract the access token from cookies server-side, then cache it on the client.
-- **CORS with www redirect:** Vercel redirects `newpmjobs.com` → `www.newpmjobs.com`. Backend CORS must allow BOTH origins. Set `FRONTEND_URL=https://newpmjobs.com` and the code auto-adds the `www` variant.
-- **Supabase redirect URLs:** Must include both `https://newpmjobs.com/auth/callback` AND `https://www.newpmjobs.com/auth/callback` due to Vercel's www redirect.
+- **CORS with www redirect:** Vercel redirects root → `www` subdomain. Backend CORS must allow BOTH origins. Set `FRONTEND_URL=https://<your-domain>` and the code auto-adds the `www` variant.
+- **Supabase redirect URLs:** Must include both `https://<your-domain>/auth/callback` AND `https://www.<your-domain>/auth/callback` due to Vercel's www redirect.
 - **NEXT_PUBLIC_ env vars:** Baked at build time. After changing in Vercel, must trigger a redeploy for changes to take effect.
 - **Cloudflare proxy (orange cloud):** Must be OFF (grey cloud / DNS only) for Vercel and Railway custom domains — they manage their own SSL.
 - **Supabase SMTP location:** Dashboard → Authentication → Notifications → Email → SMTP Settings (not under "Project Settings").
@@ -203,14 +200,14 @@ Sticky top nav with: Logo + "Vik's New Job Tool" | [Starred] [View All Jobs] [+ 
 
 ### API calls now require auth
 All `/api/companies` and `/api/favorites` calls need a Bearer token. For CLI testing, either:
-1. Use the cron endpoint (secret-based, no JWT): `curl -s "https://api.newpmjobs.com/api/cron/trigger?secret=..."`
+1. Use the cron endpoint (secret-based, no JWT): `curl -s -H "Authorization: Bearer $CRON_SECRET" "https://api.<your-domain>/api/cron/trigger"`
 2. Or use the app UI — CLI curl to protected endpoints requires a valid user JWT.
 
 ### Delete and re-add a company (to fix corrupted data)
 Best done via the app UI (delete button on dashboard tile, then Add Company page). For CLI:
 ```bash
 # Health check (no auth needed)
-curl -s "https://api.newpmjobs.com/api/health"
+curl -s "https://api.<your-domain>/api/health"
 ```
 
 ### Test a Greenhouse board exists
@@ -220,5 +217,5 @@ curl -s "https://api.greenhouse.io/v1/boards/{boardname}/jobs" | head -c 200
 
 ### Verify deployment worked
 ```bash
-curl -s "https://api.newpmjobs.com/api/health"
+curl -s "https://api.<your-domain>/api/health"
 ```

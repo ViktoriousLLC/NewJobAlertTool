@@ -243,8 +243,8 @@ Each company's careers page is different. The scraper will need to handle:
 
 | Setting | Value |
 |---------|-------|
-| From | vik@viktoriousllc.com |
-| To | vik@viktoriousllc.com |
+| From | alerts@<your-domain> |
+| To | Set via ALERT_RECIPIENT_EMAIL env var |
 | Provider | Resend |
 | Schedule | Daily at 2:00 AM Pacific |
 

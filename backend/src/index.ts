@@ -25,13 +25,33 @@ app.use(
 );
 app.use(express.json());
 
+// Security headers
+app.use((_req, res, next) => {
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  next();
+});
+
 // Routes (protected by auth)
 app.use("/api/companies", requireAuth, companiesRouter);
 app.use("/api/favorites", requireAuth, favoritesRouter);
 
 // Manual trigger for daily check (protected by secret)
 app.get("/api/cron/trigger", async (req, res) => {
-  const secret = req.query.secret;
+  // Primary: read secret from Authorization header
+  const authHeader = req.headers.authorization;
+  const headerSecret = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : null;
+
+  // Fallback: query param (deprecated)
+  const querySecret = req.query.secret as string | undefined;
+  if (querySecret) {
+    console.warn("DEPRECATED: cron secret via query param. Use Authorization: Bearer <secret> header instead.");
+  }
+
+  const secret = headerSecret || querySecret;
   if (secret !== process.env.CRON_SECRET) {
     res.status(401).json({ error: "Unauthorized" });
     return;

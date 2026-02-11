@@ -102,6 +102,36 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
+    // Validate URL to prevent SSRF
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(careers_url);
+    } catch {
+      res.status(400).json({ error: "Invalid URL format" });
+      return;
+    }
+
+    if (parsedUrl.protocol !== "https:") {
+      res.status(400).json({ error: "Only HTTPS URLs are allowed" });
+      return;
+    }
+
+    const hostname = parsedUrl.hostname;
+    if (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "0.0.0.0" ||
+      hostname.startsWith("10.") ||
+      hostname.startsWith("192.168.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
+      hostname === "[::1]" ||
+      hostname.endsWith(".internal") ||
+      hostname.endsWith(".local")
+    ) {
+      res.status(400).json({ error: "URLs pointing to private/internal networks are not allowed" });
+      return;
+    }
+
     // Insert company with user_id
     const { data: company, error: insertError } = await supabase
       .from("companies")

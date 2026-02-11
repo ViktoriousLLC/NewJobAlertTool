@@ -12,6 +12,11 @@ export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
     return;
   }
 
+  if (!process.env.ALERT_RECIPIENT_EMAIL) {
+    console.log("ALERT_RECIPIENT_EMAIL not set — skipping email send");
+    return;
+  }
+
   const resend = new Resend(process.env.RESEND_API_KEY);
 
   // Sort companies by number of new jobs (desc)
@@ -59,7 +64,7 @@ export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
 
   await resend.emails.send({
     from: "alerts@newpmjobs.com",
-    to: "vik@viktoriousllc.com",
+    to: process.env.ALERT_RECIPIENT_EMAIL!,
     subject: `Job Alert: ${totalNewJobs} new product job(s) — ${now}`,
     html,
   });

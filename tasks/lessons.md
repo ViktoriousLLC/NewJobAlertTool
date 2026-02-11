@@ -93,15 +93,15 @@ The user is often AFK. They want to come back to a finished result, not a to-do 
 
 ## 2026-02-11: CORS must allow both www and non-www origins
 
-**Mistake:** Backend CORS was set to `https://newpmjobs.com` but Vercel redirects root to `www.newpmjobs.com`. Browser sent requests from `https://www.newpmjobs.com` which was blocked by CORS.
+**Mistake:** Backend CORS was set to `https://<domain>` but Vercel redirects root to `www.<domain>`. Browser sent requests from `https://www.<domain>` which was blocked by CORS.
 
 **Rule:** When using a custom domain with Vercel, always allow both the root domain and `www` variant in the backend CORS config. The code now auto-generates both from `FRONTEND_URL`.
 
 ## 2026-02-11: Supabase needs both www and non-www redirect URLs
 
-**Mistake:** Magic link callback URL was set to `https://newpmjobs.com/auth/callback` but Vercel's www redirect meant the actual request hit `https://www.newpmjobs.com/auth/callback`. Supabase rejected it because it wasn't in the allowed redirect URLs.
+**Mistake:** Magic link callback URL was set to `https://<domain>/auth/callback` but Vercel's www redirect meant the actual request hit `https://www.<domain>/auth/callback`. Supabase rejected it because it wasn't in the allowed redirect URLs.
 
-**Rule:** Add both `https://domain.com/auth/callback` AND `https://www.domain.com/auth/callback` to Supabase's redirect URL allowlist.
+**Rule:** Add both `https://<domain>/auth/callback` AND `https://www.<domain>/auth/callback` to Supabase's redirect URL allowlist.
 
 ## 2026-02-11: Debug with logging before adding complexity
 
