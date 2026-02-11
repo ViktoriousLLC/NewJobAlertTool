@@ -78,7 +78,7 @@ function AllJobsPage() {
   const [levelFilter, setLevelFilter] = useState<Set<JobLevel>>(new Set(ALL_LEVELS));
   const starredOnly = searchParams.get("filter") === "starred";
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
-  const [showSalary, setShowSalary] = useState(false);
+  const [showSalary, setShowSalary] = useState(true);
   const [compData, setCompData] = useState<CompDataMap>({});
   const [sortKey, setSortKey] = useState<SortKey>("company");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
