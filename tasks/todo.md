@@ -1,65 +1,77 @@
-# Auto-Detect ATS Platform + Quality Validation + User Feedback
+# Job Level Classification + Levels.fyi Compensation Integration
 
-## Implementation Status
+## Phase 1: Job Level Classification + Filtering
 
-### Code Complete (all compile + build successfully)
+### Code Complete (all compile clean)
 
-- [x] **Step 1: Fix Netflix scraper** — Added PM_KEYWORDS filtering after API fetch
-- [x] **Step 2: Fix Slack/Workday locations** — Widened vague detection, added fallback, always attempt detail fetch
-- [x] **Step 3: Platform detection engine** — `detectPlatform.ts` with HTML fetch + Puppeteer fallback
-- [x] **Step 4: Lever scraper** — `scrapeLeverCareers(handle, label)` using public API
-- [x] **Step 5: Refactor routing** — Platform-based switch + generalized Ashby/Workday
-- [x] **Step 6: Quality validation** — `validateScrape.ts` with title/location/duplicate/URL checks
-- [x] **Step 7: Integrate into add-company** — Detection + validation in POST handler
-- [x] **Step 8: Update daily check** — Platform info passthrough + validation
-- [x] **Step 9: Report Issue** — Backend endpoint + frontend button + email link
-- [x] **Step 10: Improve generic Puppeteer** — Infinite scroll, tab detection, text-based Load More
-- [x] **Step 11: Test script + schema SQL** — `testDetection.ts` + updated `supabase-schema.sql`
-- [x] **Build verification** — Backend TypeScript compiles, frontend Next.js builds
+- [x] **Step 1.1: Database column** — `ALTER TABLE seen_jobs ADD COLUMN job_level text` + index (SQL ready below)
+- [x] **Step 1.2: Classification utility** — `backend/src/lib/classifyLevel.ts` with `classifyJobLevel()`
+- [x] **Step 1.3: Classify on insert** — Added `job_level` to insert maps in `dailyCheck.ts`, `companies.ts`, `index.ts`
+- [x] **Step 1.4: Backfill script** — `backend/src/scripts/backfillLevels.ts` to classify existing jobs
+- [x] **Step 1.5: Shared frontend utility** — `frontend/src/lib/jobFilters.ts` (isUSLocation, level labels/colors)
+- [x] **Step 1.6: Company detail page** — Level badges + filter checkboxes + comp section
+- [x] **Step 1.7: All-jobs page** — Level column + badges + filters + sortable columns (starred) + salary toggle
 
 ### User Manual Steps Required (before deploy)
 
-- [ ] **Run SQL migration** in Supabase SQL Editor (adds `platform_type`, `platform_config`, `scrape_issues` table)
-- [ ] **Cloudflare Email Routing** — Set up `feedback@newpmjobs.com` forwarding (optional, for email feedback)
+- [ ] **Run Phase 1 SQL** in Supabase SQL Editor:
+  ```sql
+  ALTER TABLE seen_jobs ADD COLUMN job_level text;
+  CREATE INDEX idx_seen_jobs_level ON seen_jobs(job_level);
+  ```
 
-### Post-Deploy Verification
+- [ ] **Run Phase 2 SQL** in Supabase SQL Editor:
+  ```sql
+  CREATE TABLE comp_cache (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_slug text NOT NULL UNIQUE,
+    company_name text NOT NULL,
+    data jsonb NOT NULL,
+    fetched_at timestamptz NOT NULL DEFAULT now()
+  );
 
-- [x] Push to main → Railway + Vercel auto-deploy
-- [x] Verify health check
-- [x] Test platform detection + scrape (Cisco: Workday detected, 29 PM jobs, quality 100)
-- [ ] Test adding a Lever company (e.g., Cloudflare)
-- [ ] Verify existing companies still scrape correctly (trigger cron)
-- [ ] Verify Report Issue button works on company detail page
+  ALTER TABLE companies ADD COLUMN levelsfyi_slug text;
+  ```
 
-### UX Polish (completed 2026-02-11)
+### Post-Deploy Steps
 
-- [x] Changed "+" icon to building icon on Add Company page
-- [x] Redirect to company detail page after adding with `?added=true` success toast
-- [x] Randomized placeholder company examples (8 popular tech companies)
-- [x] Animated 4-step stepper with live counters during scrape
-- [x] Stricter PM title validation — hard exclusions with no exceptions
-- [x] Fixed delete button hit area on dashboard tiles (stopPropagation on wrapper div)
+- [ ] Push to main → auto-deploy
+- [ ] Wait 90s for Railway + Vercel builds
+- [ ] Run backfill script: `npx ts-node src/scripts/backfillLevels.ts` (on Railway or locally with .env)
+- [ ] Verify: `SELECT job_level, COUNT(*) FROM seen_jobs GROUP BY job_level` — all three have rows
+- [ ] Verify company detail page shows level badges (Early/Mid/Dir+) and filter checkboxes
+- [ ] Verify all-jobs page shows Level column with colored badges
+- [ ] Verify starred page has sortable columns and Show Salary toggle
+- [ ] Verify compensation table appears on a known company (e.g., Google)
+- [ ] Spot-check classification:
+  - "Product Manager" → Early
+  - "Senior Product Manager" → Mid
+  - "Director of Product" → Dir+
+  - "Group Product Manager" → Mid
+  - "VP, Product" → Dir+
 
-### Remaining
+## Phase 2: Levels.fyi Compensation Data
 
-- [ ] Cloudflare Email Routing — Set up `feedback@newpmjobs.com` forwarding (optional)
-- [ ] Run SQL migration in Supabase for `scrape_issues` table (needed for Report Issue to work)
-- [ ] Test Report Issue end-to-end after SQL migration
-- [ ] Re-add Cisco with new validation rules for clean data
+### Code Complete (all compile clean)
+
+- [x] **Step 2.1: Database tables** — `comp_cache` table + `levelsfyi_slug` column (SQL ready above)
+- [x] **Step 2.2: Fetcher + parser** — `backend/src/lib/levelsFyi.ts` with HTML parsing + 24hr cache
+- [x] **Step 2.3: Compensation API** — `backend/src/routes/compensation.ts` with single + batch endpoints
+- [x] **Step 2.4: Company detail comp table** — Always-visible table with levels + "View on Levels.fyi" link
+- [x] **Step 2.5: Starred page salary toggle** — Show Salary checkbox, sortable columns, salary ranges
+- [x] **Build verification** — Backend + frontend TypeScript both compile clean
 
 ## Files Changed
 
-| File | Change |
-|------|--------|
-| `backend/src/scraper/scraper.ts` | Netflix filter, Slack locations, Lever scraper, generalized Ashby/Workday, platform routing, improved generic fallback |
-| `backend/src/scraper/detectPlatform.ts` | **NEW** — Platform detection engine |
-| `backend/src/scraper/validateScrape.ts` | **NEW** — Post-scrape quality validation |
-| `backend/src/routes/companies.ts` | Detection + validation in POST handler |
-| `backend/src/routes/issues.ts` | **NEW** — Scrape issue reporting endpoint |
-| `backend/src/jobs/dailyCheck.ts` | Platform info passthrough, validation |
-| `backend/src/index.ts` | Register issues route |
-| `frontend/src/app/company/[id]/page.tsx` | Report Issue button + quality badge |
-| `frontend/src/app/page.tsx` | Error state report link, quality-aware status |
-| `backend/src/scripts/testDetection.ts` | **NEW** — Detection test script |
-| `supabase-schema.sql` | New migration for platform + issues |
-| `CLAUDE.md` | Updated docs for new architecture |
+| Action | File | Change |
+|--------|------|--------|
+| **New** | `backend/src/lib/classifyLevel.ts` | `classifyJobLevel()` utility |
+| **New** | `backend/src/lib/levelsFyi.ts` | Levels.fyi fetcher, parser, cache |
+| **New** | `backend/src/routes/compensation.ts` | `/api/compensation` endpoints |
+| **New** | `backend/src/scripts/backfillLevels.ts` | Backfill existing jobs with levels |
+| **New** | `frontend/src/lib/jobFilters.ts` | Shared `isUSLocation()`, level labels/colors |
+| Modify | `backend/src/jobs/dailyCheck.ts` | Added `job_level` to insert map |
+| Modify | `backend/src/routes/companies.ts` | Added `job_level` to initial scrape insert |
+| Modify | `backend/src/index.ts` | Added `classifyJobLevel` import + compensation route |
+| Modify | `frontend/src/app/company/[id]/page.tsx` | Level badges + filters + comp table |
+| Modify | `frontend/src/app/jobs/page.tsx` | Level column + badges + filters + salary + sorting |

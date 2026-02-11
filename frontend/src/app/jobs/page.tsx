@@ -1,8 +1,9 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
+import { isUSLocation, JobLevel, LEVEL_LABELS, LEVEL_COLORS, ALL_LEVELS } from "@/lib/jobFilters";
 
 interface Job {
   id: string;
@@ -11,6 +12,7 @@ interface Job {
   job_url_path: string;
   first_seen_at: string;
   is_baseline: boolean;
+  job_level?: string;
 }
 
 interface CompanyDetail {
@@ -28,19 +30,16 @@ interface CompanySummary {
   name: string;
 }
 
-// US states and common US location patterns
-const US_PATTERNS = [
-  /\bCA\b/i, /\bNY\b/i, /\bWA\b/i, /\bTX\b/i, /\bIL\b/i, /\bMA\b/i, /\bCO\b/i, /\bGA\b/i, /\bPA\b/i, /\bAZ\b/i,
-  /California/i, /New York/i, /Washington/i, /Texas/i, /Illinois/i, /Massachusetts/i,
-  /Colorado/i, /Georgia/i, /Pennsylvania/i, /Arizona/i, /Oregon/i, /Virginia/i,
-  /San Francisco/i, /Seattle/i, /Austin/i, /Chicago/i, /Boston/i, /Los Angeles/i,
-  /New York City/i, /NYC/i, /Sunnyvale/i, /San Mateo/i, /Palo Alto/i, /Mountain View/i,
-  /United States/i, /USA/i, /\bUS\b/, /Remote/i,
-];
+interface CompTier {
+  min: number;
+  max: number;
+}
 
-function isUSLocation(location: string | null): boolean {
-  if (!location || !location.trim()) return true;
-  return US_PATTERNS.some((pattern) => pattern.test(location));
+interface CompDataMap {
+  [companyName: string]: {
+    tiers: { early?: CompTier; mid?: CompTier; director?: CompTier };
+    levelsFyiUrl: string;
+  };
 }
 
 interface FlatJob {
@@ -51,7 +50,13 @@ interface FlatJob {
   jobLocation: string | null;
   jobUrlPath: string;
   firstSeenAt: string;
+  jobLevel: JobLevel;
 }
+
+type SortKey = "company" | "title" | "location" | "level" | "salary" | "date";
+type SortDir = "asc" | "desc";
+
+const LEVEL_ORDER: Record<JobLevel, number> = { early: 0, mid: 1, director: 2 };
 
 export default function AllJobsPageWrapper() {
   return (
@@ -70,13 +75,17 @@ function AllJobsPage() {
   const [jobs, setJobs] = useState<FlatJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [usOnly, setUsOnly] = useState(true);
+  const [levelFilter, setLevelFilter] = useState<Set<JobLevel>>(new Set(ALL_LEVELS));
   const starredOnly = searchParams.get("filter") === "starred";
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [showSalary, setShowSalary] = useState(false);
+  const [compData, setCompData] = useState<CompDataMap>({});
+  const [sortKey, setSortKey] = useState<SortKey>("company");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
 
   useEffect(() => {
     async function fetchAllJobs() {
       try {
-        // Fetch companies and favorites in parallel
         const [companiesRes, favoritesRes] = await Promise.all([
           apiFetch("/api/companies"),
           apiFetch("/api/favorites"),
@@ -84,12 +93,11 @@ function AllJobsPage() {
 
         const companies: CompanySummary[] = await companiesRes.json();
 
-        // Load favorites
         try {
           const favIds: string[] = await favoritesRes.json();
           setFavorites(new Set(favIds));
         } catch {
-          // Favorites table may not exist yet — ignore
+          // ignore
         }
 
         // Fetch each company's detail in parallel
@@ -118,11 +126,12 @@ function AllJobsPage() {
               jobLocation: job.job_location,
               jobUrlPath: job.job_url_path,
               firstSeenAt: job.first_seen_at,
+              jobLevel: (job.job_level || "early") as JobLevel,
             });
           }
         }
 
-        // Sort by company name (alpha), then newest first within each company
+        // Default sort by company name, then newest first
         flat.sort((a, b) => {
           const cmp = a.companyName.localeCompare(b.companyName);
           if (cmp !== 0) return cmp;
@@ -130,6 +139,19 @@ function AllJobsPage() {
         });
 
         setJobs(flat);
+
+        // Fetch comp data for starred mode
+        if (searchParams.get("filter") === "starred") {
+          try {
+            const compRes = await apiFetch("/api/compensation");
+            if (compRes.ok) {
+              const data = await compRes.json();
+              setCompData(data || {});
+            }
+          } catch {
+            // No comp data — that's fine
+          }
+        }
       } catch (err) {
         console.error("Failed to fetch jobs:", err);
       } finally {
@@ -137,11 +159,19 @@ function AllJobsPage() {
       }
     }
     fetchAllJobs();
-  }, []);
+  }, [searchParams]);
+
+  function toggleLevel(level: JobLevel) {
+    setLevelFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(level)) next.delete(level);
+      else next.add(level);
+      return next;
+    });
+  }
 
   async function toggleFavorite(jobId: string) {
     const isFav = favorites.has(jobId);
-    // Optimistic update
     setFavorites((prev) => {
       const next = new Set(prev);
       if (isFav) next.delete(jobId);
@@ -156,7 +186,6 @@ function AllJobsPage() {
         await apiFetch(`/api/favorites/${jobId}`, { method: "POST" });
       }
     } catch {
-      // Revert on failure
       setFavorites((prev) => {
         const next = new Set(prev);
         if (isFav) next.add(jobId);
@@ -175,12 +204,94 @@ function AllJobsPage() {
     }
   }
 
-  let filteredJobs = usOnly
-    ? jobs.filter((job) => isUSLocation(job.jobLocation))
-    : jobs;
+  function getSalaryRange(job: FlatJob): { min: number; max: number } | null {
+    const cd = compData[job.companyName];
+    if (!cd?.tiers) return null;
+    const tier = cd.tiers[job.jobLevel];
+    if (!tier) return null;
+    return tier;
+  }
+
+  function formatComp(amount: number): string {
+    if (amount >= 1000000) return `$${(amount / 1000000).toFixed(1)}M`;
+    return `$${Math.round(amount / 1000)}K`;
+  }
+
+  function salaryMidpoint(job: FlatJob): number {
+    const range = getSalaryRange(job);
+    if (!range) return 0;
+    return (range.min + range.max) / 2;
+  }
+
+  const handleSort = useCallback((key: SortKey) => {
+    setSortKey((prev) => {
+      if (prev === key) {
+        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        return prev;
+      }
+      setSortDir("asc");
+      return key;
+    });
+  }, []);
+
+  // Filter
+  let filteredJobs = jobs.filter((job) => {
+    if (usOnly && !isUSLocation(job.jobLocation)) return false;
+    if (!levelFilter.has(job.jobLevel)) return false;
+    return true;
+  });
 
   if (starredOnly) {
     filteredJobs = filteredJobs.filter((job) => favorites.has(job.id));
+  }
+
+  // Sort (starred mode only uses custom sort, browse mode uses default)
+  if (starredOnly) {
+    const dir = sortDir === "asc" ? 1 : -1;
+    filteredJobs = [...filteredJobs].sort((a, b) => {
+      switch (sortKey) {
+        case "company":
+          return dir * a.companyName.localeCompare(b.companyName);
+        case "title":
+          return dir * a.jobTitle.localeCompare(b.jobTitle);
+        case "location":
+          return dir * (a.jobLocation || "").localeCompare(b.jobLocation || "");
+        case "level":
+          return dir * (LEVEL_ORDER[a.jobLevel] - LEVEL_ORDER[b.jobLevel]);
+        case "salary":
+          return dir * (salaryMidpoint(a) - salaryMidpoint(b));
+        case "date":
+          return dir * (new Date(a.firstSeenAt).getTime() - new Date(b.firstSeenAt).getTime());
+        default:
+          return 0;
+      }
+    });
+  }
+
+  function SortHeader({ label, sortKeyName, className }: { label: string; sortKeyName: SortKey; className?: string }) {
+    if (!starredOnly) {
+      return <th className={`text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider ${className || ""}`}>{label}</th>;
+    }
+    const isActive = sortKey === sortKeyName;
+    return (
+      <th
+        className={`text-left px-5 py-3 text-xs font-semibold uppercase tracking-wider cursor-pointer hover:text-stone-700 select-none ${isActive ? "text-stone-800" : "text-stone-500"} ${className || ""}`}
+        onClick={() => handleSort(sortKeyName)}
+      >
+        <span className="inline-flex items-center gap-1">
+          {label}
+          {isActive && (
+            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 12 12">
+              {sortDir === "asc" ? (
+                <path d="M6 2l4 5H2l4-5z" />
+              ) : (
+                <path d="M6 10L2 5h8l-4 5z" />
+              )}
+            </svg>
+          )}
+        </span>
+      </th>
+    );
   }
 
   if (loading) {
@@ -197,6 +308,8 @@ function AllJobsPage() {
     );
   }
 
+  const showSalaryCol = starredOnly && showSalary;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -206,15 +319,47 @@ function AllJobsPage() {
             {filteredJobs.length} jobs{starredOnly ? " in your shortlist" : " across all companies"}
           </span>
         </h1>
-        <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
-          <input
-            type="checkbox"
-            checked={usOnly}
-            onChange={(e) => setUsOnly(e.target.checked)}
-            className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
-          />
-          US only
-        </label>
+        <div className="flex items-center gap-2">
+          {ALL_LEVELS.map((level) => (
+            <label
+              key={level}
+              className="flex items-center gap-1.5 text-sm cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors"
+            >
+              <input
+                type="checkbox"
+                checked={levelFilter.has(level)}
+                onChange={() => toggleLevel(level)}
+                className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
+              />
+              <span
+                className="px-1.5 py-0.5 rounded text-xs font-semibold"
+                style={{ backgroundColor: LEVEL_COLORS[level].bg, color: LEVEL_COLORS[level].text }}
+              >
+                {LEVEL_LABELS[level]}
+              </span>
+            </label>
+          ))}
+          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
+            <input
+              type="checkbox"
+              checked={usOnly}
+              onChange={(e) => setUsOnly(e.target.checked)}
+              className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
+            />
+            US only
+          </label>
+          {starredOnly && (
+            <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
+              <input
+                type="checkbox"
+                checked={showSalary}
+                onChange={(e) => setShowSalary(e.target.checked)}
+                className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
+              />
+              Show Salary
+            </label>
+          )}
+        </div>
       </div>
 
       {filteredJobs.length === 0 ? (
@@ -244,97 +389,126 @@ function AllJobsPage() {
           )}
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
-          <table className="w-full table-fixed">
-            <colgroup>
-              <col className="w-[5%]" />
-              <col className="w-[11%]" />
-              <col className="w-[34%]" />
-              <col className="w-[26%]" />
-              <col className="w-[14%]" />
-              <col className="w-[10%]" />
-            </colgroup>
-            <thead>
-              <tr className="border-b border-stone-200 bg-stone-50">
-                <th className="px-3 py-3"></th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Company</th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Job Title</th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Location</th>
-                <th className="text-left px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Date Added</th>
-                <th className="text-right px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">View</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-stone-100">
-              {filteredJobs.map((job, idx) => {
-                const isFirstInGroup = idx === 0 || filteredJobs[idx - 1].companyName !== job.companyName;
-                const isFav = favorites.has(job.id);
-                return (<>
-                {isFirstInGroup && idx !== 0 && (
-                  <tr key={`divider-${job.id}`} className="border-t-4 border-stone-300"><td colSpan={6} className="h-0 p-0"></td></tr>
-                )}
-                <tr key={job.id} className="hover:bg-stone-50 transition-colors">
-                  <td className="px-3 py-3.5 text-center">
-                    <button
-                      onClick={() => toggleFavorite(job.id)}
-                      className="hover:scale-110 transition-transform"
-                      title={isFav ? "Remove from starred" : "Add to starred"}
-                    >
-                      {isFav ? (
-                        <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-                        </svg>
-                      ) : (
-                        <svg className="w-5 h-5 text-stone-300 hover:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-                        </svg>
-                      )}
-                    </button>
-                  </td>
-                  <td className="px-5 py-3.5 text-sm font-bold text-stone-800 truncate" title={job.companyName}>
-                    {job.companyName}
-                  </td>
-                  <td className="px-5 py-3.5 text-sm text-stone-700 truncate" title={job.jobTitle}>
-                    {job.jobTitle}
-                  </td>
-                  <td className="px-5 py-3.5 text-sm text-stone-500">
-                    {job.jobLocation ? (
-                      <span className="flex items-center gap-1 truncate" title={job.jobLocation}>
-                        <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                        <span className="truncate">{job.jobLocation}</span>
-                      </span>
-                    ) : (
-                      <span className="text-stone-300">&mdash;</span>
-                    )}
-                  </td>
-                  <td className="px-5 py-3.5 text-sm text-stone-500 whitespace-nowrap">
-                    {new Date(job.firstSeenAt).toLocaleDateString("en-US", {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
-                    })}
-                  </td>
-                  <td className="px-5 py-3.5 text-right">
-                    <a
-                      href={buildJobUrl(job.jobUrlPath, job.careersUrl)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[var(--brand)] hover:text-[var(--brand-hover)] text-sm font-medium inline-flex items-center gap-1 hover:underline"
-                    >
-                      View
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                    </a>
-                  </td>
+        <>
+          <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
+            <table className="w-full table-fixed">
+              <colgroup>
+                <col className="w-[5%]" />
+                <col className="w-[11%]" />
+                <col className={showSalaryCol ? "w-[26%]" : "w-[30%]"} />
+                <col className={showSalaryCol ? "w-[20%]" : "w-[24%]"} />
+                <col className="w-[8%]" />
+                {showSalaryCol && <col className="w-[12%]" />}
+                <col className="w-[12%]" />
+                <col className="w-[8%]" />
+              </colgroup>
+              <thead>
+                <tr className="border-b border-stone-200 bg-stone-50">
+                  <th className="px-3 py-3"></th>
+                  <SortHeader label="Company" sortKeyName="company" />
+                  <SortHeader label="Job Title" sortKeyName="title" />
+                  <SortHeader label="Location" sortKeyName="location" />
+                  <SortHeader label="Level" sortKeyName="level" />
+                  {showSalaryCol && <SortHeader label="Salary Est." sortKeyName="salary" />}
+                  <SortHeader label="Date Added" sortKeyName="date" />
+                  <th className="text-right px-5 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">View</th>
                 </tr>
-                </>);
-              })}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-stone-100">
+                {filteredJobs.map((job, idx) => {
+                  const isFirstInGroup = idx === 0 || filteredJobs[idx - 1].companyName !== job.companyName;
+                  const isFav = favorites.has(job.id);
+                  const salaryRange = showSalaryCol ? getSalaryRange(job) : null;
+                  return (<>
+                  {isFirstInGroup && idx !== 0 && (
+                    <tr key={`divider-${job.id}`} className="border-t-4 border-stone-300"><td colSpan={showSalaryCol ? 8 : 7} className="h-0 p-0"></td></tr>
+                  )}
+                  <tr key={job.id} className="hover:bg-stone-50 transition-colors">
+                    <td className="px-3 py-3.5 text-center">
+                      <button
+                        onClick={() => toggleFavorite(job.id)}
+                        className="hover:scale-110 transition-transform"
+                        title={isFav ? "Remove from starred" : "Add to starred"}
+                      >
+                        {isFav ? (
+                          <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5 text-stone-300 hover:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                          </svg>
+                        )}
+                      </button>
+                    </td>
+                    <td className="px-5 py-3.5 text-sm font-bold text-stone-800 truncate" title={job.companyName}>
+                      {job.companyName}
+                    </td>
+                    <td className="px-5 py-3.5 text-sm text-stone-700 truncate" title={job.jobTitle}>
+                      {job.jobTitle}
+                    </td>
+                    <td className="px-5 py-3.5 text-sm text-stone-500">
+                      {job.jobLocation ? (
+                        <span className="flex items-center gap-1 truncate" title={job.jobLocation}>
+                          <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                          <span className="truncate">{job.jobLocation}</span>
+                        </span>
+                      ) : (
+                        <span className="text-stone-300">&mdash;</span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <span
+                        className="px-2 py-0.5 rounded text-xs font-semibold"
+                        style={{ backgroundColor: LEVEL_COLORS[job.jobLevel].bg, color: LEVEL_COLORS[job.jobLevel].text }}
+                      >
+                        {LEVEL_LABELS[job.jobLevel]}
+                      </span>
+                    </td>
+                    {showSalaryCol && (
+                      <td className="px-5 py-3.5 text-sm text-stone-600 whitespace-nowrap">
+                        {salaryRange ? (
+                          <span className="font-medium">{formatComp(salaryRange.min)}&ndash;{formatComp(salaryRange.max)}</span>
+                        ) : (
+                          <span className="text-stone-300">&mdash;</span>
+                        )}
+                      </td>
+                    )}
+                    <td className="px-5 py-3.5 text-sm text-stone-500 whitespace-nowrap">
+                      {new Date(job.firstSeenAt).toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
+                    </td>
+                    <td className="px-5 py-3.5 text-right">
+                      <a
+                        href={buildJobUrl(job.jobUrlPath, job.careersUrl)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[var(--brand)] hover:text-[var(--brand-hover)] text-sm font-medium inline-flex items-center gap-1 hover:underline"
+                      >
+                        View
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                      </a>
+                    </td>
+                  </tr>
+                  </>);
+                })}
+              </tbody>
+            </table>
+          </div>
+          {showSalaryCol && (
+            <div className="mt-3 text-right">
+              <span className="text-xs text-stone-400">Salary data source: Levels.fyi</span>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

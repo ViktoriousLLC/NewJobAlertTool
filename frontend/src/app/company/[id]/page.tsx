@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
+import { isUSLocation, JobLevel, LEVEL_LABELS, LEVEL_COLORS, ALL_LEVELS } from "@/lib/jobFilters";
 
 interface Job {
   id: string;
@@ -12,6 +13,7 @@ interface Job {
   job_url_path: string;
   first_seen_at: string;
   is_baseline: boolean;
+  job_level?: string;
 }
 
 interface CompanyDetail {
@@ -29,19 +31,17 @@ interface CompanySummary {
   name: string;
 }
 
-// US states and common US location patterns
-const US_PATTERNS = [
-  /\bCA\b/i, /\bNY\b/i, /\bWA\b/i, /\bTX\b/i, /\bIL\b/i, /\bMA\b/i, /\bCO\b/i, /\bGA\b/i, /\bPA\b/i, /\bAZ\b/i,
-  /California/i, /New York/i, /Washington/i, /Texas/i, /Illinois/i, /Massachusetts/i,
-  /Colorado/i, /Georgia/i, /Pennsylvania/i, /Arizona/i, /Oregon/i, /Virginia/i,
-  /San Francisco/i, /Seattle/i, /Austin/i, /Chicago/i, /Boston/i, /Los Angeles/i,
-  /New York City/i, /NYC/i, /Sunnyvale/i, /San Mateo/i, /Palo Alto/i, /Mountain View/i,
-  /United States/i, /USA/i, /\bUS\b/, /Remote/i,
-];
+interface CompTier {
+  min: number;
+  max: number;
+}
 
-function isUSLocation(location: string | null): boolean {
-  if (!location || !location.trim()) return true; // Show jobs with unknown location
-  return US_PATTERNS.some((pattern) => pattern.test(location));
+interface CompData {
+  levels: { level: string; medianTC: number }[];
+  overallMedianTC: number;
+  tiers: { early?: CompTier; mid?: CompTier; director?: CompTier };
+  levelsFyiUrl: string;
+  attribution: string;
 }
 
 export default function CompanyDetailPage() {
@@ -59,16 +59,17 @@ function CompanyDetailContent() {
   const [company, setCompany] = useState<CompanyDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [usOnly, setUsOnly] = useState(true);
+  const [levelFilter, setLevelFilter] = useState<Set<JobLevel>>(new Set(ALL_LEVELS));
   const [nextCompany, setNextCompany] = useState<CompanySummary | null>(null);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [showReportMenu, setShowReportMenu] = useState(false);
   const [reportSubmitted, setReportSubmitted] = useState(false);
   const [showAddedToast, setShowAddedToast] = useState(false);
+  const [compData, setCompData] = useState<CompData | null>(null);
 
   useEffect(() => {
     if (searchParams.get("added") === "true") {
       setShowAddedToast(true);
-      // Clean URL without reload
       window.history.replaceState({}, "", `/company/${id}`);
       const timer = setTimeout(() => setShowAddedToast(false), 3000);
       return () => clearTimeout(timer);
@@ -78,7 +79,6 @@ function CompanyDetailContent() {
   useEffect(() => {
     async function fetchData() {
       try {
-        // Fetch company detail, all companies, and favorites in parallel
         const [detailRes, listRes, favRes] = await Promise.all([
           apiFetch(`/api/companies/${id}`),
           apiFetch("/api/companies"),
@@ -107,6 +107,19 @@ function CompanyDetailContent() {
           const nextIdx = (currentIdx + 1) % sorted.length;
           setNextCompany(sorted[nextIdx]);
         }
+
+        // Fetch compensation data
+        try {
+          const compRes = await apiFetch(`/api/compensation/${encodeURIComponent(detail.name)}`);
+          if (compRes.ok) {
+            const data = await compRes.json();
+            if (data && data.levels && data.levels.length > 0) {
+              setCompData(data);
+            }
+          }
+        } catch {
+          // No comp data available — that's fine
+        }
       } catch (err) {
         console.error("Failed to fetch company:", err);
       } finally {
@@ -115,6 +128,15 @@ function CompanyDetailContent() {
     }
     fetchData();
   }, [id]);
+
+  function toggleLevel(level: JobLevel) {
+    setLevelFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(level)) next.delete(level);
+      else next.add(level);
+      return next;
+    });
+  }
 
   async function toggleFavorite(jobId: string) {
     const isFav = favorites.has(jobId);
@@ -192,10 +214,13 @@ function CompanyDetailContent() {
     );
   }
 
-  // Filter jobs based on US-only toggle
-  const filteredJobs = usOnly
-    ? company.jobs.filter((job) => isUSLocation(job.job_location))
-    : company.jobs;
+  // Filter jobs based on US-only toggle and level filter
+  const filteredJobs = company.jobs.filter((job) => {
+    if (usOnly && !isUSLocation(job.job_location)) return false;
+    const level = (job.job_level || "early") as JobLevel;
+    if (!levelFilter.has(level)) return false;
+    return true;
+  });
 
   // Group jobs by date (already sorted newest first from API)
   const jobsByDate = new Map<string, Job[]>();
@@ -216,6 +241,11 @@ function CompanyDetailContent() {
     } catch {
       return urlPath;
     }
+  }
+
+  function formatComp(amount: number): string {
+    if (amount >= 1000000) return `$${(amount / 1000000).toFixed(1)}M`;
+    return `$${Math.round(amount / 1000)}K`;
   }
 
   return (
@@ -362,19 +392,81 @@ function CompanyDetailContent() {
         </div>
       </div>
 
+      {/* Compensation section */}
+      {compData && (
+        <div className="bg-white rounded-xl border border-stone-200 p-6 mb-6 shadow-sm">
+          <h2 className="text-lg font-semibold text-stone-800 mb-4">
+            PM Compensation at {company.name}
+          </h2>
+          <div className="overflow-hidden rounded-lg border border-stone-200">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-stone-50 border-b border-stone-200">
+                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-stone-500 uppercase tracking-wider">Level</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-semibold text-stone-500 uppercase tracking-wider">Median Total Comp</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-stone-100">
+                {compData.levels.map((l) => (
+                  <tr key={l.level} className="hover:bg-stone-50">
+                    <td className="px-4 py-2.5 text-sm text-stone-700 font-medium">{l.level}</td>
+                    <td className="px-4 py-2.5 text-sm text-stone-800 text-right font-semibold">{formatComp(l.medianTC)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-3 flex items-center justify-between">
+            <a
+              href={compData.levelsFyiUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[var(--brand)] hover:underline text-sm font-medium inline-flex items-center gap-1"
+            >
+              View on Levels.fyi
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
+            <span className="text-xs text-stone-400">Data source: Levels.fyi</span>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-stone-800">
           Product Jobs
         </h2>
-        <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
-          <input
-            type="checkbox"
-            checked={usOnly}
-            onChange={(e) => setUsOnly(e.target.checked)}
-            className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
-          />
-          US only
-        </label>
+        <div className="flex items-center gap-2">
+          {ALL_LEVELS.map((level) => (
+            <label
+              key={level}
+              className="flex items-center gap-1.5 text-sm cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors"
+            >
+              <input
+                type="checkbox"
+                checked={levelFilter.has(level)}
+                onChange={() => toggleLevel(level)}
+                className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
+              />
+              <span
+                className="px-1.5 py-0.5 rounded text-xs font-semibold"
+                style={{ backgroundColor: LEVEL_COLORS[level].bg, color: LEVEL_COLORS[level].text }}
+              >
+                {LEVEL_LABELS[level]}
+              </span>
+            </label>
+          ))}
+          <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-stone-50 transition-colors">
+            <input
+              type="checkbox"
+              checked={usOnly}
+              onChange={(e) => setUsOnly(e.target.checked)}
+              className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
+            />
+            US only
+          </label>
+        </div>
       </div>
 
       {filteredJobs.length === 0 ? (
@@ -385,7 +477,7 @@ function CompanyDetailContent() {
             </svg>
           </div>
           <p className="text-stone-600">
-            No jobs found{usOnly ? " in the US." : "."}
+            No jobs found{usOnly ? " matching your filters." : "."}
           </p>
           {usOnly && (
             <button
@@ -409,6 +501,7 @@ function CompanyDetailContent() {
               <div className="bg-white rounded-xl border border-stone-200 divide-y divide-stone-100 overflow-hidden">
                 {jobs.map((job) => {
                   const isFav = favorites.has(job.id);
+                  const level = (job.job_level || "early") as JobLevel;
                   return (
                   <div key={job.id} className="px-5 py-4 flex items-center justify-between gap-4 hover:bg-stone-50 transition-colors">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -435,6 +528,12 @@ function CompanyDetailContent() {
                           NEW
                         </span>
                       )}
+                      <span
+                        className="px-2 py-0.5 rounded text-xs font-semibold shrink-0"
+                        style={{ backgroundColor: LEVEL_COLORS[level].bg, color: LEVEL_COLORS[level].text }}
+                      >
+                        {LEVEL_LABELS[level]}
+                      </span>
                       <span className="text-stone-800 font-medium truncate">{job.job_title}</span>
                     </div>
                     {job.job_location && (

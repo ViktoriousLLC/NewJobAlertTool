@@ -4,12 +4,14 @@ import dotenv from "dotenv";
 import companiesRouter from "./routes/companies";
 import favoritesRouter from "./routes/favorites";
 import issuesRouter from "./routes/issues";
+import compensationRouter from "./routes/compensation";
 import { runDailyCheck } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
 import { scrapeCompanyCareers } from "./scraper/scraper";
 import { detectPlatform } from "./scraper/detectPlatform";
 import { validateScrapeResults } from "./scraper/validateScrape";
+import { classifyJobLevel } from "./lib/classifyLevel";
 
 dotenv.config();
 
@@ -42,6 +44,7 @@ app.use((_req, res, next) => {
 app.use("/api/companies", requireAuth, companiesRouter);
 app.use("/api/favorites", requireAuth, favoritesRouter);
 app.use("/api/issues", requireAuth, issuesRouter);
+app.use("/api/compensation", requireAuth, compensationRouter);
 
 // Manual trigger for daily check (protected by secret)
 app.get("/api/cron/trigger", async (req, res) => {
@@ -145,6 +148,7 @@ app.post("/api/admin/add-company", async (req, res) => {
             job_title: j.title,
             job_location: j.location,
             is_baseline: true,
+            job_level: classifyJobLevel(j.title),
           }))
         );
       }

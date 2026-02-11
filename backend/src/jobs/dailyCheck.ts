@@ -2,6 +2,7 @@ import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { sendAlert } from "../email/sendAlert";
+import { classifyJobLevel } from "../lib/classifyLevel";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -66,6 +67,7 @@ export async function runDailyCheck(): Promise<void> {
             job_title: j.title,
             job_location: j.location,
             is_baseline: false,
+            job_level: classifyJobLevel(j.title),
           }))
         );
         if (insertError) {

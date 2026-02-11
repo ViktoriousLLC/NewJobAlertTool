@@ -68,6 +68,13 @@ POST   /api/issues                       — Report a scrape issue
          Body: {"company_id": "uuid", "issue_type": "wrong_jobs|missing_jobs|bad_locations|other", "description": "..."}
 ```
 
+### Compensation
+```
+GET    /api/compensation                 — Comp data for all user's tracked companies (batch)
+GET    /api/compensation/{companyName}   — Comp data for a single company (levels, tiers, levels.fyi link)
+```
+Returns levels.fyi PM compensation data with 24hr cache. Includes `attribution` and `levelsFyiUrl` fields.
+
 ### Scraping
 ```
 GET    /api/cron/trigger                 — Trigger full scrape (requires Authorization: Bearer <CRON_SECRET> header)
@@ -77,17 +84,25 @@ The CRON_SECRET is set in Railway env vars.
 ## Database Schema
 
 ### `companies` table
-- `id` (uuid PK), `name`, `careers_url`, `created_at`, `last_checked_at`, `last_check_status`, `total_product_jobs`, `user_id` (FK → auth.users), `platform_type` (text), `platform_config` (jsonb)
+- `id` (uuid PK), `name`, `careers_url`, `created_at`, `last_checked_at`, `last_check_status`, `total_product_jobs`, `user_id` (FK → auth.users), `platform_type` (text), `platform_config` (jsonb), `levelsfyi_slug` (text, optional override)
 - Index on `user_id`
 - `platform_type`: detected ATS platform (greenhouse, lever, ashby, workday, eightfold, custom_api, generic)
 - `platform_config`: ATS-specific config (e.g., `{ "boardName": "discord" }` for Greenhouse)
+- `levelsfyi_slug`: optional override for levels.fyi company slug (auto-derived from name if not set)
 
 ### `seen_jobs` table
-- `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `job_url_path`, `job_title`, `job_location`, `first_seen_at`, `is_baseline`
-- Unique index on `(company_id, job_url_path)`
+- `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `job_url_path`, `job_title`, `job_location`, `first_seen_at`, `is_baseline`, `job_level` (text)
+- Unique index on `(company_id, job_url_path)`, index on `job_level`
 - `is_baseline = true` for initial scrape, `false` for newly discovered jobs
+- `job_level`: `'early'`, `'mid'`, or `'director'` — classified by title keywords via `classifyJobLevel()`
 - Non-baseline jobs older than 30 days are auto-cleaned
 - No `user_id` — scoped through company's `user_id`
+
+### `comp_cache` table
+- `id` (uuid PK), `company_slug` (text, UNIQUE), `company_name` (text), `data` (jsonb), `fetched_at` (timestamptz)
+- Caches levels.fyi PM compensation data with 24hr TTL
+- `data` contains: `levels` (array of {level, medianTC}), `overallMedianTC`, `tiers` ({early, mid, director} ranges), `levelsFyiUrl`
+- No RLS — uses service key for read/write
 
 ### `scrape_issues` table
 - `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `user_id` (FK → auth.users), `issue_type` (text), `description` (text), `created_at`
@@ -162,6 +177,10 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `backend/src/routes/companies.ts` — API route handlers (user-scoped, with platform detection + validation)
 - `backend/src/routes/favorites.ts` — Favorites API (user-scoped)
 - `backend/src/routes/issues.ts` — Scrape issue reporting API (user-scoped)
+- `backend/src/routes/compensation.ts` — Levels.fyi compensation API (user-scoped)
+- `backend/src/lib/classifyLevel.ts` — Job level classification (early/mid/director) by title keywords
+- `backend/src/lib/levelsFyi.ts` — Levels.fyi fetcher, parser, and comp_cache manager
+- `frontend/src/lib/jobFilters.ts` — Shared `isUSLocation()`, job level labels/colors
 - `backend/src/middleware/auth.ts` — JWT verification middleware
 - `backend/src/index.ts` — Express server entry point
 - `frontend/src/lib/supabase.ts` — Browser Supabase client (`@supabase/ssr`)

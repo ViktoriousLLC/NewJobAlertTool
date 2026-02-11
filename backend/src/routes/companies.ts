@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { detectPlatform } from "../scraper/detectPlatform";
 import { validateScrapeResults } from "../scraper/validateScrape";
+import { classifyJobLevel } from "../lib/classifyLevel";
 
 const router = Router();
 
@@ -188,6 +189,7 @@ router.post("/", async (req: Request, res: Response) => {
           job_title: j.title,
           job_location: j.location,
           is_baseline: true,
+          job_level: classifyJobLevel(j.title),
         }))
       );
     }
