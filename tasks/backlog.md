@@ -12,7 +12,9 @@
 - [x] UI redesign — dark navy nav, branded company cards with favicons, Outfit font, sky blue palette, stat boxes, filter bar, responsive grid (completed 2026-02-11)
 
 ## Priority: High
-- [ ] Mixpanel/PostHog analytics — track page views, companies added, jobs starred, filter usage, daily return rate
+- [x] PostHog analytics — pageviews, user identity, company_added/deleted, job_starred/unstarred, dashboard_filter (completed 2026-02-11)
+- [x] Sentry error monitoring — frontend (@sentry/nextjs) + backend (@sentry/node), auto-captures exceptions (completed 2026-02-11)
+- [ ] Uptime monitoring — add `https://api.newpmjobs.com/api/health` to BetterUptime/UptimeRobot (no code, just SaaS signup)
 
 ## Priority: Low / Future
 - [ ] Stripe premium tier — link from existing Stripe account. Potential features: unlimited companies, salary alerts. Defer until 5K+ users.
