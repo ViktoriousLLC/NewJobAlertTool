@@ -217,6 +217,9 @@ export default function Dashboard() {
           <h1 className="text-[22px] font-[700] text-[#1A1A2E]">
             Tracked Companies
           </h1>
+          <p className="text-[13px] text-[#6B7280] mt-0.5">
+            {companies.length} companies being monitored
+          </p>
         </div>
 
         {/* Stat boxes */}
@@ -295,9 +298,6 @@ export default function Dashboard() {
           ))}
         </div>
 
-        <span className="text-[12px] text-[#9494A8]">
-          {sorted.length} {sorted.length === 1 ? "company" : "companies"}
-        </span>
       </div>
 
       {/* Card grid — 5 columns */}
