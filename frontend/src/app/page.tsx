@@ -361,7 +361,7 @@ export default function Dashboard() {
               </div>
 
               {/* Card body — centered content */}
-              <div className={`flex flex-col items-center justify-center flex-1 px-3 ${company.new_jobs_today > 0 ? "gap-[10px]" : ""}`}>
+              <div className={`flex flex-col items-center justify-center flex-1 ${company.new_jobs_today > 0 ? "gap-[10px]" : ""}`} style={{ padding: "4px 10px 0" }}>
                 {company.new_jobs_today > 0 && (
                   <span
                     className="font-[700] text-[11px]"
