@@ -3,6 +3,7 @@ import { scrapeCompanyCareers } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { sendAlert } from "../email/sendAlert";
 import { classifyJobLevel } from "../lib/classifyLevel";
+import { getCompData } from "../lib/levelsFyi";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -124,6 +125,17 @@ export async function runDailyCheck(): Promise<void> {
   } catch (err) {
     console.error("Failed to send email alert:", err);
   }
+
+  // Refresh compensation data for all companies (warms cache for detail pages)
+  console.log("Refreshing compensation data...");
+  const companyNames = companies.map((c) => c.name);
+  const COMP_BATCH = 3;
+  for (let i = 0; i < companyNames.length; i += COMP_BATCH) {
+    const batch = companyNames.slice(i, i + COMP_BATCH);
+    await Promise.allSettled(batch.map((name) => getCompData(name)));
+    if (i + COMP_BATCH < companyNames.length) await delay(2000);
+  }
+  console.log(`Compensation data refreshed for ${companyNames.length} companies.`);
 
   // Clean up: delete non-baseline seen_jobs older than 30 days
   const thirtyDaysAgo = new Date();

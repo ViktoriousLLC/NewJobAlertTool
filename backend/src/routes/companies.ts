@@ -4,6 +4,7 @@ import { scrapeCompanyCareers } from "../scraper/scraper";
 import { detectPlatform } from "../scraper/detectPlatform";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { classifyJobLevel } from "../lib/classifyLevel";
+import { getCompData } from "../lib/levelsFyi";
 
 const router = Router();
 
@@ -253,6 +254,11 @@ router.post("/", async (req: Request, res: Response) => {
       total_product_jobs: jobs.length,
       platform_type: platformType,
     });
+
+    // Preload compensation data in background (warms the cache for detail page)
+    getCompData(name).catch((err) =>
+      console.error(`Comp preload failed for ${name}:`, err)
+    );
   } catch (err) {
     console.error("POST /api/companies error:", err);
     res.status(500).json({ error: "Failed to add company" });
