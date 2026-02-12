@@ -24,31 +24,44 @@ router.get("/", async (req: Request, res: Response) => {
     const statsMap = new Map<string, { new_jobs_today: number; latest_new_job_at: string | null }>();
 
     if (companyIds.length > 0) {
-      const { data: nonBaselineJobs, error: statsErr } = await supabase
-        .from("seen_jobs")
-        .select("company_id, first_seen_at")
-        .in("company_id", companyIds)
-        .eq("is_baseline", false);
+      const todayStart = new Date();
+      todayStart.setUTCHours(0, 0, 0, 0);
+      const todayISO = todayStart.toISOString();
 
-      if (statsErr) {
-        console.error("Job stats query failed:", statsErr);
+      // Two parallel queries: today's new jobs (DB-filtered) + latest non-baseline per company
+      const [todayResult, latestResult] = await Promise.all([
+        supabase
+          .from("seen_jobs")
+          .select("company_id")
+          .in("company_id", companyIds)
+          .eq("is_baseline", false)
+          .gte("first_seen_at", todayISO),
+        supabase
+          .from("seen_jobs")
+          .select("company_id, first_seen_at")
+          .in("company_id", companyIds)
+          .eq("is_baseline", false)
+          .order("first_seen_at", { ascending: false }),
+      ]);
+
+      if (todayResult.error) console.error("Today jobs query failed:", todayResult.error);
+      if (latestResult.error) console.error("Latest jobs query failed:", latestResult.error);
+
+      // Count today's new jobs per company
+      for (const job of todayResult.data || []) {
+        const existing = statsMap.get(job.company_id) || { new_jobs_today: 0, latest_new_job_at: null };
+        existing.new_jobs_today++;
+        statsMap.set(job.company_id, existing);
       }
 
-      const todayUTC = new Date();
-      todayUTC.setUTCHours(0, 0, 0, 0);
-
-      for (const job of nonBaselineJobs || []) {
-        const existing = statsMap.get(job.company_id) || { new_jobs_today: 0, latest_new_job_at: null };
-
-        if (new Date(job.first_seen_at) >= todayUTC) {
-          existing.new_jobs_today++;
-        }
-
-        if (!existing.latest_new_job_at || job.first_seen_at > existing.latest_new_job_at) {
+      // Set latest non-baseline job per company (ordered DESC, first per company wins)
+      for (const job of latestResult.data || []) {
+        const existing = statsMap.get(job.company_id);
+        if (existing && !existing.latest_new_job_at) {
           existing.latest_new_job_at = job.first_seen_at;
+        } else if (!existing) {
+          statsMap.set(job.company_id, { new_jobs_today: 0, latest_new_job_at: job.first_seen_at });
         }
-
-        statsMap.set(job.company_id, existing);
       }
     }
 

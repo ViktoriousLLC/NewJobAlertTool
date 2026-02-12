@@ -89,9 +89,9 @@ function CompanyDetailContent() {
   useEffect(() => {
     async function fetchData() {
       try {
-        const [detailRes, listRes, favRes] = await Promise.all([
+        // Fetch company detail + favorites in parallel (fast, renders page)
+        const [detailRes, favRes] = await Promise.all([
           apiFetch(`/api/companies/${id}`),
-          apiFetch("/api/companies"),
           apiFetch("/api/favorites"),
         ]);
 
@@ -106,30 +106,6 @@ function CompanyDetailContent() {
         } catch {
           // Favorites table may not exist yet
         }
-
-        // Determine next company alphabetically
-        const allCompanies: CompanySummary[] = await listRes.json();
-        const sorted = [...allCompanies].sort((a, b) =>
-          a.name.localeCompare(b.name)
-        );
-        const currentIdx = sorted.findIndex((c) => c.id === id);
-        if (currentIdx !== -1 && sorted.length > 1) {
-          const nextIdx = (currentIdx + 1) % sorted.length;
-          setNextCompany(sorted[nextIdx]);
-        }
-
-        // Fetch compensation data
-        try {
-          const compRes = await apiFetch(`/api/compensation/${encodeURIComponent(detail.name)}`);
-          if (compRes.ok) {
-            const data = await compRes.json();
-            if (data && data.levels && data.levels.length > 0) {
-              setCompData(data);
-            }
-          }
-        } catch {
-          // No comp data available — that's fine
-        }
       } catch (err) {
         console.error("Failed to fetch company:", err);
       } finally {
@@ -138,6 +114,34 @@ function CompanyDetailContent() {
     }
     fetchData();
   }, [id]);
+
+  // Lazy-load compensation data + next company (non-blocking, loads after page renders)
+  useEffect(() => {
+    if (!company) return;
+
+    // Fetch comp data (can be slow on cache miss — don't block page)
+    apiFetch(`/api/compensation/${encodeURIComponent(company.name)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.levels?.length > 0) setCompData(data);
+      })
+      .catch(() => {});
+
+    // Fetch company list for "next company" nav
+    apiFetch("/api/companies")
+      .then((res) => res.json())
+      .then((allCompanies: CompanySummary[]) => {
+        const sorted = [...allCompanies].sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+        const currentIdx = sorted.findIndex((c) => c.id === id);
+        if (currentIdx !== -1 && sorted.length > 1) {
+          const nextIdx = (currentIdx + 1) % sorted.length;
+          setNextCompany(sorted[nextIdx]);
+        }
+      })
+      .catch(() => {});
+  }, [company, id]);
 
   function toggleLevel(level: JobLevel) {
     setLevelFilter((prev) => {
