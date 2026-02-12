@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
+import { trackEvent } from "@/lib/analytics";
 import {
   getBrandColor,
   softenColor,
@@ -87,6 +88,7 @@ export default function Dashboard() {
     try {
       await apiFetch(`/api/companies/${id}`, { method: "DELETE" });
       setCompanies((prev) => prev.filter((c) => c.id !== id));
+      trackEvent("company_deleted", { company_name: name });
     } catch (err) {
       console.error("Failed to delete company:", err);
     }
@@ -270,7 +272,7 @@ export default function Dashboard() {
           {filters.map((f) => (
             <button
               key={f.key}
-              onClick={() => setFilter(f.key)}
+              onClick={() => { setFilter(f.key); trackEvent("dashboard_filter", { filter: f.key }); }}
               className={`px-3 py-1.5 rounded-md text-[12px] font-medium transition-all ${
                 filter === f.key
                   ? "bg-[#0C1E3A] text-white"

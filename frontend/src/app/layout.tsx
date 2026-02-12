@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Outfit } from "next/font/google";
 import NavBar from "@/components/NavBar";
+import PostHogProvider from "@/components/PostHogProvider";
 import "./globals.css";
 
 const outfit = Outfit({
@@ -21,6 +22,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${outfit.className} antialiased`}>
+        <PostHogProvider>
         <div className="min-h-screen">
           <NavBar />
           <main className="max-w-[1400px] mx-auto px-6 py-8">{children}</main>
@@ -37,6 +39,7 @@ export default function RootLayout({
             </a>
           </footer>
         </div>
+        </PostHogProvider>
       </body>
     </html>
   );

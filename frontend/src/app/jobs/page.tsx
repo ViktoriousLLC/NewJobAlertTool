@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
+import { trackEvent } from "@/lib/analytics";
 import { isUSLocation, JobLevel, LEVEL_LABELS, LEVEL_COLORS, ALL_LEVELS } from "@/lib/jobFilters";
 
 interface ApiJob {
@@ -146,6 +147,7 @@ function AllJobsPage() {
 
   async function toggleFavorite(jobId: string) {
     const isFav = favorites.has(jobId);
+    trackEvent(isFav ? "job_unstarred" : "job_starred", { job_id: jobId });
     setFavorites((prev) => {
       const next = new Set(prev);
       if (isFav) next.delete(jobId);

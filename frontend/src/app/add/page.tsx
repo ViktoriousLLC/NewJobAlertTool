@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
+import { trackEvent } from "@/lib/analytics";
 
 const EXAMPLE_COMPANIES = [
   { name: "Spotify", url: "https://jobs.lever.co/spotify" },
@@ -164,6 +165,7 @@ export default function AddCompany() {
         }
       }
 
+      trackEvent("company_added", { company_name: name, careers_url: careersUrl });
       router.push(`/company/${company.id}?added=true`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
