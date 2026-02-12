@@ -20,19 +20,35 @@ router.get("/", async (req: Request, res: Response) => {
 
     const companyIds = (companies || []).map((c) => c.id);
 
-    // Single RPC call replaces 2 sequential queries for job stats
+    // Compute new-jobs-today and latest non-baseline job per company
     const statsMap = new Map<string, { new_jobs_today: number; latest_new_job_at: string | null }>();
 
     if (companyIds.length > 0) {
-      const { data: stats } = await supabase.rpc("get_company_job_stats", {
-        company_ids: companyIds,
-      });
+      const { data: nonBaselineJobs, error: statsErr } = await supabase
+        .from("seen_jobs")
+        .select("company_id, first_seen_at")
+        .in("company_id", companyIds)
+        .eq("is_baseline", false);
 
-      for (const row of stats || []) {
-        statsMap.set(row.company_id, {
-          new_jobs_today: Number(row.new_jobs_today) || 0,
-          latest_new_job_at: row.latest_new_job_at,
-        });
+      if (statsErr) {
+        console.error("Job stats query failed:", statsErr);
+      }
+
+      const todayUTC = new Date();
+      todayUTC.setUTCHours(0, 0, 0, 0);
+
+      for (const job of nonBaselineJobs || []) {
+        const existing = statsMap.get(job.company_id) || { new_jobs_today: 0, latest_new_job_at: null };
+
+        if (new Date(job.first_seen_at) >= todayUTC) {
+          existing.new_jobs_today++;
+        }
+
+        if (!existing.latest_new_job_at || job.first_seen_at > existing.latest_new_job_at) {
+          existing.latest_new_job_at = job.first_seen_at;
+        }
+
+        statsMap.set(job.company_id, existing);
       }
     }
 
