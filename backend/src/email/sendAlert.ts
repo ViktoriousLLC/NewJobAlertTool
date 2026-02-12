@@ -202,7 +202,7 @@ export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
   const html = buildAlertHtml(alerts, now);
 
   await resend.emails.send({
-    from: "alerts@newpmjobs.com",
+    from: "NewPMJobs <alerts@newpmjobs.com>",
     to: process.env.ALERT_RECIPIENT_EMAIL!,
     subject: `Job Alert: ${totalNewJobs} new PM job${totalNewJobs === 1 ? "" : "s"} — ${now}`,
     html,

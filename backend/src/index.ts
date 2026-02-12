@@ -14,7 +14,7 @@ import { scrapeCompanyCareers } from "./scraper/scraper";
 import { detectPlatform } from "./scraper/detectPlatform";
 import { validateScrapeResults } from "./scraper/validateScrape";
 import { classifyJobLevel } from "./lib/classifyLevel";
-import { sendAlert } from "./email/sendAlert";
+
 
 dotenv.config();
 
@@ -186,53 +186,6 @@ app.post("/api/admin/add-company", async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: "Failed to add company" });
     }
-  }
-});
-
-// TEMPORARY: test email template (remove after verifying)
-app.get("/api/test-email", async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (secret !== process.env.CRON_SECRET) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-
-  try {
-    await sendAlert([
-      {
-        companyName: "Stripe",
-        careersUrl: "https://stripe.com/jobs",
-        newJobs: [
-          { title: "Senior Product Manager, Payments", urlPath: "https://stripe.com/jobs/listing/senior-pm-payments" },
-          { title: "Product Manager, Connect Platform", urlPath: "https://stripe.com/jobs/listing/pm-connect" },
-          { title: "Group Product Manager, Billing", urlPath: "https://stripe.com/jobs/listing/group-pm-billing" },
-        ],
-      },
-      {
-        companyName: "Airbnb",
-        careersUrl: "https://careers.airbnb.com",
-        newJobs: [
-          { title: "Product Manager, Trust & Safety", urlPath: "https://careers.airbnb.com/positions/pm-trust" },
-          { title: "Senior Product Manager, Search & Discovery", urlPath: "https://careers.airbnb.com/positions/senior-pm-search" },
-        ],
-      },
-      {
-        companyName: "OpenAI",
-        careersUrl: "https://openai.com/careers",
-        newJobs: [
-          { title: "Product Manager, API Platform", urlPath: "https://openai.com/careers/pm-api" },
-          { title: "Director of Product, ChatGPT", urlPath: "https://openai.com/careers/director-chatgpt" },
-        ],
-      },
-      { companyName: "Netflix", careersUrl: "https://jobs.netflix.com", newJobs: [] },
-      { companyName: "Google", careersUrl: "https://careers.google.com", newJobs: [] },
-      { companyName: "DoorDash", careersUrl: "https://careers.doordash.com", newJobs: [] },
-    ]);
-    res.json({ message: "Test email sent" });
-  } catch (err) {
-    console.error("Test email failed:", err);
-    res.status(500).json({ error: "Failed to send test email" });
   }
 });
 
