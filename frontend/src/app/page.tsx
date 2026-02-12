@@ -297,7 +297,7 @@ export default function Dashboard() {
             <div
               key={company.id}
               onClick={() => router.push(`/company/${company.id}`)}
-              className="group relative rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-[3px]"
+              className="group relative rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-[3px] flex flex-col"
               style={{
                 height: 190,
                 backgroundColor: cardBg,
