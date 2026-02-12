@@ -341,10 +341,10 @@ export default function Dashboard() {
                 </span>
               </div>
 
-              {/* Card body — centered, fixed layout */}
-              <div className="flex flex-col items-center justify-center flex-1 px-3.5">
-                {/* Badge row — fixed 28px height */}
-                <div className="h-[28px] flex items-center justify-center">
+              {/* Card body — Layout G: 3 rows spread vertically */}
+              <div className="flex flex-col items-center justify-between flex-1 py-3 px-3.5">
+                {/* Top row: badge (fixed height, empty spacer if none) */}
+                <div className="h-[24px] flex items-center justify-center">
                   {company.new_jobs_today > 0 && (
                     <span
                       className="px-3 py-0.5 rounded-full text-[13px] font-bold"
@@ -358,8 +358,8 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* Role count — centered */}
-                <div className="text-center mt-1">
+                {/* Middle row: role count */}
+                <div className="text-center">
                   <span className="text-[20px] font-bold text-[#1A1A2E]">
                     {company.total_product_jobs}
                   </span>
@@ -367,32 +367,32 @@ export default function Dashboard() {
                     roles
                   </span>
                 </div>
-              </div>
 
-              {/* Timestamp footer — centered */}
-              <div className="pb-3 flex items-center justify-center gap-1.5">
-                {company.last_check_status?.startsWith("success") ? (
-                  <span
-                    className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
-                    style={{ backgroundColor: "var(--status-ok)" }}
-                    title="Status: OK"
-                  />
-                ) : company.last_check_status?.startsWith("error") ? (
-                  <span
-                    className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
-                    style={{ backgroundColor: "var(--status-error)" }}
-                    title={company.last_check_status}
-                  />
-                ) : (
-                  <span
-                    className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
-                    style={{ backgroundColor: "var(--status-neutral)" }}
-                    title="Pending"
-                  />
-                )}
-                <span className="text-[10px] text-[#9CA3AF]">
-                  Last checked: {formatDate(company.last_checked_at)}
-                </span>
+                {/* Bottom row: timestamp */}
+                <div className="flex items-center justify-center gap-1.5">
+                  {company.last_check_status?.startsWith("success") ? (
+                    <span
+                      className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
+                      style={{ backgroundColor: "var(--status-ok)" }}
+                      title="Status: OK"
+                    />
+                  ) : company.last_check_status?.startsWith("error") ? (
+                    <span
+                      className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
+                      style={{ backgroundColor: "var(--status-error)" }}
+                      title={company.last_check_status}
+                    />
+                  ) : (
+                    <span
+                      className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
+                      style={{ backgroundColor: "var(--status-neutral)" }}
+                      title="Pending"
+                    />
+                  )}
+                  <span className="text-[10px] text-[#9CA3AF]">
+                    Last checked: {formatDate(company.last_checked_at)}
+                  </span>
+                </div>
               </div>
 
               {/* Delete button — absolute, hover-only */}
