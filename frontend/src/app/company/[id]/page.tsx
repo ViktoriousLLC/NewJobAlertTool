@@ -44,6 +44,16 @@ interface CompData {
   attribution: string;
 }
 
+function isToday(dateStr: string): boolean {
+  const d = new Date(dateStr);
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
 export default function CompanyDetailPage() {
   return (
     <Suspense>
@@ -520,7 +530,7 @@ function CompanyDetailContent() {
                           </svg>
                         )}
                       </button>
-                      {!job.is_baseline && (
+                      {!job.is_baseline && isToday(job.first_seen_at) && (
                         <span
                           className="px-2 py-0.5 rounded text-xs font-semibold shrink-0"
                           style={{ backgroundColor: "var(--badge-bg)", color: "var(--badge-text)" }}
