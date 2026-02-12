@@ -78,31 +78,51 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/companies/:id — company detail with jobs (user-scoped)
+// GET /api/companies/:id — company detail with jobs + next company (user-scoped)
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const { data: company, error } = await supabase
-      .from("companies")
-      .select("*")
-      .eq("id", id)
-      .eq("user_id", req.userId!)
-      .single();
+    // Parallel: fetch company, its jobs, and sibling company names in one go
+    const [companyResult, jobsResult, siblingsResult] = await Promise.all([
+      supabase
+        .from("companies")
+        .select("*")
+        .eq("id", id)
+        .eq("user_id", req.userId!)
+        .single(),
+      supabase
+        .from("seen_jobs")
+        .select("id, job_title, job_location, job_url_path, first_seen_at, is_baseline, job_level")
+        .eq("company_id", id)
+        .order("first_seen_at", { ascending: false }),
+      supabase
+        .from("companies")
+        .select("id, name")
+        .eq("user_id", req.userId!)
+        .order("name", { ascending: true }),
+    ]);
 
-    if (error || !company) {
+    if (companyResult.error || !companyResult.data) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
 
-    // Get all jobs, sorted newest first
-    const { data: allJobs } = await supabase
-      .from("seen_jobs")
-      .select("*")
-      .eq("company_id", id)
-      .order("first_seen_at", { ascending: false });
+    // Compute next company alphabetically
+    let next_company: { id: string; name: string } | null = null;
+    const siblings = siblingsResult.data || [];
+    if (siblings.length > 1) {
+      const idx = siblings.findIndex((c) => c.id === id);
+      if (idx !== -1) {
+        next_company = siblings[(idx + 1) % siblings.length];
+      }
+    }
 
-    res.json({ ...company, jobs: allJobs || [] });
+    res.json({
+      ...companyResult.data,
+      jobs: jobsResult.data || [],
+      next_company,
+    });
   } catch (err) {
     console.error("GET /api/companies/:id error:", err);
     res.status(500).json({ error: "Failed to fetch company" });

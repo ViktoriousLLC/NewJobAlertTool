@@ -99,6 +99,11 @@ function CompanyDetailContent() {
         const detail = await detailRes.json();
         setCompany(detail);
 
+        // Next company comes from the detail response (computed server-side)
+        if (detail.next_company) {
+          setNextCompany(detail.next_company);
+        }
+
         // Load favorites
         try {
           const favIds: string[] = await favRes.json();
@@ -115,33 +120,16 @@ function CompanyDetailContent() {
     fetchData();
   }, [id]);
 
-  // Lazy-load compensation data + next company (non-blocking, loads after page renders)
+  // Lazy-load compensation data (non-blocking, loads after page renders)
   useEffect(() => {
     if (!company) return;
-
-    // Fetch comp data (can be slow on cache miss — don't block page)
     apiFetch(`/api/compensation/${encodeURIComponent(company.name)}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.levels?.length > 0) setCompData(data);
       })
       .catch(() => {});
-
-    // Fetch company list for "next company" nav
-    apiFetch("/api/companies")
-      .then((res) => res.json())
-      .then((allCompanies: CompanySummary[]) => {
-        const sorted = [...allCompanies].sort((a, b) =>
-          a.name.localeCompare(b.name)
-        );
-        const currentIdx = sorted.findIndex((c) => c.id === id);
-        if (currentIdx !== -1 && sorted.length > 1) {
-          const nextIdx = (currentIdx + 1) % sorted.length;
-          setNextCompany(sorted[nextIdx]);
-        }
-      })
-      .catch(() => {});
-  }, [company, id]);
+  }, [company]);
 
   function toggleLevel(level: JobLevel) {
     setLevelFilter((prev) => {

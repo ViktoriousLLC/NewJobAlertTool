@@ -209,54 +209,68 @@ function computeTiers(levels: LevelData[]): CompData["tiers"] {
 }
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MEMORY_TTL_MS = 60 * 60 * 1000; // 1 hour in-memory
+
+// In-memory cache — eliminates DB round-trips on hot path
+const memCache = new Map<string, { data: CompData | null; expiresAt: number }>();
 
 /**
  * Get compensation data for a single company.
- * Uses comp_cache table with 24hr TTL.
+ * Three-tier cache: in-memory (1hr) → DB comp_cache (24hr) → live fetch from levels.fyi.
  */
 export async function getCompData(companyName: string): Promise<CompData | null> {
   const slug = resolveSlug(companyName);
 
-  // Check company-level override slug
-  const { data: companyRow } = await supabase
-    .from("companies")
-    .select("levelsfyi_slug")
-    .eq("name", companyName)
-    .maybeSingle();
+  // Tier 1: in-memory cache (0ms, no DB call)
+  const mem = memCache.get(slug);
+  if (mem && Date.now() < mem.expiresAt) {
+    return mem.data;
+  }
 
-  const effectiveSlug = companyRow?.levelsfyi_slug || slug;
-
-  // Check cache
+  // Tier 2: DB cache (1 query instead of 2 — skip slug override lookup for known companies)
   const cutoff = new Date(Date.now() - CACHE_TTL_MS).toISOString();
   const { data: cached } = await supabase
     .from("comp_cache")
     .select("data")
-    .eq("company_slug", effectiveSlug)
+    .eq("company_slug", slug)
     .gt("fetched_at", cutoff)
     .maybeSingle();
 
   if (cached?.data) {
-    return cached.data as CompData;
+    const compData = cached.data as CompData;
+    memCache.set(slug, { data: compData, expiresAt: Date.now() + MEMORY_TTL_MS });
+    return compData;
   }
 
-  // Fetch from levels.fyi
-  const url = buildUrl(effectiveSlug);
+  // Tier 3: fetch from levels.fyi
+  const url = buildUrl(slug);
   let html: string;
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     const response = await fetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; NewPMJobs/1.0)",
         Accept: "text/html",
       },
+      signal: controller.signal,
     });
-    if (!response.ok) return null;
+    clearTimeout(timeout);
+    if (!response.ok) {
+      memCache.set(slug, { data: null, expiresAt: Date.now() + MEMORY_TTL_MS });
+      return null;
+    }
     html = await response.text();
   } catch {
+    memCache.set(slug, { data: null, expiresAt: Date.now() + 5 * 60 * 1000 }); // Cache failures for 5 min
     return null;
   }
 
   const parsed = parseHtml(html);
-  if (!parsed) return null;
+  if (!parsed) {
+    memCache.set(slug, { data: null, expiresAt: Date.now() + MEMORY_TTL_MS });
+    return null;
+  }
 
   const compData: CompData = {
     levels: parsed.levels,
@@ -266,20 +280,21 @@ export async function getCompData(companyName: string): Promise<CompData | null>
     attribution: "Data source: Levels.fyi (https://www.levels.fyi)",
   };
 
-  // Upsert into cache
-  try {
-    await supabase.from("comp_cache").upsert(
-      {
-        company_slug: effectiveSlug,
-        company_name: companyName,
-        data: compData,
-        fetched_at: new Date().toISOString(),
-      },
-      { onConflict: "company_slug" }
-    );
-  } catch (err) {
-    console.error("Failed to cache comp data:", err);
-  }
+  // Write to both caches
+  memCache.set(slug, { data: compData, expiresAt: Date.now() + MEMORY_TTL_MS });
+
+  // DB upsert (fire-and-forget, don't block response)
+  supabase.from("comp_cache").upsert(
+    {
+      company_slug: slug,
+      company_name: companyName,
+      data: compData,
+      fetched_at: new Date().toISOString(),
+    },
+    { onConflict: "company_slug" }
+  ).then(({ error }) => {
+    if (error) console.error("Failed to cache comp data:", error);
+  });
 
   return compData;
 }
