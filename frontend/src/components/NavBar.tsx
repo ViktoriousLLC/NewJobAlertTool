@@ -17,7 +17,7 @@ function NavBarInner() {
 
   const navBtn =
     "flex items-center gap-1.5 px-3 py-1.5 rounded-[6px] text-[13px] font-medium transition-all border";
-  const navDefault = `${navBtn} border-white/15 text-[#C1C5D6] hover:bg-[#132B4D] hover:text-white`;
+  const navDefault = `${navBtn} bg-white/[0.07] border-white/15 text-[#D8DBE8] hover:bg-[#132B4D] hover:text-white`;
   const navActive = `${navBtn} bg-[#132B4D] border-white/25 text-white`;
 
   return (
