@@ -8,7 +8,7 @@ export const BRAND_COLORS: Record<string, string> = {
   figma: "#A259FF",
   airbnb: "#FF5A5F",
   openai: "#10A37F",
-  slack: "#4A154B",
+  slack: "#611F69",
   stripe: "#635BFF",
   uber: "#000000",
   google: "#4285F4",
@@ -19,6 +19,12 @@ export const BRAND_COLORS: Record<string, string> = {
   amazon: "#FF9900",
   microsoft: "#00A4EF",
   spotify: "#1DB954",
+  ebay: "#E53238",
+  anthropic: "#D4A574",
+  vanta: "#5C2D91",
+  cisco: "#049FD9",
+  roblox: "#E2231A",
+  bitkraft: "#1A1A2E",
 };
 
 export const DEFAULT_BRAND_COLOR = "#6B7280";

@@ -104,6 +104,14 @@ export default function Dashboard() {
     });
   }
 
+  function formatTime(dateStr: string | null) {
+    if (!dateStr) return "Never";
+    return new Date(dateStr).toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -206,7 +214,7 @@ export default function Dashboard() {
       {/* Header row */}
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-[24px] font-[800] text-[#1A1A2E]">
+          <h1 className="text-[22px] font-[700] text-[#1A1A2E]">
             Tracked Companies
           </h1>
           <p className="text-[13px] text-[#6B7280] mt-0.5">
@@ -216,27 +224,27 @@ export default function Dashboard() {
 
         {/* Stat boxes */}
         <div className="flex items-center gap-3">
-          <div className="bg-[#EFF6FF] rounded-lg px-4 py-2.5 text-center min-w-[90px]">
-            <div className="text-[20px] font-bold text-[#1E40AF]">
+          <div className="rounded-lg px-4 py-2.5 text-center min-w-[90px]" style={{ backgroundColor: "#FAF8F5", border: "1px solid #E8E4DF" }}>
+            <div className="text-[20px] font-bold text-[#1A1A2E]">
               {totalRoles}
             </div>
-            <div className="text-[11px] text-[#3B82F6] font-medium">
+            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#9494A8", opacity: 0.7 }}>
               Total Roles
             </div>
           </div>
-          <div className="bg-[#ECFDF5] rounded-lg px-4 py-2.5 text-center min-w-[90px]">
-            <div className="text-[20px] font-bold text-[#065F46]">
+          <div className="rounded-lg px-4 py-2.5 text-center min-w-[90px]" style={{ backgroundColor: "#F0FAF4", border: "1px solid #C8E6D5" }}>
+            <div className="text-[20px] font-bold text-[#16874D]">
               {newToday}
             </div>
-            <div className="text-[11px] text-[#10B981] font-medium">
+            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#16874D", opacity: 0.7 }}>
               New Today
             </div>
           </div>
-          <div className="bg-[#FEF2F2] rounded-lg px-4 py-2.5 text-center min-w-[90px]">
-            <div className="text-[20px] font-bold text-[#991B1B]">
+          <div className="rounded-lg px-4 py-2.5 text-center min-w-[90px]" style={{ backgroundColor: "#FDF5F3", border: "1px solid #E8CFC9" }}>
+            <div className="text-[20px] font-bold text-[#A14B38]">
               {errorCount}
             </div>
-            <div className="text-[11px] text-[#EF4444] font-medium">
+            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#A14B38", opacity: 0.7 }}>
               Errors
             </div>
           </div>
@@ -245,7 +253,7 @@ export default function Dashboard() {
 
       {/* Search + Filter bar */}
       <div className="flex items-center gap-3 mb-5">
-        <div className="relative flex-1 max-w-[280px]">
+        <div className="relative flex-1 max-w-[200px]">
           <svg
             className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]"
             fill="none"
@@ -273,148 +281,162 @@ export default function Dashboard() {
             <button
               key={f.key}
               onClick={() => { setFilter(f.key); trackEvent("dashboard_filter", { filter: f.key }); }}
-              className={`px-3 py-1.5 rounded-md text-[12px] font-medium transition-all ${
+              style={{
+                padding: "6px 14px",
+                borderRadius: 7,
+                fontSize: 13,
+                fontWeight: filter === f.key ? 600 : 500,
+              }}
+              className={`transition-all ${
                 filter === f.key
-                  ? "bg-[#0C1E3A] text-white"
-                  : "bg-white border border-[#E5E7EB] text-[#6B7280] hover:bg-[#F3F4F6]"
+                  ? "bg-[#0C1E3A] text-white border border-[#0C1E3A]"
+                  : "bg-white border border-[#E0E0E6] text-[#1A1A2E] hover:bg-[#F3F4F6]"
               }`}
             >
               {f.label}
             </button>
           ))}
         </div>
+
+        <span className="text-[12px] text-[#9494A8]">
+          {sorted.length} {sorted.length === 1 ? "company" : "companies"}
+        </span>
       </div>
 
       {/* Card grid — 5 columns */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-[14px]">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
         {sorted.map((company, index) => {
           const brand = getBrandColor(company.name);
-          const cardBg = softenColor(brand, 0.94);
-          const headerFrom = softenColor(brand, 0.40);
-          const headerTo = softenColor(brand, 0.15);
+          const cardBg = softenColor(brand, 0.96);
+          const headerFrom = softenColor(brand, 0.60);
+          const headerTo = softenColor(brand, 0.35);
 
           return (
             <div
               key={company.id}
               onClick={() => router.push(`/company/${company.id}`)}
-              className="group relative rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-[3px] flex flex-col"
+              className="group relative overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-[3px] flex flex-col"
               style={{
-                height: 190,
+                height: 156,
+                borderRadius: 10,
                 backgroundColor: cardBg,
-                border: `1px solid ${softenColor(brand, 0.85)}`,
+                border: "1px solid #E0E0E6",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
                 animation: "card-enter 0.4s ease-out both",
                 animationDelay: `${index * 0.03}s`,
               }}
               onMouseEnter={(e) => {
                 const el = e.currentTarget;
-                el.style.border = `1px solid ${softenColor(brand, 0.55)}`;
-                el.style.boxShadow = `0 8px 24px ${softenColor(brand, 0.80)}`;
+                el.style.border = `1px solid ${softenColor(brand, 0.50)}`;
+                el.style.boxShadow = `0 8px 24px ${softenColor(brand, 0.75)}44`;
               }}
               onMouseLeave={(e) => {
                 const el = e.currentTarget;
-                el.style.border = `1px solid ${softenColor(brand, 0.85)}`;
-                el.style.boxShadow = "none";
+                el.style.border = "1px solid #E0E0E6";
+                el.style.boxShadow = "0 1px 3px rgba(0,0,0,0.04)";
               }}
             >
               {/* Brand header band */}
               <div
-                className="flex items-center gap-2.5 px-3.5 py-2.5"
+                className="flex items-center shrink-0"
                 style={{
+                  minHeight: 42,
+                  padding: "8px 10px",
+                  gap: 8,
                   background: `linear-gradient(135deg, ${headerFrom}, ${headerTo})`,
                 }}
               >
-                <img
-                  src={getFaviconUrl(company.name, company.careers_url)}
-                  alt=""
-                  width={28}
-                  height={28}
-                  className="object-contain shrink-0 rounded"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).style.display = "none";
-                  }}
-                />
-                <span className="text-[15px] font-bold text-white truncate drop-shadow-sm">
+                <div className="w-[28px] h-[28px] shrink-0 overflow-hidden" style={{ borderRadius: 6 }}>
+                  <img
+                    src={getFaviconUrl(company.name, company.careers_url)}
+                    alt=""
+                    width={28}
+                    height={28}
+                    className="object-contain w-full h-full"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).style.display = "none";
+                    }}
+                  />
+                </div>
+                <span className="text-[16px] font-[700] text-[#1A1A2E] truncate">
                   {company.name}
                 </span>
               </div>
 
-              {/* Card body — Layout G: 3 rows spread vertically */}
-              <div className="flex flex-col items-center justify-between flex-1 py-3 px-3.5">
-                {/* Top row: badge (fixed height, empty spacer if none) */}
-                <div className="h-[24px] flex items-center justify-center">
-                  {company.new_jobs_today > 0 && (
-                    <span
-                      className="px-3 py-0.5 rounded-full text-[13px] font-bold"
-                      style={{
-                        backgroundColor: "var(--badge-bg)",
-                        color: "var(--badge-text)",
-                      }}
-                    >
-                      {company.new_jobs_today} new
-                    </span>
-                  )}
-                </div>
-
-                {/* Middle row: role count */}
+              {/* Card body — centered content */}
+              <div className={`flex flex-col items-center justify-center flex-1 px-3 ${company.new_jobs_today > 0 ? "gap-[10px]" : ""}`}>
+                {company.new_jobs_today > 0 && (
+                  <span
+                    className="font-[700] text-[11px]"
+                    style={{
+                      backgroundColor: "#E8F5EE",
+                      color: "#16874D",
+                      borderRadius: 6,
+                      padding: "3px 12px",
+                      letterSpacing: "0.02em",
+                    }}
+                  >
+                    +{company.new_jobs_today} new
+                  </span>
+                )}
                 <div className="text-center">
-                  <span className="text-[20px] font-bold text-[#1A1A2E]">
+                  <span className="text-[26px] font-bold text-[#1A1A2E]">
                     {company.total_product_jobs}
                   </span>
-                  <span className="text-[13px] text-[#6B7280] ml-1">
-                    roles
-                  </span>
-                </div>
-
-                {/* Bottom row: timestamp */}
-                <div className="flex items-center justify-center gap-1.5">
-                  {company.last_check_status?.startsWith("success") ? (
-                    <span
-                      className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
-                      style={{ backgroundColor: "var(--status-ok)" }}
-                      title="Status: OK"
-                    />
-                  ) : company.last_check_status?.startsWith("error") ? (
-                    <span
-                      className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
-                      style={{ backgroundColor: "var(--status-error)" }}
-                      title={company.last_check_status}
-                    />
-                  ) : (
-                    <span
-                      className="w-[6px] h-[6px] rounded-full inline-block shrink-0"
-                      style={{ backgroundColor: "var(--status-neutral)" }}
-                      title="Pending"
-                    />
-                  )}
-                  <span className="text-[10px] text-[#9CA3AF]">
-                    Last checked: {formatDate(company.last_checked_at)}
+                  <span className="text-[13px] text-[#6E6E80] ml-1">
+                    {company.total_product_jobs === 1 ? "role" : "roles"}
                   </span>
                 </div>
               </div>
 
+              {/* Footer — separated with border-top */}
+              <div className="flex items-center justify-center gap-1.5 shrink-0" style={{ borderTop: "1px solid #E0E0E6", padding: "5px 10px" }}>
+                {company.last_check_status?.startsWith("success") ? (
+                  <span
+                    className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
+                    style={{ backgroundColor: "var(--status-ok)" }}
+                    title="Status: OK"
+                  />
+                ) : company.last_check_status?.startsWith("error") ? (
+                  <span
+                    className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
+                    style={{ backgroundColor: "var(--status-error)" }}
+                    title={company.last_check_status}
+                  />
+                ) : (
+                  <span
+                    className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
+                    style={{ backgroundColor: "var(--status-neutral)" }}
+                    title="Pending"
+                  />
+                )}
+                <span className="text-[10px] text-[#9494A8]">
+                  {company.last_check_status?.startsWith("error")
+                    ? "Failed"
+                    : formatTime(company.last_checked_at)}
+                </span>
+              </div>
+
               {/* Delete button — absolute, hover-only */}
               <div
-                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                className="absolute opacity-0 group-hover:opacity-100 transition-opacity"
+                style={{ top: 5, right: 5 }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <button
                   onClick={() => deleteCompany(company.id, company.name)}
-                  className="p-1.5 rounded-md text-white/60 hover:text-red-300 hover:bg-black/20 backdrop-blur-sm transition-all"
+                  className="flex items-center justify-center text-white transition-all hover:brightness-110"
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 5,
+                    backgroundColor: "rgba(0,0,0,0.3)",
+                    fontSize: 13,
+                    lineHeight: 1,
+                  }}
                   title="Delete company"
                 >
-                  <svg
-                    className="w-3.5 h-3.5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={1.5}
-                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                    />
-                  </svg>
+                  x
                 </button>
               </div>
             </div>
