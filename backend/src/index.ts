@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/node";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -15,6 +16,12 @@ import { validateScrapeResults } from "./scraper/validateScrape";
 import { classifyJobLevel } from "./lib/classifyLevel";
 
 dotenv.config();
+
+Sentry.init({
+  dsn: "https://SENTRY_DSN_REDACTED",
+  tracesSampleRate: 0.1,
+  environment: process.env.NODE_ENV || "production",
+});
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -186,6 +193,8 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+
+Sentry.setupExpressErrorHandler(app);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
