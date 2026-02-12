@@ -121,7 +121,7 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
                     <span style="color:#ffffff;font-weight:bold;font-size:14px;font-family:${font};">PM</span>
                   </td>
                   <td style="padding-left:12px;vertical-align:middle;">
-                    <div style="font-size:18px;font-weight:700;color:#1A1A2E;font-family:${font};">NewPMJobs.com</div>
+                    <a href="https://www.newpmjobs.com" target="_blank" style="font-size:18px;font-weight:700;color:#1A1A2E;text-decoration:none;font-family:${font};">NewPMJobs.com</a>
                     <div style="font-size:13px;color:#a8a29e;font-family:${font};">${escapeHtml(now)}</div>
                   </td>
                 </tr>
@@ -134,7 +134,7 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:${summaryBg};border-radius:8px;">
                 <tr>
                   <td style="padding:16px 20px;text-align:center;">
-                    <span style="color:#ffffff;font-size:17px;font-weight:700;font-family:${font};">${summaryText}</span>
+                    <a href="https://www.newpmjobs.com" target="_blank" style="color:#ffffff;font-size:17px;font-weight:700;text-decoration:none;font-family:${font};">${summaryText}</a>
                   </td>
                 </tr>
               </table>
