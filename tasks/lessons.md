@@ -162,3 +162,15 @@ The user is often AFK. They want to come back to a finished result, not a to-do 
 **Pattern:** Companies whose careers pages are on ATS domains (boards.greenhouse.io, jobs.lever.co) get the ATS favicon instead of the company's. Discord's careers_url is `boards.greenhouse.io/discord` — Google returns Greenhouse's favicon.
 
 **Rule:** Maintain a `DOMAIN_OVERRIDES` map for companies on ATS platforms, mapping company name → real domain (e.g., `discord` → `discord.com`). Only needed for companies on Greenhouse, Lever, Ashby, etc.
+
+## 2026-02-11: Supabase RPC calls fail silently when the function doesn't exist
+
+**Mistake:** Dashboard `new_jobs_today` was always 0 — the NEW badge never showed on any tile. The `GET /api/companies` route called `supabase.rpc("get_company_job_stats", ...)` which returned `{ data: null }` because the SQL function was defined in `supabase-schema.sql` but never actually applied to the database via the SQL Editor. The code only destructured `data` and never checked `error`.
+
+**Rule:** Supabase RPC functions need to be manually created via the SQL Editor — having them in a schema file isn't enough. For critical features, prefer direct queries over RPC functions to avoid this dependency. If using RPC, always check both `data` and `error` from the response.
+
+## 2026-02-11: Fix the broken side of a data mismatch, not the working side
+
+**Mistake:** Detail page showed 1 new role for Uber (correct), but dashboard tile didn't (broken). I changed the detail page's `isToday()` from local time to UTC — which broke the detail page too instead of fixing the dashboard. The bug was in the dashboard's data source (the RPC), not in the detail page's display logic.
+
+**Rule:** When two views disagree on the same data, the fix belongs where the data is MISSING, not where it's PRESENT. Identify which side is correct first, then fix the other side to match. Don't change working code to match broken code.

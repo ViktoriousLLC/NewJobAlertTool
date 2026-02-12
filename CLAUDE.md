@@ -181,6 +181,13 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `backend/src/lib/classifyLevel.ts` — Job level classification (early/mid/director) by title keywords
 - `backend/src/lib/levelsFyi.ts` — Levels.fyi fetcher, parser, and comp_cache manager
 - `frontend/src/lib/jobFilters.ts` — Shared `isUSLocation()`, job level labels/colors
+- `frontend/src/lib/brandColors.ts` — Brand color map, `softenColor()`, `getFaviconUrl()` for dashboard cards
+- `frontend/src/lib/analytics.ts` — PostHog event tracking wrapper (`trackEvent`, `identifyUser`)
+- `frontend/src/components/NavBar.tsx` — Dark navy sticky nav bar with active route detection
+- `frontend/src/components/PostHogProvider.tsx` — PostHog init + SPA pageview tracking provider
+- `frontend/sentry.client.config.ts` — Sentry browser-side init
+- `frontend/sentry.server.config.ts` — Sentry server-side init
+- `frontend/instrumentation.ts` — Next.js instrumentation hook for Sentry
 - `backend/src/middleware/auth.ts` — JWT verification middleware
 - `backend/src/index.ts` — Express server entry point
 - `frontend/src/lib/supabase.ts` — Browser Supabase client (`@supabase/ssr`)
@@ -234,8 +241,20 @@ Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Compa
 - **API key:** Only in Railway production env vars (`RESEND_API_KEY`). Empty locally — cannot send from local.
 - **To send one-off emails:** Add a temporary protected endpoint, push to deploy, call via curl, then clean up.
 
+## Monitoring & Analytics
+
+| Service | Purpose | Where |
+|---------|---------|-------|
+| PostHog | Product analytics (pageviews, events, user identity) | Frontend only (`posthog-js`) |
+| Sentry | Error monitoring + tracing | Frontend (`@sentry/nextjs`) + Backend (`@sentry/node`) |
+| UptimeRobot/BetterUptime | Uptime monitoring | External SaaS, pings `/api/health` |
+
+- **PostHog:** Initialized in `PostHogProvider.tsx`, SPA-aware pageview tracking via `usePathname()`, user identification on auth. Events: `company_added`, `company_deleted`, `job_starred`, `job_unstarred`, `dashboard_filter`.
+- **Sentry:** DSN shared between frontend and backend. Frontend uses `withSentryConfig()` in `next.config.ts` + `instrumentation.ts`. Backend uses `Sentry.init()` + `Sentry.setupExpressErrorHandler(app)`.
+
 ## Gotchas & Lessons
 
+- **Supabase RPC silent failures:** `supabase.rpc("fn_name", {...})` returns `{ data: null, error: ... }` if the function doesn't exist in the DB — but the error is easy to miss if you only destructure `data`. Prefer direct queries for critical features, or always check the `error` field.
 - **Supabase DDL:** Cannot run CREATE TABLE / ALTER TABLE through REST API or supabase-js. Must use Supabase SQL Editor in the dashboard.
 - **useSearchParams():** Must be wrapped in `<Suspense>` boundary in Next.js. Create a thin wrapper component.
 - **Cron:** Only use Railway Cron (single source). Do NOT add in-process schedulers (node-cron) — causes duplicate runs.
