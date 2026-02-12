@@ -321,21 +321,16 @@ export default function Dashboard() {
                   background: `linear-gradient(135deg, ${headerFrom}, ${headerTo})`,
                 }}
               >
-                <div
-                  className="w-[36px] h-[36px] rounded-lg flex items-center justify-center shrink-0 overflow-hidden"
-                  style={{ backgroundColor: "rgba(255,255,255,0.85)" }}
-                >
-                  <img
-                    src={getFaviconUrl(company.name, company.careers_url)}
-                    alt=""
-                    width={24}
-                    height={24}
-                    className="object-contain"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = "none";
-                    }}
-                  />
-                </div>
+                <img
+                  src={getFaviconUrl(company.name, company.careers_url)}
+                  alt=""
+                  width={28}
+                  height={28}
+                  className="object-contain shrink-0 rounded"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = "none";
+                  }}
+                />
                 <span className="text-[15px] font-bold text-white truncate drop-shadow-sm">
                   {company.name}
                 </span>

@@ -40,41 +40,81 @@ export function softenColor(hex: string, amount: number): string {
   return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
 }
 
-// Companies whose careers_url is on an ATS domain — map name → real domain
-const DOMAIN_OVERRIDES: Record<string, string> = {
-  discord: "discord.com",
-  doordash: "doordash.com",
-  reddit: "reddit.com",
-  instacart: "instacart.com",
-  figma: "figma.com",
-  airbnb: "airbnb.com",
-  openai: "openai.com",
-  slack: "slack.com",
-};
+/**
+ * Derive a favicon URL from the company name and careers URL.
+ *
+ * Strategy:
+ * 1. For ATS-hosted URLs (greenhouse, lever, ashby, workday, eightfold),
+ *    extract the board/org slug and try {slug}.com — works for most companies.
+ * 2. For direct company domains, use the hostname as-is.
+ * 3. Fallback: use the company name as {name}.com.
+ */
 
-function extractDomain(url: string): string {
+// ATS hostname patterns → regex to extract company slug from URL
+const ATS_PATTERNS: { host: RegExp; slugFromUrl: (url: URL) => string | null }[] = [
+  {
+    // boards.greenhouse.io/discord → discord
+    host: /greenhouse\.io$/,
+    slugFromUrl: (u) => u.pathname.split("/").filter(Boolean)[0] || null,
+  },
+  {
+    // jobs.lever.co/spotify → spotify
+    host: /lever\.co$/,
+    slugFromUrl: (u) => u.pathname.split("/").filter(Boolean)[0] || null,
+  },
+  {
+    // jobs.ashbyhq.com/openai → openai
+    host: /ashbyhq\.com$/,
+    slugFromUrl: (u) => u.pathname.split("/").filter(Boolean)[0] || null,
+  },
+  {
+    // *.myworkdayjobs.com → extract subdomain prefix or path slug
+    host: /myworkdayjobs\.com$/,
+    slugFromUrl: () => null, // complex structure, fall through to name-based
+  },
+  {
+    // paypal.eightfold.ai → paypal (subdomain)
+    host: /eightfold\.ai$/,
+    slugFromUrl: (u) => {
+      const parts = u.hostname.split(".");
+      return parts.length > 2 ? parts[0] : null;
+    },
+  },
+  {
+    // careers.google.com → google (subdomain extraction)
+    host: /^careers\./,
+    slugFromUrl: (u) => {
+      const parts = u.hostname.replace(/^www\./, "").split(".");
+      // careers.google.com → google
+      return parts.length >= 3 ? parts[1] : null;
+    },
+  },
+];
+
+function extractFaviconDomain(companyName: string, careersUrl: string): string {
   try {
-    const hostname = new URL(url).hostname.replace(/^www\./, "");
-    // Strip ATS domains to avoid getting the ATS favicon
-    const ats = [
-      "boards.greenhouse.io",
-      "api.greenhouse.io",
-      "jobs.lever.co",
-      "jobs.ashbyhq.com",
-      "myworkdayjobs.com",
-      "eightfold.ai",
-    ];
-    for (const a of ats) {
-      if (hostname.endsWith(a)) return hostname; // will be overridden
+    const url = new URL(careersUrl);
+    const hostname = url.hostname.replace(/^www\./, "");
+
+    // Check if it's an ATS-hosted URL
+    for (const pattern of ATS_PATTERNS) {
+      if (pattern.host.test(hostname)) {
+        const slug = pattern.slugFromUrl(url);
+        if (slug) return `${slug}.com`;
+        // Fall through to name-based fallback
+        break;
+      }
     }
+
+    // Direct company domain — use as-is
     return hostname;
   } catch {
-    return "";
+    // URL parse failed — use company name
+    return `${companyName.toLowerCase().replace(/\s+/g, "")}.com`;
   }
 }
 
 export function getFaviconUrl(companyName: string, careersUrl: string): string {
-  const override = DOMAIN_OVERRIDES[companyName.toLowerCase()];
-  const domain = override ?? extractDomain(careersUrl);
+  const domain = extractFaviconDomain(companyName, careersUrl);
   return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
 }
