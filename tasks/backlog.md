@@ -14,7 +14,10 @@
 ## Priority: High
 - [x] PostHog analytics — pageviews, user identity, company_added/deleted, job_starred/unstarred, dashboard_filter (completed 2026-02-11)
 - [x] Sentry error monitoring — frontend (@sentry/nextjs) + backend (@sentry/node), auto-captures exceptions (completed 2026-02-11)
-- [ ] Uptime monitoring — add `https://api.newpmjobs.com/api/health` to BetterUptime/UptimeRobot (no code, just SaaS signup)
+- [x] Uptime monitoring — add `https://api.newpmjobs.com/api/health` to BetterUptime/UptimeRobot (completed 2026-02-12)
+
+## Priority: Medium / Architecture
+- [ ] Shared scraping — decouple companies from users so each company is scraped once regardless of subscriber count. Design doc: `tasks/shared-scraping-design.md`
 
 ## Priority: Low / Future
 - [ ] Stripe premium tier — link from existing Stripe account. Potential features: unlimited companies, salary alerts. Defer until 5K+ users.

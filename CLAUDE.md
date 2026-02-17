@@ -29,7 +29,7 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 - **Flow:** User enters email → magic link sent → clicks link → `/auth/callback` exchanges code for session → JWT stored in cookies
 - **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes (redirects to `/login`)
 - **Token flow:** Server-side cookies are HttpOnly, so browser JS can't read them. `apiFetch` calls `/api/auth/token` (a Next.js server route) to get the access token, then caches it in memory until near expiry.
-- **Backend:** `requireAuth` middleware extracts `Bearer <token>` from `Authorization` header, verifies via `supabase.auth.getUser(token)`, attaches `req.userId`
+- **Backend:** `requireAuth` middleware extracts `Bearer <token>` from `Authorization` header. Fast path: local JWT verification via `SUPABASE_JWT_SECRET` (~0ms). Fallback: `supabase.auth.getUser(token)` (~100-150ms). Attaches `req.userId`.
 - **Data scoping:** `companies` and `favorites` have `user_id` column. `seen_jobs` scoped through company's `user_id`
 - **Cron/scraper:** Uses service key (bypasses RLS), no user context needed — scrapes all companies across all users
 - **Env vars:** Backend needs `SUPABASE_ANON_KEY` (for auth verification) in addition to existing `SUPABASE_SERVICE_KEY`
@@ -56,7 +56,7 @@ All `/api/companies` and `/api/favorites` routes require `Authorization: Bearer 
 ### Companies
 ```
 GET    /api/companies                    — List all companies
-GET    /api/companies/{id}               — Get company + all jobs
+GET    /api/companies/{id}               — Get company + jobs + next_company
 POST   /api/companies                    — Add company (triggers initial scrape)
          Body: {"name": "X", "careers_url": "https://..."}
 DELETE /api/companies/{id}               — Delete company (cascades to jobs)
@@ -92,7 +92,7 @@ The CRON_SECRET is set in Railway env vars.
 
 ### `seen_jobs` table
 - `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `job_url_path`, `job_title`, `job_location`, `first_seen_at`, `is_baseline`, `job_level` (text)
-- Unique index on `(company_id, job_url_path)`, index on `job_level`
+- Unique index on `(company_id, job_url_path)`, index on `job_level`, composite index on `(company_id, is_baseline, first_seen_at)`
 - `is_baseline = true` for initial scrape, `false` for newly discovered jobs
 - `job_level`: `'early'`, `'mid'`, or `'director'` — classified by title keywords via `classifyJobLevel()`
 - Non-baseline jobs older than 30 days are auto-cleaned
@@ -240,6 +240,33 @@ Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Compa
 - **Recipient:** Set via `ALERT_RECIPIENT_EMAIL` env var in Railway
 - **API key:** Only in Railway production env vars (`RESEND_API_KEY`). Empty locally — cannot send from local.
 - **To send one-off emails:** Add a temporary protected endpoint, push to deploy, call via curl, then clean up.
+
+## Performance Architecture
+
+### Auth fast path
+- `SUPABASE_JWT_SECRET` is set in Railway → `requireAuth` middleware verifies JWTs locally (~0ms) instead of calling Supabase API (~100-150ms). If this env var is ever removed, every API call gets 100-150ms slower.
+
+### Dashboard (`GET /api/companies`)
+- `new_jobs_today`: computed via **DB-level filter** — `supabase.from("seen_jobs").eq("is_baseline", false).gte("first_seen_at", todayISO)`. PostgreSQL handles the date comparison, not JS.
+- Two parallel queries: (1) today's new jobs for badge counts, (2) latest non-baseline job per company for sorting.
+- Composite index: `idx_seen_jobs_company_baseline ON seen_jobs(company_id, is_baseline, first_seen_at)` — added 2026-02-12.
+
+### Detail page (`GET /api/companies/:id`)
+- Backend runs **3 parallel queries**: company row, jobs (selected columns only), sibling company names.
+- Response includes `next_company: { id, name }` — frontend no longer fetches all companies for the "next" button.
+- Frontend renders page as soon as company + favorites load (~200ms). **Comp data loads lazily** (non-blocking, appears after page is visible).
+
+### Compensation data (levels.fyi) — 3-tier cache
+| Tier | Latency | TTL | Location |
+|------|---------|-----|----------|
+| In-memory (`Map`) | ~0ms | 1 hour | `backend/src/lib/levelsFyi.ts` |
+| DB (`comp_cache` table) | ~50ms | 24 hours | Supabase |
+| Live fetch (levels.fyi) | 1-3s (5s timeout) | Fills both caches | External |
+
+- **Preloaded on company add**: `getCompData(name)` fires after response is sent (non-blocking).
+- **Refreshed by daily cron**: batch of 3 companies at a time, 2s delay between batches.
+- **DB upsert is fire-and-forget**: doesn't block the API response.
+- Cache failures (levels.fyi down / no data) are cached for 5 min to avoid repeated failures.
 
 ## Monitoring & Analytics
 
