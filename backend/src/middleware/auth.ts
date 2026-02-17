@@ -9,11 +9,12 @@ const jwtSecret = process.env.SUPABASE_JWT_SECRET;
 // Separate client using anon key for verifying user JWTs (fallback only)
 const authClient = createClient(supabaseUrl, supabaseAnonKey);
 
-// Extend Express Request to include userId
+// Extend Express Request to include userId and userEmail
 declare global {
   namespace Express {
     interface Request {
       userId?: string;
+      userEmail?: string;
     }
   }
 }
@@ -41,6 +42,7 @@ export async function requireAuth(
 
       if (payload.sub) {
         req.userId = payload.sub;
+        req.userEmail = (payload.email as string) || undefined;
         next();
         return;
       }
@@ -62,5 +64,6 @@ export async function requireAuth(
   }
 
   req.userId = user.id;
+  req.userEmail = user.email || undefined;
   next();
 }

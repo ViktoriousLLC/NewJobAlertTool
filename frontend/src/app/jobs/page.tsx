@@ -17,6 +17,7 @@ interface ApiJob {
   first_seen_at: string;
   is_baseline: boolean;
   job_level?: string;
+  status?: string;
 }
 
 interface CompTier {

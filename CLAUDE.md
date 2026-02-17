@@ -30,7 +30,7 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 - **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes (redirects to `/login`)
 - **Token flow:** Server-side cookies are HttpOnly, so browser JS can't read them. `apiFetch` calls `/api/auth/token` (a Next.js server route) to get the access token, then caches it in memory until near expiry.
 - **Backend:** `requireAuth` middleware extracts `Bearer <token>` from `Authorization` header. Fast path: local JWT verification via `SUPABASE_JWT_SECRET` (~0ms). Fallback: `supabase.auth.getUser(token)` (~100-150ms). Attaches `req.userId`.
-- **Data scoping:** `companies` and `favorites` have `user_id` column. `seen_jobs` scoped through company's `user_id`
+- **Data scoping:** Companies are shared (catalog). Users subscribe via `user_subscriptions`. Favorites via `user_job_favorites`. Dashboard/jobs filtered by subscription.
 - **Cron/scraper:** Uses service key (bypasses RLS), no user context needed — scrapes all companies across all users
 - **Env vars:** Backend needs `SUPABASE_ANON_KEY` (for auth verification) in addition to existing `SUPABASE_SERVICE_KEY`
 
@@ -51,29 +51,66 @@ Workflow: `git add` → `git commit` → `git push origin main` → wait ~60s �
 
 ## API Endpoints (Auth Required)
 
-All `/api/companies` and `/api/favorites` routes require `Authorization: Bearer <token>` header.
+All routes below require `Authorization: Bearer <token>` header.
 
-### Companies
+### Companies (user's subscribed companies)
 ```
-GET    /api/companies                    — List all companies
-GET    /api/companies/{id}               — Get company + jobs + next_company
-POST   /api/companies                    — Add company (triggers initial scrape)
+GET    /api/companies                    — List user's subscribed companies (via user_subscriptions)
+GET    /api/companies/{id}               — Get company + jobs + next_company (shared, nav uses subscriptions)
+POST   /api/companies                    — Add new company (creates + auto-subscribes, 10/user limit)
          Body: {"name": "X", "careers_url": "https://..."}
-DELETE /api/companies/{id}               — Delete company (cascades to jobs)
+DELETE /api/companies/{id}               — Unsubscribe (admin can ?hard=true to delete)
+```
+
+### Catalog (shared company list)
+```
+GET    /api/catalog                      — All companies in shared catalog (no user filter)
+```
+
+### Subscriptions
+```
+GET    /api/subscriptions                — List user's subscribed company IDs
+POST   /api/subscriptions                — Subscribe to companies
+         Body: {"company_ids": ["uuid", ...]}
+DELETE /api/subscriptions/{companyId}    — Unsubscribe from a company
+```
+
+### Preferences
+```
+GET    /api/preferences                  — Get user preferences (creates default if none)
+PUT    /api/preferences                  — Update preferences
+         Body: {"email_frequency": "daily|off"}
+```
+
+### Favorites
+```
+GET    /api/favorites                    — List user's favorited job IDs (from user_job_favorites)
+POST   /api/favorites/{jobId}            — Add a favorite
+DELETE /api/favorites/{jobId}            — Remove a favorite
+```
+
+### Jobs
+```
+GET    /api/jobs                         — All active jobs across user's subscribed companies
 ```
 
 ### Scrape Issues
 ```
-POST   /api/issues                       — Report a scrape issue
+POST   /api/issues                       — Report a scrape issue (any user, any company)
          Body: {"company_id": "uuid", "issue_type": "wrong_jobs|missing_jobs|bad_locations|other", "description": "..."}
 ```
 
 ### Compensation
 ```
-GET    /api/compensation                 — Comp data for all user's tracked companies (batch)
-GET    /api/compensation/{companyName}   — Comp data for a single company (levels, tiers, levels.fyi link)
+GET    /api/compensation                 — Comp data for user's subscribed companies (batch)
+GET    /api/compensation/{companyName}   — Comp data for a single company
 ```
-Returns levels.fyi PM compensation data with 24hr cache. Includes `attribution` and `levelsFyiUrl` fields.
+
+### Help / Feedback
+```
+POST   /api/help                         — Send feedback email to admin
+         Body: {"issue_type": "bug|missing_data|other", "message": "...", "page_url": "..."}
+```
 
 ### Scraping
 ```
@@ -83,20 +120,36 @@ The CRON_SECRET is set in Railway env vars.
 
 ## Database Schema
 
-### `companies` table
-- `id` (uuid PK), `name`, `careers_url`, `created_at`, `last_checked_at`, `last_check_status`, `total_product_jobs`, `user_id` (FK → auth.users), `platform_type` (text), `platform_config` (jsonb), `levelsfyi_slug` (text, optional override)
-- Index on `user_id`
-- `platform_type`: detected ATS platform (greenhouse, lever, ashby, workday, eightfold, custom_api, generic)
-- `platform_config`: ATS-specific config (e.g., `{ "boardName": "discord" }` for Greenhouse)
-- `levelsfyi_slug`: optional override for levels.fyi company slug (auto-derived from name if not set)
+### `companies` table (shared catalog)
+- `id` (uuid PK), `name`, `careers_url`, `created_at`, `last_checked_at`, `last_check_status`, `total_product_jobs`, `user_id` (nullable, legacy creator), `platform_type` (text), `platform_config` (jsonb), `levelsfyi_slug` (text, optional override), `is_active` (boolean), `subscriber_count` (integer)
+- Companies are **shared** — one entry per company, visible to all users
+- `is_active`: `true` if `subscriber_count > 0` (at least one user tracks it). Scraper only checks active companies.
+- `subscriber_count`: denormalized count from `user_subscriptions` table
+- RLS: everyone can read, authenticated users can insert
 
 ### `seen_jobs` table
-- `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `job_url_path`, `job_title`, `job_location`, `first_seen_at`, `is_baseline`, `job_level` (text)
-- Unique index on `(company_id, job_url_path)`, index on `job_level`, composite index on `(company_id, is_baseline, first_seen_at)`
-- `is_baseline = true` for initial scrape, `false` for newly discovered jobs
-- `job_level`: `'early'`, `'mid'`, or `'director'` — classified by title keywords via `classifyJobLevel()`
-- Non-baseline jobs older than 30 days are auto-cleaned
-- No `user_id` — scoped through company's `user_id`
+- `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `job_url_path`, `job_title`, `job_location`, `first_seen_at`, `is_baseline`, `job_level` (text), `status` (text), `status_changed_at` (timestamptz)
+- Unique index on `(company_id, job_url_path)`, index on `job_level`, composite index on `(company_id, is_baseline, first_seen_at)`, index on `status`
+- `status`: `'active'` (current listing), `'removed'` (disappeared from scrape), `'archived'` (60+ days old)
+- Jobs older than 60 days are archived (not deleted) — preserves favorites
+
+### `user_subscriptions` table
+- `id` (uuid PK), `user_id` (FK → auth.users), `company_id` (FK → companies, CASCADE), `created_at`
+- UNIQUE on `(user_id, company_id)`, indexes on `user_id` and `company_id`
+- Links users to the companies they track — replaces the old `companies.user_id` scoping
+
+### `user_job_favorites` table
+- `id` (uuid PK), `user_id` (FK → auth.users), `seen_job_id` (FK → seen_jobs, CASCADE), `created_at`
+- UNIQUE on `(user_id, seen_job_id)`, index on `user_id`
+- Replaces old `favorites` table
+
+### `user_new_company_submissions` table
+- `id` (uuid PK), `user_id` (FK → auth.users), `company_id` (FK → companies, CASCADE), `created_at`
+- Tracks how many companies each user has submitted (rate limit: 10 per user, admin bypass)
+
+### `user_preferences` table
+- `id` (uuid PK), `user_id` (UNIQUE FK → auth.users), `email_frequency` (text, default 'daily'), `created_at`, `updated_at`
+- `email_frequency`: `'daily'` or `'off'`
 
 ### `comp_cache` table
 - `id` (uuid PK), `company_slug` (text, UNIQUE), `company_name` (text), `data` (jsonb), `fetched_at` (timestamptz)
@@ -107,6 +160,7 @@ The CRON_SECRET is set in Railway env vars.
 ### `scrape_issues` table
 - `id` (uuid PK), `company_id` (FK → companies, CASCADE delete), `user_id` (FK → auth.users), `issue_type` (text), `description` (text), `created_at`
 - RLS: users can insert/view their own issues
+- Any user can report issues on any shared company
 - Issue types: `wrong_jobs`, `missing_jobs`, `bad_locations`, `other`
 
 ## Scraper Architecture (backend/src/scraper/scraper.ts)
@@ -173,11 +227,14 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `backend/src/scraper/scraper.ts` — All scraper logic (Greenhouse, Lever, Ashby, Workday, Eightfold, custom APIs, generic Puppeteer)
 - `backend/src/scraper/detectPlatform.ts` — ATS platform auto-detection engine
 - `backend/src/scraper/validateScrape.ts` — Post-scrape quality validation
-- `backend/src/jobs/dailyCheck.ts` — Daily cron job logic
-- `backend/src/routes/companies.ts` — API route handlers (user-scoped, with platform detection + validation)
-- `backend/src/routes/favorites.ts` — Favorites API (user-scoped)
-- `backend/src/routes/issues.ts` — Scrape issue reporting API (user-scoped)
-- `backend/src/routes/compensation.ts` — Levels.fyi compensation API (user-scoped)
+- `backend/src/jobs/dailyCheck.ts` — Daily cron job logic (per-user email, job status tracking)
+- `backend/src/routes/companies.ts` — Companies API (subscription-scoped)
+- `backend/src/routes/subscriptions.ts` — Subscribe/unsubscribe from shared companies
+- `backend/src/routes/catalog.ts` — Shared company catalog (no user filter)
+- `backend/src/routes/preferences.ts` — User email preferences (daily/off)
+- `backend/src/routes/favorites.ts` — Favorites API (user_job_favorites table)
+- `backend/src/routes/issues.ts` — Scrape issue reporting API (any user, any company)
+- `backend/src/routes/compensation.ts` — Levels.fyi compensation API (subscription-scoped)
 - `backend/src/lib/classifyLevel.ts` — Job level classification (early/mid/director) by title keywords
 - `backend/src/lib/levelsFyi.ts` — Levels.fyi fetcher, parser, and comp_cache manager
 - `frontend/src/lib/jobFilters.ts` — Shared `isUSLocation()`, job level labels/colors
@@ -188,7 +245,7 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `frontend/sentry.client.config.ts` — Sentry browser-side init
 - `frontend/sentry.server.config.ts` — Sentry server-side init
 - `frontend/instrumentation.ts` — Next.js instrumentation hook for Sentry
-- `backend/src/middleware/auth.ts` — JWT verification middleware
+- `backend/src/middleware/auth.ts` — JWT verification middleware (extracts userId + userEmail)
 - `backend/src/index.ts` — Express server entry point
 - `frontend/src/lib/supabase.ts` — Browser Supabase client (`@supabase/ssr`)
 - `frontend/src/lib/api.ts` — Authenticated fetch wrapper (attaches JWT, caches token)
@@ -197,11 +254,14 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `frontend/src/app/auth/callback/route.ts` — Magic link code exchange
 - `frontend/middleware.ts` — Route protection (redirects to /login if unauthenticated)
 - `frontend/src/components/AuthNav.tsx` — User email + sign out in navbar
-- `frontend/src/app/page.tsx` — Dashboard UI (tile grid)
-- `frontend/src/app/add/page.tsx` — Add company UI
-- `frontend/src/app/company/[id]/page.tsx` — Company detail page (with next-company nav)
-- `frontend/src/app/jobs/page.tsx` — "View All Jobs" flat table across all companies
-- `frontend/src/app/layout.tsx` — Root layout with navbar
+- `frontend/src/app/page.tsx` — Dashboard UI (tile grid + AddCompanyModal + onboarding)
+- `frontend/src/app/add/page.tsx` — Redirects to `/?addCompany=true` (modal handles everything)
+- `frontend/src/app/company/[id]/page.tsx` — Company detail page (with job status, saved inactive jobs)
+- `frontend/src/app/jobs/page.tsx` — "View All Jobs" flat table (active jobs only)
+- `frontend/src/app/settings/page.tsx` — Email preferences (daily/off)
+- `frontend/src/app/layout.tsx` — Root layout with navbar + HelpButton
+- `frontend/src/components/AddCompanyModal.tsx` — Two-path modal: catalog browse + new company submission
+- `frontend/src/components/HelpButton.tsx` — Floating help/feedback button
 - `cron/index.js` — Railway cron trigger script
 - `supabase-schema.sql` — Database schema
 
@@ -211,13 +271,14 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 |-------|------|-------------|
 | `/login` | `login/page.tsx` | Magic link login (email input + send link) |
 | `/auth/callback` | `auth/callback/route.ts` | Exchanges magic link code for session |
-| `/` | `page.tsx` | Dashboard — tile grid of all tracked companies, sorted by activity |
-| `/add` | `add/page.tsx` | Add a new company form |
-| `/company/[id]` | `company/[id]/page.tsx` | Company detail — jobs grouped by date, US filter, "Next Company" nav |
-| `/jobs` | `jobs/page.tsx` | All Jobs — flat table of every job across all companies |
+| `/` | `page.tsx` | Dashboard — tile grid of subscribed companies + AddCompanyModal |
+| `/add` | `add/page.tsx` | Redirects to `/?addCompany=true` |
+| `/company/[id]` | `company/[id]/page.tsx` | Company detail — active jobs + saved inactive section |
+| `/jobs` | `jobs/page.tsx` | All Jobs — active jobs across subscribed companies |
+| `/settings` | `settings/page.tsx` | Email preferences (daily / off) |
 
 ### Navbar (`layout.tsx`)
-Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Company] | email + Sign Out
+Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Company] [Settings] | email + Sign Out
 
 ### Shared patterns
 - **US Only toggle**: Checkbox filter using `isUSLocation()` regex matcher — shared logic in company detail and all-jobs pages
@@ -226,20 +287,20 @@ Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Compa
 
 ## Favorites
 
-### `favorites` table
-- `id` (uuid PK), `job_id` (uuid FK → seen_jobs, CASCADE delete), `user_id` (uuid FK → auth.users), `created_at`
-- Unique index on `(user_id, job_id)` — each user can star a job once
-- RLS policies scoped to `auth.uid() = user_id`
-- API: `GET /api/favorites`, `POST /api/favorites/:jobId`, `DELETE /api/favorites/:jobId` (all require auth, scoped by user)
-- Frontend: star icons on All Jobs and Company Detail pages, "Starred" navbar button → `/jobs?filter=starred`
+### `user_job_favorites` table (replaced old `favorites`)
+- API: `GET /api/favorites`, `POST /api/favorites/:jobId`, `DELETE /api/favorites/:jobId`
+- Frontend: star icons on All Jobs and Company Detail pages, "Starred" navbar → `/jobs?filter=starred`
+- Favorited removed/archived jobs shown in muted "Saved Jobs" section on company detail
 
 ## Email
 
-- **Daily alerts:** Sent from `alerts@<your-domain>` (via Resend API in `sendAlert.ts`)
-- **Magic link emails:** Sent from `noreply@<your-domain>` (via Supabase custom SMTP → Resend)
-- **Recipient:** Set via `ALERT_RECIPIENT_EMAIL` env var in Railway
+- **Daily alerts:** Per-user, personalized. Each user gets only alerts for their subscribed companies.
+- **Sent from:** `alerts@newpmjobs.com` (via Resend API in `sendAlert.ts`)
+- **Magic link emails:** Sent from `noreply@newpmjobs.com` (via Supabase custom SMTP → Resend)
+- **Per-user logic:** `dailyCheck.ts` gets all users via `listUsers()`, checks `user_preferences.email_frequency`, filters alerts to subscriptions
+- **Company logos:** Email includes Google favicon images for each company
+- **Unsubscribe:** Footer links to `/settings` page where users can set email to "off"
 - **API key:** Only in Railway production env vars (`RESEND_API_KEY`). Empty locally — cannot send from local.
-- **To send one-off emails:** Add a temporary protected endpoint, push to deploy, call via curl, then clean up.
 
 ## Performance Architecture
 

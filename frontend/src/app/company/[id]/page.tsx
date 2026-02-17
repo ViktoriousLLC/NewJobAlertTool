@@ -14,6 +14,7 @@ interface Job {
   first_seen_at: string;
   is_baseline: boolean;
   job_level?: string;
+  status?: string;
 }
 
 interface CompanyDetail {
@@ -216,8 +217,13 @@ function CompanyDetailContent() {
     );
   }
 
-  // Filter jobs based on US-only toggle and level filter
-  const filteredJobs = company.jobs.filter((job) => {
+  // Separate active jobs from removed/archived
+  const activeJobs = company.jobs.filter((job) => !job.status || job.status === "active");
+  const inactiveJobs = company.jobs.filter((job) => job.status === "removed" || job.status === "archived");
+  const savedInactiveJobs = inactiveJobs.filter((job) => favorites.has(job.id));
+
+  // Filter active jobs based on US-only toggle and level filter
+  const filteredJobs = activeJobs.filter((job) => {
     if (usOnly && !isUSLocation(job.job_location)) return false;
     const level = (job.job_level || "early") as JobLevel;
     if (!levelFilter.has(level)) return false;
@@ -564,6 +570,54 @@ function CompanyDetailContent() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Saved inactive jobs (favorited but removed/archived) */}
+      {savedInactiveJobs.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-sm font-medium text-stone-400 mb-3">
+            Saved Jobs (no longer active)
+          </h3>
+          <div className="bg-white rounded-xl border border-stone-200 divide-y divide-stone-100 overflow-hidden opacity-60">
+            {savedInactiveJobs.map((job) => {
+              const isFav = favorites.has(job.id);
+              const level = (job.job_level || "early") as JobLevel;
+              return (
+                <div key={job.id} className="px-5 py-4 flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <button
+                      onClick={() => toggleFavorite(job.id)}
+                      className="shrink-0"
+                      title="Remove from starred"
+                    >
+                      <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                      </svg>
+                    </button>
+                    <span className="px-2 py-0.5 rounded text-xs font-semibold shrink-0 bg-stone-100 text-stone-500">
+                      {job.status === "removed" ? "Removed" : "Archived"}
+                    </span>
+                    <span
+                      className="px-2 py-0.5 rounded text-xs font-semibold shrink-0"
+                      style={{ backgroundColor: LEVEL_COLORS[level].bg, color: LEVEL_COLORS[level].text }}
+                    >
+                      {LEVEL_LABELS[level]}
+                    </span>
+                    <span className="text-stone-500 font-medium truncate line-through">{job.job_title}</span>
+                  </div>
+                  <a
+                    href={buildJobUrl(job.job_url_path)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-stone-400 hover:text-stone-600 text-sm font-medium shrink-0"
+                  >
+                    View
+                  </a>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

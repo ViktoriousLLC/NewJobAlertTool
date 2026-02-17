@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
 import {
@@ -10,6 +10,7 @@ import {
   softenColor,
   getFaviconUrl,
 } from "@/lib/brandColors";
+import AddCompanyModal from "@/components/AddCompanyModal";
 
 interface Company {
   id: string;
@@ -61,21 +62,53 @@ function filterCompanies(
 }
 
 export default function Dashboard() {
+  return (
+    <Suspense>
+      <DashboardContent />
+    </Suspense>
+  );
+}
+
+function DashboardContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [subscribedIds, setSubscribedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [search, setSearch] = useState("");
+  const [showModal, setShowModal] = useState(false);
+  const [removeToast, setRemoveToast] = useState<string | null>(null);
 
   useEffect(() => {
     fetchCompanies();
   }, []);
 
+  // Auto-open modal from ?addCompany=true or if user has 0 subscriptions (onboarding)
+  useEffect(() => {
+    if (searchParams.get("addCompany") === "true") {
+      setShowModal(true);
+      window.history.replaceState({}, "", "/");
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!loading && companies.length === 0 && !showModal) {
+      // Onboarding: auto-open modal for new users with no subscriptions
+      setShowModal(true);
+    }
+  }, [loading, companies.length, showModal]);
+
   async function fetchCompanies() {
     try {
-      const res = await apiFetch("/api/companies");
-      const data = await res.json();
+      const [compRes, subRes] = await Promise.all([
+        apiFetch("/api/companies"),
+        apiFetch("/api/subscriptions"),
+      ]);
+      const data = await compRes.json();
+      const subIds: string[] = await subRes.json();
       setCompanies(data);
+      setSubscribedIds(new Set(subIds));
     } catch (err) {
       console.error("Failed to fetch companies:", err);
     } finally {
@@ -83,25 +116,22 @@ export default function Dashboard() {
     }
   }
 
-  async function deleteCompany(id: string, name: string) {
-    if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
+  async function removeCompany(id: string, name: string) {
+    if (!confirm(`Remove "${name}" from your dashboard?\n\nOther users can still track this company.`)) return;
     try {
       await apiFetch(`/api/companies/${id}`, { method: "DELETE" });
       setCompanies((prev) => prev.filter((c) => c.id !== id));
+      setSubscribedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       trackEvent("company_deleted", { company_name: name });
+      setRemoveToast(`Removed ${name} from your dashboard.`);
+      setTimeout(() => setRemoveToast(null), 3000);
     } catch (err) {
-      console.error("Failed to delete company:", err);
+      console.error("Failed to remove company:", err);
     }
-  }
-
-  function formatDate(dateStr: string | null) {
-    if (!dateStr) return "Never";
-    return new Date(dateStr).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
   }
 
   function formatTime(dateStr: string | null) {
@@ -138,53 +168,6 @@ export default function Dashboard() {
     );
   }
 
-  if (companies.length === 0) {
-    return (
-      <div className="text-center py-20">
-        <div className="w-16 h-16 bg-stone-100 rounded-full flex items-center justify-center mx-auto mb-4">
-          <svg
-            className="w-8 h-8 text-stone-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.5}
-              d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"
-            />
-          </svg>
-        </div>
-        <h2 className="text-xl font-semibold text-[#1A1A2E] mb-2">
-          No companies tracked yet
-        </h2>
-        <p className="text-stone-500 mb-6">
-          Add a company to start tracking product job postings.
-        </p>
-        <Link
-          href="/add"
-          className="inline-flex items-center gap-2 bg-[var(--brand)] text-white px-6 py-3 rounded-lg font-semibold hover:bg-[var(--brand-hover)] transition-all shadow-md hover:shadow-lg"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M12 4v16m8-8H4"
-            />
-          </svg>
-          Add Company
-        </Link>
-      </div>
-    );
-  }
-
   // Stats
   const totalRoles = companies.reduce(
     (sum, c) => sum + c.total_product_jobs,
@@ -211,6 +194,15 @@ export default function Dashboard() {
 
   return (
     <div>
+      {/* Remove toast */}
+      {removeToast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 animate-fade-in">
+          <div className="bg-stone-700 text-white px-5 py-3 rounded-lg shadow-lg text-sm font-medium">
+            {removeToast}
+          </div>
+        </div>
+      )}
+
       {/* Header row */}
       <div className="flex items-start justify-between mb-6">
         <div>
@@ -300,153 +292,208 @@ export default function Dashboard() {
 
       </div>
 
-      {/* Card grid — 5 columns */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-        {sorted.map((company, index) => {
-          const brand = getBrandColor(company.name);
-          const cardBg = softenColor(brand, 0.96);
-          const headerFrom = softenColor(brand, 0.60);
-          const headerTo = softenColor(brand, 0.35);
-
-          return (
-            <div
-              key={company.id}
-              onClick={() => router.push(`/company/${company.id}`)}
-              className="group relative overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-[3px] flex flex-col"
-              style={{
-                height: 156,
-                borderRadius: 10,
-                backgroundColor: cardBg,
-                border: "1px solid #E0E0E6",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
-                animation: "card-enter 0.4s ease-out both",
-                animationDelay: `${index * 0.03}s`,
-              }}
-              onMouseEnter={(e) => {
-                const el = e.currentTarget;
-                el.style.border = `1px solid ${softenColor(brand, 0.50)}`;
-                el.style.boxShadow = `0 8px 24px ${softenColor(brand, 0.75)}44`;
-              }}
-              onMouseLeave={(e) => {
-                const el = e.currentTarget;
-                el.style.border = "1px solid #E0E0E6";
-                el.style.boxShadow = "0 1px 3px rgba(0,0,0,0.04)";
-              }}
+      {companies.length === 0 && !showModal ? (
+        <div className="text-center py-20">
+          <div className="w-16 h-16 bg-stone-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg
+              className="w-8 h-8 text-stone-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
             >
-              {/* Brand header band */}
-              <div
-                className="flex items-center shrink-0"
-                style={{
-                  minHeight: 42,
-                  padding: "8px 10px",
-                  gap: 8,
-                  background: `linear-gradient(135deg, ${headerFrom}, ${headerTo})`,
-                }}
-              >
-                <div className="w-[28px] h-[28px] shrink-0 overflow-hidden" style={{ borderRadius: 6 }}>
-                  <img
-                    src={getFaviconUrl(company.name, company.careers_url)}
-                    alt=""
-                    width={28}
-                    height={28}
-                    className="object-contain w-full h-full"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = "none";
-                    }}
-                  />
-                </div>
-                <span className="text-[16px] font-[700] text-[#1A1A2E] truncate">
-                  {company.name}
-                </span>
-              </div>
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"
+              />
+            </svg>
+          </div>
+          <h2 className="text-xl font-semibold text-[#1A1A2E] mb-2">
+            No companies tracked yet
+          </h2>
+          <p className="text-stone-500 mb-6">
+            Add companies to start tracking product job postings.
+          </p>
+          <button
+            onClick={() => setShowModal(true)}
+            className="inline-flex items-center gap-2 bg-[var(--brand)] text-white px-6 py-3 rounded-lg font-semibold hover:bg-[var(--brand-hover)] transition-all shadow-md hover:shadow-lg"
+          >
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 4v16m8-8H4"
+              />
+            </svg>
+            Add Companies
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* Card grid — 5 columns */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+            {sorted.map((company, index) => {
+              const brand = getBrandColor(company.name);
+              const cardBg = softenColor(brand, 0.96);
+              const headerFrom = softenColor(brand, 0.60);
+              const headerTo = softenColor(brand, 0.35);
 
-              {/* Card body — centered content */}
-              <div className={`flex flex-col items-center justify-center flex-1 ${company.new_jobs_today > 0 ? "gap-[10px]" : ""}`} style={{ padding: "4px 10px 0" }}>
-                {company.new_jobs_today > 0 && (
-                  <span
-                    className="font-[700] text-[11px]"
+              return (
+                <div
+                  key={company.id}
+                  onClick={() => router.push(`/company/${company.id}`)}
+                  className="group relative overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-[3px] flex flex-col"
+                  style={{
+                    height: 156,
+                    borderRadius: 10,
+                    backgroundColor: cardBg,
+                    border: "1px solid #E0E0E6",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+                    animation: "card-enter 0.4s ease-out both",
+                    animationDelay: `${index * 0.03}s`,
+                  }}
+                  onMouseEnter={(e) => {
+                    const el = e.currentTarget;
+                    el.style.border = `1px solid ${softenColor(brand, 0.50)}`;
+                    el.style.boxShadow = `0 8px 24px ${softenColor(brand, 0.75)}44`;
+                  }}
+                  onMouseLeave={(e) => {
+                    const el = e.currentTarget;
+                    el.style.border = "1px solid #E0E0E6";
+                    el.style.boxShadow = "0 1px 3px rgba(0,0,0,0.04)";
+                  }}
+                >
+                  {/* Brand header band */}
+                  <div
+                    className="flex items-center shrink-0"
                     style={{
-                      backgroundColor: "#E8F5EE",
-                      color: "#16874D",
-                      borderRadius: 6,
-                      padding: "3px 12px",
-                      letterSpacing: "0.02em",
+                      minHeight: 42,
+                      padding: "8px 10px",
+                      gap: 8,
+                      background: `linear-gradient(135deg, ${headerFrom}, ${headerTo})`,
                     }}
                   >
-                    +{company.new_jobs_today} new
-                  </span>
-                )}
-                <div className="text-center">
-                  <span className="text-[26px] font-bold text-[#1A1A2E]">
-                    {company.total_product_jobs}
-                  </span>
-                  <span className="text-[13px] text-[#6E6E80] ml-1">
-                    {company.total_product_jobs === 1 ? "role" : "roles"}
-                  </span>
+                    <div className="w-[28px] h-[28px] shrink-0 overflow-hidden" style={{ borderRadius: 6 }}>
+                      <img
+                        src={getFaviconUrl(company.name, company.careers_url)}
+                        alt=""
+                        width={28}
+                        height={28}
+                        className="object-contain w-full h-full"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = "none";
+                        }}
+                      />
+                    </div>
+                    <span className="text-[16px] font-[700] text-[#1A1A2E] truncate">
+                      {company.name}
+                    </span>
+                  </div>
+
+                  {/* Card body — centered content */}
+                  <div className={`flex flex-col items-center justify-center flex-1 ${company.new_jobs_today > 0 ? "gap-[10px]" : ""}`} style={{ padding: "4px 10px 0" }}>
+                    {company.new_jobs_today > 0 && (
+                      <span
+                        className="font-[700] text-[11px]"
+                        style={{
+                          backgroundColor: "#E8F5EE",
+                          color: "#16874D",
+                          borderRadius: 6,
+                          padding: "3px 12px",
+                          letterSpacing: "0.02em",
+                        }}
+                      >
+                        +{company.new_jobs_today} new
+                      </span>
+                    )}
+                    <div className="text-center">
+                      <span className="text-[26px] font-bold text-[#1A1A2E]">
+                        {company.total_product_jobs}
+                      </span>
+                      <span className="text-[13px] text-[#6E6E80] ml-1">
+                        {company.total_product_jobs === 1 ? "role" : "roles"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Footer — separated with border-top */}
+                  <div className="flex items-center justify-center gap-1.5 shrink-0" style={{ borderTop: "1px solid #E0E0E6", padding: "5px 10px" }}>
+                    {company.last_check_status?.startsWith("success") ? (
+                      <span
+                        className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
+                        style={{ backgroundColor: "var(--status-ok)" }}
+                        title="Status: OK"
+                      />
+                    ) : company.last_check_status?.startsWith("error") ? (
+                      <span
+                        className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
+                        style={{ backgroundColor: "var(--status-error)" }}
+                        title={company.last_check_status}
+                      />
+                    ) : (
+                      <span
+                        className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
+                        style={{ backgroundColor: "var(--status-neutral)" }}
+                        title="Pending"
+                      />
+                    )}
+                    <span className="text-[10px] text-[#9494A8]">
+                      {company.last_check_status?.startsWith("error")
+                        ? "Failed"
+                        : formatTime(company.last_checked_at)}
+                    </span>
+                  </div>
+
+                  {/* Remove button — absolute, hover-only */}
+                  <div
+                    className="absolute opacity-0 group-hover:opacity-100 transition-opacity"
+                    style={{ top: 5, right: 5 }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      onClick={() => removeCompany(company.id, company.name)}
+                      className="flex items-center justify-center text-white transition-all hover:brightness-110"
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: 5,
+                        backgroundColor: "rgba(0,0,0,0.3)",
+                        fontSize: 13,
+                        lineHeight: 1,
+                      }}
+                      title="Remove from my dashboard"
+                    >
+                      x
+                    </button>
+                  </div>
                 </div>
-              </div>
+              );
+            })}
+          </div>
 
-              {/* Footer — separated with border-top */}
-              <div className="flex items-center justify-center gap-1.5 shrink-0" style={{ borderTop: "1px solid #E0E0E6", padding: "5px 10px" }}>
-                {company.last_check_status?.startsWith("success") ? (
-                  <span
-                    className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
-                    style={{ backgroundColor: "var(--status-ok)" }}
-                    title="Status: OK"
-                  />
-                ) : company.last_check_status?.startsWith("error") ? (
-                  <span
-                    className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
-                    style={{ backgroundColor: "var(--status-error)" }}
-                    title={company.last_check_status}
-                  />
-                ) : (
-                  <span
-                    className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
-                    style={{ backgroundColor: "var(--status-neutral)" }}
-                    title="Pending"
-                  />
-                )}
-                <span className="text-[10px] text-[#9494A8]">
-                  {company.last_check_status?.startsWith("error")
-                    ? "Failed"
-                    : formatTime(company.last_checked_at)}
-                </span>
-              </div>
+          {/* Dashboard footer */}
+          <div className="text-center mt-8 mb-2">
+            <span className="text-[12px] text-[#9CA3AF]">
+              Checked daily &middot; {companies.length} companies tracked
+            </span>
+          </div>
+        </>
+      )}
 
-              {/* Delete button — absolute, hover-only */}
-              <div
-                className="absolute opacity-0 group-hover:opacity-100 transition-opacity"
-                style={{ top: 5, right: 5 }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <button
-                  onClick={() => deleteCompany(company.id, company.name)}
-                  className="flex items-center justify-center text-white transition-all hover:brightness-110"
-                  style={{
-                    width: 22,
-                    height: 22,
-                    borderRadius: 5,
-                    backgroundColor: "rgba(0,0,0,0.3)",
-                    fontSize: 13,
-                    lineHeight: 1,
-                  }}
-                  title="Delete company"
-                >
-                  x
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Dashboard footer */}
-      <div className="text-center mt-8 mb-2">
-        <span className="text-[12px] text-[#9CA3AF]">
-          Checked daily &middot; {companies.length} companies tracked
-        </span>
-      </div>
+      {/* Add Company Modal */}
+      <AddCompanyModal
+        isOpen={showModal}
+        onClose={() => setShowModal(false)}
+        onCompanyAdded={fetchCompanies}
+        subscribedIds={subscribedIds}
+      />
     </div>
   );
 }

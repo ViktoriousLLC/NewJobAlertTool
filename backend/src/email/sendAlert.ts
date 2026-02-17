@@ -1,6 +1,6 @@
 import { Resend } from "resend";
 
-interface NewJobAlert {
+export interface NewJobAlert {
   companyName: string;
   careersUrl: string;
   newJobs: { title: string; urlPath: string }[];
@@ -12,6 +12,32 @@ function escapeHtml(text: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/**
+ * Get a favicon/logo URL for a company using Google's favicon service.
+ * Mirrors the logic from frontend/src/lib/brandColors.ts:getFaviconUrl()
+ */
+function getCompanyLogoUrl(companyName: string, careersUrl: string): string {
+  try {
+    const url = new URL(careersUrl);
+    const hostname = url.hostname.replace(/^www\./, "");
+
+    // ATS-hosted URLs: extract the company slug
+    if (/greenhouse\.io$/.test(hostname) || /lever\.co$/.test(hostname) || /ashbyhq\.com$/.test(hostname)) {
+      const slug = url.pathname.split("/").filter(Boolean)[0];
+      if (slug) return `https://www.google.com/s2/favicons?domain=${slug}.com&sz=32`;
+    }
+    if (/eightfold\.ai$/.test(hostname)) {
+      const parts = hostname.split(".");
+      if (parts.length > 2) return `https://www.google.com/s2/favicons?domain=${parts[0]}.com&sz=32`;
+    }
+
+    // Direct company domain
+    return `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`;
+  } catch {
+    return `https://www.google.com/s2/favicons?domain=${companyName.toLowerCase().replace(/\s+/g, "")}.com&sz=32`;
+  }
 }
 
 function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
@@ -36,6 +62,7 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
   let companySections = "";
   if (totalNewJobs > 0) {
     for (const alert of companiesWithNew) {
+      const logoUrl = getCompanyLogoUrl(alert.companyName, alert.careersUrl);
       let jobRows = "";
       for (const job of alert.newJobs) {
         const jobUrl = job.urlPath.startsWith("http")
@@ -59,6 +86,7 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
                                     <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                                       <tr>
                                         <td style="font-size:16px;font-weight:700;color:#1A1A2E;font-family:${font};">
+                                          <img src="${escapeHtml(logoUrl)}" alt="" width="20" height="20" style="vertical-align:middle;margin-right:8px;border-radius:4px;" />
                                           ${escapeHtml(alert.companyName)}
                                         </td>
                                         <td align="right" style="font-size:13px;color:#78716c;font-family:${font};">
@@ -160,6 +188,7 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
                     </p>
                     <p style="margin:8px 0 0 0;font-size:11px;color:#a8a29e;font-family:${font};">
                       You're receiving this because you have daily alerts enabled.
+                      <a href="https://www.newpmjobs.com/settings" target="_blank" style="color:#0EA5E9;text-decoration:underline;">Manage preferences</a>
                     </p>
                   </td>
                 </tr>
@@ -174,14 +203,15 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
 </html>`;
 }
 
-export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
+/**
+ * Send a personalized alert email to a specific user.
+ */
+export async function sendUserAlert(
+  userEmail: string,
+  alerts: NewJobAlert[]
+): Promise<void> {
   if (!process.env.RESEND_API_KEY) {
     console.log("RESEND_API_KEY not set — skipping email send");
-    return;
-  }
-
-  if (!process.env.ALERT_RECIPIENT_EMAIL) {
-    console.log("ALERT_RECIPIENT_EMAIL not set — skipping email send");
     return;
   }
 
@@ -203,10 +233,21 @@ export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
 
   await resend.emails.send({
     from: "NewPMJobs <alerts@newpmjobs.com>",
-    to: process.env.ALERT_RECIPIENT_EMAIL!,
+    to: userEmail,
     subject: `Job Alert: ${totalNewJobs} new PM job${totalNewJobs === 1 ? "" : "s"} — ${now}`,
     html,
   });
 
-  console.log(`Email sent: ${totalNewJobs} new jobs reported`);
+  console.log(`Email sent to ${userEmail}: ${totalNewJobs} new jobs reported`);
+}
+
+/**
+ * Legacy: send alert to hardcoded recipient (kept for backward compatibility during rollout).
+ */
+export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
+  if (!process.env.ALERT_RECIPIENT_EMAIL) {
+    console.log("ALERT_RECIPIENT_EMAIL not set — skipping legacy email send");
+    return;
+  }
+  await sendUserAlert(process.env.ALERT_RECIPIENT_EMAIL, alerts);
 }

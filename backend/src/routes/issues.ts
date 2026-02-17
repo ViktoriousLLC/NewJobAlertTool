@@ -19,12 +19,11 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
-    // Verify company belongs to user
+    // Verify company exists (shared catalog — any user can report)
     const { data: company } = await supabase
       .from("companies")
       .select("id")
       .eq("id", company_id)
-      .eq("user_id", req.userId!)
       .single();
 
     if (!company) {

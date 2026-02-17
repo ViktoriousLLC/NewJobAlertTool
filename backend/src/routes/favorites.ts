@@ -7,13 +7,13 @@ const router = Router();
 router.get("/", async (req: Request, res: Response) => {
   try {
     const { data, error } = await supabase
-      .from("favorites")
-      .select("job_id")
+      .from("user_job_favorites")
+      .select("seen_job_id")
       .eq("user_id", req.userId!);
 
     if (error) throw error;
 
-    const jobIds = (data || []).map((row) => row.job_id);
+    const jobIds = (data || []).map((row) => row.seen_job_id);
     res.json(jobIds);
   } catch (err) {
     console.error("GET /api/favorites error:", err);
@@ -27,10 +27,10 @@ router.post("/:jobId", async (req: Request, res: Response) => {
     const { jobId } = req.params;
 
     const { error } = await supabase
-      .from("favorites")
+      .from("user_job_favorites")
       .upsert(
-        { job_id: jobId, user_id: req.userId! },
-        { onConflict: "user_id,job_id" }
+        { seen_job_id: jobId, user_id: req.userId! },
+        { onConflict: "user_id,seen_job_id" }
       );
 
     if (error) throw error;
@@ -48,9 +48,9 @@ router.delete("/:jobId", async (req: Request, res: Response) => {
     const { jobId } = req.params;
 
     const { error } = await supabase
-      .from("favorites")
+      .from("user_job_favorites")
       .delete()
-      .eq("job_id", jobId)
+      .eq("seen_job_id", jobId)
       .eq("user_id", req.userId!);
 
     if (error) throw error;

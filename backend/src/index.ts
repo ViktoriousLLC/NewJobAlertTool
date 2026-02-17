@@ -7,6 +7,9 @@ import favoritesRouter from "./routes/favorites";
 import issuesRouter from "./routes/issues";
 import compensationRouter from "./routes/compensation";
 import jobsRouter from "./routes/jobs";
+import subscriptionsRouter from "./routes/subscriptions";
+import catalogRouter from "./routes/catalog";
+import preferencesRouter from "./routes/preferences";
 import { runDailyCheck } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
@@ -55,6 +58,41 @@ app.use("/api/favorites", requireAuth, favoritesRouter);
 app.use("/api/issues", requireAuth, issuesRouter);
 app.use("/api/compensation", requireAuth, compensationRouter);
 app.use("/api/jobs", requireAuth, jobsRouter);
+app.use("/api/subscriptions", requireAuth, subscriptionsRouter);
+app.use("/api/catalog", requireAuth, catalogRouter);
+app.use("/api/preferences", requireAuth, preferencesRouter);
+
+// Help/feedback endpoint (sends email to admin)
+app.post("/api/help", requireAuth, async (req, res) => {
+  try {
+    const { issue_type, message, page_url } = req.body;
+    if (!message) {
+      res.status(400).json({ error: "message is required" });
+      return;
+    }
+
+    // Send email to admin via Resend
+    if (process.env.RESEND_API_KEY) {
+      const { Resend } = await import("resend");
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      await resend.emails.send({
+        from: "NewPMJobs <alerts@newpmjobs.com>",
+        to: "vik@viktoriousllc.com",
+        subject: `[NewPMJobs Feedback] ${issue_type || "other"}`,
+        html: `<p><strong>From:</strong> ${req.userEmail || req.userId}</p>
+               <p><strong>Type:</strong> ${issue_type || "other"}</p>
+               <p><strong>Page:</strong> ${page_url || "unknown"}</p>
+               <p><strong>Message:</strong></p>
+               <p>${(message as string).replace(/\n/g, "<br>")}</p>`,
+      });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("POST /api/help error:", err);
+    res.status(500).json({ error: "Failed to send feedback" });
+  }
+});
 
 // Manual trigger for daily check (protected by secret)
 app.get("/api/cron/trigger", async (req, res) => {
@@ -100,13 +138,11 @@ app.post("/api/admin/add-company", async (req, res) => {
   }
 
   try {
-    // Get first user (single-user app)
+    // Find admin user by email
+    const ADMIN_EMAIL = "vik@viktoriousllc.com";
     const { data: users } = await supabase.auth.admin.listUsers();
-    const userId = users?.users?.[0]?.id;
-    if (!userId) {
-      res.status(500).json({ error: "No users found" });
-      return;
-    }
+    const adminUser = users?.users?.find((u) => u.email === ADMIN_EMAIL);
+    const adminUserId = adminUser?.id;
 
     // Detect platform
     let platformType: string | null = null;
@@ -120,21 +156,31 @@ app.post("/api/admin/add-company", async (req, res) => {
       console.error("Platform detection failed:", err);
     }
 
-    // Insert company
+    // Insert company into shared catalog
     const { data: company, error: insertErr } = await supabase
       .from("companies")
       .insert({
         name,
         careers_url,
-        user_id: userId,
+        user_id: adminUserId || null,
         platform_type: platformType,
         platform_config: platformConfig,
+        is_active: true,
+        subscriber_count: adminUserId ? 1 : 0,
       })
       .select()
       .single();
 
     if (insertErr || !company) {
       throw insertErr || new Error("Failed to insert");
+    }
+
+    // Auto-subscribe admin user if found
+    if (adminUserId) {
+      await supabase.from("user_subscriptions").upsert(
+        { user_id: adminUserId, company_id: company.id },
+        { onConflict: "user_id,company_id" }
+      );
     }
 
     // Scrape in background (respond immediately so curl doesn't timeout)

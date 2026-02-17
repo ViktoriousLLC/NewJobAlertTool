@@ -3,31 +3,41 @@ import { supabase } from "../lib/supabase";
 
 const router = Router();
 
-// GET /api/jobs — all jobs across all of a user's companies (single query)
+// GET /api/jobs — all jobs across user's subscribed companies
 router.get("/", async (req: Request, res: Response) => {
   try {
-    // Get user's company IDs + names in one query
-    const { data: companies, error: compErr } = await supabase
-      .from("companies")
-      .select("id, name, careers_url")
+    // Get user's subscribed company IDs
+    const { data: subs, error: subErr } = await supabase
+      .from("user_subscriptions")
+      .select("company_id")
       .eq("user_id", req.userId!);
 
-    if (compErr) throw compErr;
-    if (!companies || companies.length === 0) {
+    if (subErr) throw subErr;
+
+    const companyIds = (subs || []).map((s) => s.company_id);
+    if (companyIds.length === 0) {
       res.json([]);
       return;
     }
 
-    const companyMap = new Map(
-      companies.map((c) => [c.id, { name: c.name, careers_url: c.careers_url }])
-    );
-    const companyIds = companies.map((c) => c.id);
+    // Get company names for those IDs
+    const { data: companies, error: compErr } = await supabase
+      .from("companies")
+      .select("id, name, careers_url")
+      .in("id", companyIds);
 
-    // Get all jobs for these companies in one query
+    if (compErr) throw compErr;
+
+    const companyMap = new Map(
+      (companies || []).map((c) => [c.id, { name: c.name, careers_url: c.careers_url }])
+    );
+
+    // Get all active jobs for these companies
     const { data: jobs, error: jobsErr } = await supabase
       .from("seen_jobs")
-      .select("id, company_id, job_title, job_location, job_url_path, first_seen_at, is_baseline, job_level")
+      .select("id, company_id, job_title, job_location, job_url_path, first_seen_at, is_baseline, job_level, status")
       .in("company_id", companyIds)
+      .eq("status", "active")
       .order("first_seen_at", { ascending: false });
 
     if (jobsErr) throw jobsErr;

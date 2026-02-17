@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Outfit } from "next/font/google";
 import NavBar from "@/components/NavBar";
 import PostHogProvider from "@/components/PostHogProvider";
+import HelpButton from "@/components/HelpButton";
 import "./globals.css";
 
 const outfit = Outfit({
@@ -26,6 +27,7 @@ export default function RootLayout({
         <div className="min-h-screen">
           <NavBar />
           <main className="max-w-[1400px] mx-auto px-6 py-8">{children}</main>
+          <HelpButton />
           <footer className="border-t border-stone-200 py-5 text-center text-sm text-stone-400">
             Built by Vik Agarwal
             <span className="mx-2">&middot;</span>

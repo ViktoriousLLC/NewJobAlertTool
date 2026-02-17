@@ -4,13 +4,27 @@ import { getCompData, getAllCompData } from "../lib/levelsFyi";
 
 const router = Router();
 
-// GET /api/compensation — comp data for all of user's tracked companies
+// GET /api/compensation — comp data for all of user's subscribed companies
 router.get("/", async (req: Request, res: Response) => {
   try {
+    // Get user's subscribed company IDs
+    const { data: subs, error: subErr } = await supabase
+      .from("user_subscriptions")
+      .select("company_id")
+      .eq("user_id", req.userId!);
+
+    if (subErr) throw subErr;
+
+    const subscribedIds = (subs || []).map((s) => s.company_id);
+    if (subscribedIds.length === 0) {
+      res.json({});
+      return;
+    }
+
     const { data: companies, error } = await supabase
       .from("companies")
       .select("name")
-      .eq("user_id", req.userId!);
+      .in("id", subscribedIds);
 
     if (error) throw error;
 

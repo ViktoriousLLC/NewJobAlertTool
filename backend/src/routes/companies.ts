@@ -8,13 +8,27 @@ import { getCompData } from "../lib/levelsFyi";
 
 const router = Router();
 
-// GET /api/companies — list user's companies
+// GET /api/companies — list user's subscribed companies
 router.get("/", async (req: Request, res: Response) => {
   try {
+    // Get user's subscribed company IDs
+    const { data: subs, error: subError } = await supabase
+      .from("user_subscriptions")
+      .select("company_id")
+      .eq("user_id", req.userId!);
+
+    if (subError) throw subError;
+
+    const subscribedIds = (subs || []).map((s) => s.company_id);
+    if (subscribedIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
     const { data: companies, error } = await supabase
       .from("companies")
       .select("*")
-      .eq("user_id", req.userId!)
+      .in("id", subscribedIds)
       .order("created_at", { ascending: false });
 
     if (error) throw error;
@@ -79,29 +93,38 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/companies/:id — company detail with jobs + next company (user-scoped)
+// GET /api/companies/:id — company detail with jobs + next company (subscription-based nav)
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Parallel: fetch company, its jobs, and sibling company names in one go
+    // Get user's subscribed company IDs for next-company nav
+    const { data: subs } = await supabase
+      .from("user_subscriptions")
+      .select("company_id")
+      .eq("user_id", req.userId!);
+
+    const subscribedIds = (subs || []).map((s) => s.company_id);
+
+    // Parallel: fetch company (shared, no user filter), its jobs, and sibling companies
     const [companyResult, jobsResult, siblingsResult] = await Promise.all([
       supabase
         .from("companies")
         .select("*")
         .eq("id", id)
-        .eq("user_id", req.userId!)
         .single(),
       supabase
         .from("seen_jobs")
-        .select("id, job_title, job_location, job_url_path, first_seen_at, is_baseline, job_level")
+        .select("id, job_title, job_location, job_url_path, first_seen_at, is_baseline, job_level, status")
         .eq("company_id", id)
         .order("first_seen_at", { ascending: false }),
-      supabase
-        .from("companies")
-        .select("id, name")
-        .eq("user_id", req.userId!)
-        .order("name", { ascending: true }),
+      subscribedIds.length > 0
+        ? supabase
+            .from("companies")
+            .select("id, name")
+            .in("id", subscribedIds)
+            .order("name", { ascending: true })
+        : Promise.resolve({ data: [], error: null }),
     ]);
 
     if (companyResult.error || !companyResult.data) {
@@ -170,16 +193,46 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
+    // Check submission limit (10 per user, admin bypass)
+    const ADMIN_EMAIL = "vik@viktoriousllc.com";
+    const isAdmin = req.userEmail === ADMIN_EMAIL;
+
+    if (!isAdmin) {
+      const { count: submissionCount } = await supabase
+        .from("user_new_company_submissions")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", req.userId!);
+
+      if ((submissionCount ?? 0) >= 10) {
+        res.status(429).json({
+          error: "You've reached the limit of 10 company submissions. Contact support for more.",
+        });
+        return;
+      }
+    }
+
     // Insert company with user_id
     const { data: company, error: insertError } = await supabase
       .from("companies")
-      .insert({ name, careers_url, user_id: req.userId! })
+      .insert({ name, careers_url, user_id: req.userId!, is_active: true, subscriber_count: 1 })
       .select()
       .single();
 
     if (insertError || !company) {
       throw insertError || new Error("Failed to insert company");
     }
+
+    // Auto-subscribe the creating user + record submission
+    await Promise.all([
+      supabase.from("user_subscriptions").upsert(
+        { user_id: req.userId!, company_id: company.id },
+        { onConflict: "user_id,company_id" }
+      ),
+      supabase.from("user_new_company_submissions").insert({
+        user_id: req.userId!,
+        company_id: company.id,
+      }),
+    ]);
 
     // Detect ATS platform
     let platformType: string | null = null;
@@ -265,24 +318,55 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/companies/:id — remove company and its jobs (user-scoped)
+// DELETE /api/companies/:id — unsubscribe (or admin-only true delete with ?hard=true)
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const ADMIN_EMAIL = "vik@viktoriousllc.com";
+    const isAdmin = req.userEmail === ADMIN_EMAIL;
+    const hardDelete = req.query.hard === "true" && isAdmin;
 
-    // seen_jobs will cascade delete due to FK constraint
-    const { error } = await supabase
-      .from("companies")
+    if (hardDelete) {
+      // Admin hard delete: actually remove the company (cascades to jobs)
+      const { error } = await supabase
+        .from("companies")
+        .delete()
+        .eq("id", id);
+
+      if (error) throw error;
+      res.json({ success: true, action: "deleted" });
+      return;
+    }
+
+    // Normal user: unsubscribe
+    const { error: deleteError } = await supabase
+      .from("user_subscriptions")
       .delete()
-      .eq("id", id)
-      .eq("user_id", req.userId!);
+      .eq("user_id", req.userId!)
+      .eq("company_id", id);
 
-    if (error) throw error;
+    if (deleteError) throw deleteError;
 
-    res.json({ success: true });
+    // Update subscriber count
+    const { count } = await supabase
+      .from("user_subscriptions")
+      .select("id", { count: "exact", head: true })
+      .eq("company_id", id);
+
+    const newCount = count ?? 0;
+
+    await supabase
+      .from("companies")
+      .update({
+        subscriber_count: newCount,
+        is_active: newCount > 0,
+      })
+      .eq("id", id);
+
+    res.json({ success: true, action: "unsubscribed", subscriber_count: newCount });
   } catch (err) {
     console.error("DELETE /api/companies/:id error:", err);
-    res.status(500).json({ error: "Failed to delete company" });
+    res.status(500).json({ error: "Failed to remove company" });
   }
 });
 

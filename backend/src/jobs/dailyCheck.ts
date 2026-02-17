@@ -1,7 +1,7 @@
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
-import { sendAlert } from "../email/sendAlert";
+import { sendUserAlert, NewJobAlert } from "../email/sendAlert";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
 
@@ -12,22 +12,24 @@ function delay(ms: number) {
 export async function runDailyCheck(): Promise<void> {
   console.log("Starting daily job check...");
 
+  // Only scrape active companies (at least one subscriber)
   const { data: companies, error } = await supabase
     .from("companies")
-    .select("*");
+    .select("*")
+    .eq("is_active", true);
 
   if (error || !companies) {
     console.error("Failed to fetch companies:", error);
     return;
   }
 
-  console.log(`Checking ${companies.length} companies...`);
+  console.log(`Checking ${companies.length} active companies...`);
 
-  const alerts: {
-    companyName: string;
-    careersUrl: string;
-    newJobs: { title: string; urlPath: string }[];
-  }[] = [];
+  // Collect alerts per company for later per-user email distribution
+  const companyAlerts: Map<
+    string,
+    { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }
+  > = new Map();
 
   for (const company of companies) {
     try {
@@ -46,36 +48,77 @@ export async function runDailyCheck(): Promise<void> {
       }
       console.log(`Found ${jobs.length} product jobs for ${company.name} (${rawJobs.length} raw)`);
 
-      // Get existing seen jobs for this company
+      // Get existing active jobs for this company
       const { data: existingJobs } = await supabase
         .from("seen_jobs")
-        .select("job_url_path")
+        .select("id, job_url_path, status")
         .eq("company_id", company.id);
 
-      const existingPaths = new Set(
-        (existingJobs || []).map((j: { job_url_path: string }) => j.job_url_path)
-      );
+      const existingByPath = new Map<string, { id: string; status: string }>();
+      for (const j of existingJobs || []) {
+        existingByPath.set(j.job_url_path, { id: j.id, status: j.status });
+      }
 
-      // Find new jobs (not previously seen)
-      const newJobs = jobs.filter((j) => !existingPaths.has(j.urlPath));
+      const scrapedPaths = new Set(jobs.map((j) => j.urlPath));
+      const newJobs: { title: string; urlPath: string }[] = [];
 
-      // Insert new jobs
-      if (newJobs.length > 0) {
+      // Safety: if scrape returns 0 for a company with existing active jobs, skip removal marking
+      const existingActiveCount = (existingJobs || []).filter((j) => j.status === "active").length;
+      const scrapeReturnedZero = jobs.length === 0 && existingActiveCount > 0;
+      if (scrapeReturnedZero) {
+        console.warn(`SAFETY: ${company.name} scrape returned 0 jobs but has ${existingActiveCount} active. Skipping removal marking.`);
+      }
+
+      // 1. New jobs: in scrape, not in DB → INSERT with status='active'
+      const toInsert = jobs.filter((j) => !existingByPath.has(j.urlPath));
+      if (toInsert.length > 0) {
         const { error: insertError } = await supabase.from("seen_jobs").insert(
-          newJobs.map((j) => ({
+          toInsert.map((j) => ({
             company_id: company.id,
             job_url_path: j.urlPath,
             job_title: j.title,
             job_location: j.location,
             is_baseline: false,
             job_level: classifyJobLevel(j.title),
+            status: "active",
           }))
         );
         if (insertError) {
-          console.error(
-            `Failed to insert jobs for ${company.name}:`,
-            insertError
-          );
+          console.error(`Failed to insert jobs for ${company.name}:`, insertError);
+        }
+
+        newJobs.push(...toInsert.map((j) => ({ title: j.title, urlPath: j.urlPath })));
+      }
+
+      // 2. Returned jobs: in DB as 'removed', back in scrape → UPDATE to 'active', treat as new
+      const returnedJobs: { title: string; urlPath: string }[] = [];
+      for (const job of jobs) {
+        const existing = existingByPath.get(job.urlPath);
+        if (existing && existing.status === "removed") {
+          await supabase
+            .from("seen_jobs")
+            .update({ status: "active", status_changed_at: new Date().toISOString() })
+            .eq("id", existing.id);
+          returnedJobs.push({ title: job.title, urlPath: job.urlPath });
+        }
+      }
+      if (returnedJobs.length > 0) {
+        console.log(`${company.name}: ${returnedJobs.length} jobs returned (re-activated)`);
+        newJobs.push(...returnedJobs);
+      }
+
+      // 3. Missing jobs: in DB as 'active', not in scrape → mark 'removed'
+      if (!scrapeReturnedZero) {
+        const toRemove = (existingJobs || []).filter(
+          (j) => j.status === "active" && !scrapedPaths.has(j.job_url_path)
+        );
+        if (toRemove.length > 0) {
+          const removeIds = toRemove.map((j) => j.id);
+          await supabase
+            .from("seen_jobs")
+            .update({ status: "removed", status_changed_at: new Date().toISOString() })
+            .in("id", removeIds);
+          console.log(`${company.name}: ${toRemove.length} jobs marked as removed`);
         }
       }
 
@@ -92,7 +135,7 @@ export async function runDailyCheck(): Promise<void> {
         })
         .eq("id", company.id);
 
-      alerts.push({
+      companyAlerts.set(company.id, {
         companyName: company.name,
         careersUrl: company.careers_url,
         newJobs,
@@ -108,7 +151,7 @@ export async function runDailyCheck(): Promise<void> {
         })
         .eq("id", company.id);
 
-      alerts.push({
+      companyAlerts.set(company.id, {
         companyName: company.name,
         careersUrl: company.careers_url,
         newJobs: [],
@@ -119,14 +162,14 @@ export async function runDailyCheck(): Promise<void> {
     await delay(5000);
   }
 
-  // Send email alert
+  // --- Per-user email alerts ---
   try {
-    await sendAlert(alerts);
+    await sendPerUserAlerts(companyAlerts);
   } catch (err) {
-    console.error("Failed to send email alert:", err);
+    console.error("Failed to send per-user alerts:", err);
   }
 
-  // Refresh compensation data for all companies (warms cache for detail pages)
+  // Refresh compensation data for all active companies
   console.log("Refreshing compensation data...");
   const companyNames = companies.map((c) => c.name);
   const COMP_BATCH = 3;
@@ -137,15 +180,87 @@ export async function runDailyCheck(): Promise<void> {
   }
   console.log(`Compensation data refreshed for ${companyNames.length} companies.`);
 
-  // Clean up: delete non-baseline seen_jobs older than 30 days
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  // Archive: mark jobs older than 60 days as 'archived' (replaces old 30-day DELETE)
+  const sixtyDaysAgo = new Date();
+  sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
 
   await supabase
     .from("seen_jobs")
-    .delete()
+    .update({ status: "archived", status_changed_at: new Date().toISOString() })
     .eq("is_baseline", false)
-    .lt("first_seen_at", thirtyDaysAgo.toISOString());
+    .neq("status", "archived")
+    .lt("first_seen_at", sixtyDaysAgo.toISOString());
 
   console.log("Daily check complete.");
+}
+
+async function sendPerUserAlerts(
+  companyAlerts: Map<string, { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }>
+): Promise<void> {
+  // Get all users
+  const { data: usersData } = await supabase.auth.admin.listUsers();
+  const users = usersData?.users || [];
+
+  if (users.length === 0) {
+    console.log("No users found — skipping email alerts");
+    return;
+  }
+
+  // Get all user preferences
+  const { data: allPrefs } = await supabase
+    .from("user_preferences")
+    .select("user_id, email_frequency");
+
+  const prefsMap = new Map<string, string>();
+  for (const pref of allPrefs || []) {
+    prefsMap.set(pref.user_id, pref.email_frequency);
+  }
+
+  // Get all subscriptions (batched for all users)
+  const { data: allSubs } = await supabase
+    .from("user_subscriptions")
+    .select("user_id, company_id");
+
+  const userSubsMap = new Map<string, string[]>();
+  for (const sub of allSubs || []) {
+    const existing = userSubsMap.get(sub.user_id) || [];
+    existing.push(sub.company_id);
+    userSubsMap.set(sub.user_id, existing);
+  }
+
+  let emailsSent = 0;
+  for (const user of users) {
+    if (!user.email) continue;
+
+    // Check preference: default to 'daily' if not set
+    const freq = prefsMap.get(user.id) || "daily";
+    if (freq === "off") {
+      console.log(`Skipping email for ${user.email} (preference: off)`);
+      continue;
+    }
+
+    // Get this user's subscribed company IDs
+    const userCompanyIds = userSubsMap.get(user.id) || [];
+    if (userCompanyIds.length === 0) continue;
+
+    // Filter alerts to only this user's subscriptions
+    const userAlerts: NewJobAlert[] = [];
+    for (const companyId of userCompanyIds) {
+      const alert = companyAlerts.get(companyId);
+      if (alert) {
+        userAlerts.push(alert);
+      }
+    }
+
+    if (userAlerts.length === 0) continue;
+
+    try {
+      await sendUserAlert(user.email, userAlerts);
+      emailsSent++;
+    } catch (err) {
+      console.error(`Failed to send alert to ${user.email}:`, err);
+    }
+  }
+
+  console.log(`Per-user alerts sent to ${emailsSent} users`);
 }
