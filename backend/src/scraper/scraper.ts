@@ -268,6 +268,7 @@ export const PM_KEYWORDS = [
   "chief product officer",
   "chief product",
   "product policy",
+  "product led growth",
 ];
 
 interface GreenhouseJob {
@@ -315,8 +316,9 @@ async function scrapeGreenhouseCareers(
 
 /**
  * Greenhouse departments-based scraper.
- * Fetches the "Product Management" department and returns all jobs in it.
- * More accurate than keyword-only filtering since it trusts the company's own categorization.
+ * Fetches the "Product Management" department and returns all jobs in it,
+ * then also sweeps all jobs for PM keyword matches to catch PM roles filed
+ * in other departments (e.g., Product Led Growth in a Growth dept).
  * Falls back to keyword-based scrapeGreenhouseCareers if no PM department found.
  */
 async function scrapeGreenhouseDepartments(
@@ -325,20 +327,21 @@ async function scrapeGreenhouseDepartments(
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Fetching departments from Greenhouse API (board: ${boardName})`);
 
-  const response = await fetch(
-    `https://api.greenhouse.io/v1/boards/${boardName}/departments`
-  );
+  const [deptResponse, allJobsResponse] = await Promise.all([
+    fetch(`https://api.greenhouse.io/v1/boards/${boardName}/departments`),
+    fetch(`https://api.greenhouse.io/v1/boards/${boardName}/jobs`),
+  ]);
 
-  if (!response.ok) {
+  if (!deptResponse.ok) {
     console.log(`${companyLabel}: Departments endpoint failed, falling back to keyword filter`);
     return scrapeGreenhouseCareers(boardName, companyLabel);
   }
 
-  const data: { departments: Array<{ id: number; name: string; jobs: GreenhouseJob[] }> } =
-    await response.json();
+  const deptData: { departments: Array<{ id: number; name: string; jobs: GreenhouseJob[] }> } =
+    await deptResponse.json();
 
   // Find Product Management department(s)
-  const pmDepts = data.departments.filter((d) => {
+  const pmDepts = deptData.departments.filter((d) => {
     const name = d.name.toLowerCase();
     return name.includes("product management") && !name.includes("production");
   });
@@ -348,10 +351,26 @@ async function scrapeGreenhouseDepartments(
     return scrapeGreenhouseCareers(boardName, companyLabel);
   }
 
-  const allJobs = pmDepts.flatMap((d) => d.jobs);
-  console.log(`${companyLabel}: Found ${allJobs.length} jobs in Product Management department`);
+  const deptJobs = pmDepts.flatMap((d) => d.jobs);
+  const deptJobIds = new Set(deptJobs.map((j) => j.id));
+  console.log(`${companyLabel}: Found ${deptJobs.length} jobs in Product Management department`);
 
-  return allJobs.map((job) => ({
+  // Also sweep all jobs for PM keyword matches not already in the department
+  let keywordExtras: GreenhouseJob[] = [];
+  if (allJobsResponse.ok) {
+    const allData: GreenhouseResponse = await allJobsResponse.json();
+    keywordExtras = allData.jobs.filter((job) => {
+      if (deptJobIds.has(job.id)) return false; // Already captured via department
+      const lowerTitle = job.title.toLowerCase();
+      return PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
+    });
+    if (keywordExtras.length > 0) {
+      console.log(`${companyLabel}: Found ${keywordExtras.length} additional PM roles via keyword sweep`);
+    }
+  }
+
+  const combined = [...deptJobs, ...keywordExtras];
+  return combined.map((job) => ({
     title: job.title,
     location: job.location?.name || "",
     urlPath: job.absolute_url,
