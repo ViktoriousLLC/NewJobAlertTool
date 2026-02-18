@@ -267,6 +267,7 @@ export const PM_KEYWORDS = [
   "vp product",
   "chief product officer",
   "chief product",
+  "product policy",
 ];
 
 interface GreenhouseJob {
@@ -306,6 +307,51 @@ async function scrapeGreenhouseCareers(
   console.log(`${companyLabel}: Found ${productJobs.length} product manager roles`);
 
   return productJobs.map((job) => ({
+    title: job.title,
+    location: job.location?.name || "",
+    urlPath: job.absolute_url,
+  }));
+}
+
+/**
+ * Greenhouse departments-based scraper.
+ * Fetches the "Product Management" department and returns all jobs in it.
+ * More accurate than keyword-only filtering since it trusts the company's own categorization.
+ * Falls back to keyword-based scrapeGreenhouseCareers if no PM department found.
+ */
+async function scrapeGreenhouseDepartments(
+  boardName: string,
+  companyLabel: string
+): Promise<ScrapedJob[]> {
+  console.log(`${companyLabel}: Fetching departments from Greenhouse API (board: ${boardName})`);
+
+  const response = await fetch(
+    `https://api.greenhouse.io/v1/boards/${boardName}/departments`
+  );
+
+  if (!response.ok) {
+    console.log(`${companyLabel}: Departments endpoint failed, falling back to keyword filter`);
+    return scrapeGreenhouseCareers(boardName, companyLabel);
+  }
+
+  const data: { departments: Array<{ id: number; name: string; jobs: GreenhouseJob[] }> } =
+    await response.json();
+
+  // Find Product Management department(s)
+  const pmDepts = data.departments.filter((d) => {
+    const name = d.name.toLowerCase();
+    return name.includes("product management") && !name.includes("production");
+  });
+
+  if (pmDepts.length === 0) {
+    console.log(`${companyLabel}: No Product Management department found, falling back to keyword filter`);
+    return scrapeGreenhouseCareers(boardName, companyLabel);
+  }
+
+  const allJobs = pmDepts.flatMap((d) => d.jobs);
+  console.log(`${companyLabel}: Found ${allJobs.length} jobs in Product Management department`);
+
+  return allJobs.map((job) => ({
     title: job.title,
     location: job.location?.name || "",
     urlPath: job.absolute_url,
@@ -1404,11 +1450,11 @@ export async function scrapeCompanyCareers(
     return scrapeRedditCareers();
   }
 
-  // Roblox-specific: use Greenhouse API (board: roblox)
+  // Roblox-specific: use Greenhouse departments API (board: roblox)
   if (hostname.includes("roblox.com")) {
-    console.log("Detected Roblox careers page, using Greenhouse API scraper");
+    console.log("Detected Roblox careers page, using Greenhouse departments scraper");
     await browser.close();
-    return scrapeGreenhouseCareers("roblox", "Roblox");
+    return scrapeGreenhouseDepartments("roblox", "Roblox");
   }
 
   // Instacart-specific: use Greenhouse API

@@ -18,7 +18,6 @@ const HARD_EXCLUSIONS = [
   "ux ",
   "research",
   "data ",
-  "security",
   "technical program",
 ];
 
