@@ -20,6 +20,8 @@ interface ScrapeIssue {
   issue_type: string;
   description: string;
   created_at: string;
+  company_name: string;
+  user_email: string | null;
 }
 
 interface HelpSubmission {
@@ -48,6 +50,7 @@ export default function AdminPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
+  const [expandedReport, setExpandedReport] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -174,7 +177,7 @@ export default function AdminPage() {
         </div>
       )}
 
-      {/* Bug reports (combined) */}
+      {/* Bug reports (combined, sorted by date) */}
       <div className="bg-white rounded-xl border border-stone-200 p-5 shadow-sm mb-6">
         <h2 className="text-sm font-semibold text-stone-700 mb-3">
           Reports ({scrapeIssues.length + helpSubmissions.length})
@@ -182,42 +185,75 @@ export default function AdminPage() {
         {scrapeIssues.length + helpSubmissions.length === 0 ? (
           <p className="text-sm text-stone-400">No reports yet.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-stone-200 text-left text-stone-500">
-                  <th className="pb-2 font-medium">Source</th>
-                  <th className="pb-2 font-medium">Type</th>
-                  <th className="pb-2 font-medium">Message</th>
-                  <th className="pb-2 font-medium">User</th>
-                  <th className="pb-2 font-medium">Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {helpSubmissions.map((h) => (
-                  <tr key={`help-${h.id}`} className="border-b border-stone-100">
-                    <td className="py-2">
-                      <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Help</span>
-                    </td>
-                    <td className="py-2 text-stone-600">{h.issue_type}</td>
-                    <td className="py-2 text-[#1A1A2E] max-w-xs truncate">{h.message}</td>
-                    <td className="py-2 text-stone-500 text-xs">{h.user_email || h.user_id.slice(0, 8)}</td>
-                    <td className="py-2 text-stone-500 text-xs whitespace-nowrap">{formatDateTime(h.created_at)}</td>
-                  </tr>
-                ))}
-                {scrapeIssues.map((s) => (
-                  <tr key={`scrape-${s.id}`} className="border-b border-stone-100">
-                    <td className="py-2">
-                      <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Scrape</span>
-                    </td>
-                    <td className="py-2 text-stone-600">{s.issue_type}</td>
-                    <td className="py-2 text-[#1A1A2E] max-w-xs truncate">{s.description}</td>
-                    <td className="py-2 text-stone-500 text-xs">{s.user_id.slice(0, 8)}</td>
-                    <td className="py-2 text-stone-500 text-xs whitespace-nowrap">{formatDateTime(s.created_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-2">
+            {/* Merge and sort all reports by date */}
+            {[
+              ...helpSubmissions.map((h) => ({
+                key: `help-${h.id}`,
+                source: "Help" as const,
+                type: h.issue_type,
+                preview: h.message,
+                detail: h.message,
+                user: h.user_email || h.user_id.slice(0, 8),
+                company: null as string | null,
+                pageUrl: h.page_url,
+                date: h.created_at,
+              })),
+              ...scrapeIssues.map((s) => ({
+                key: `scrape-${s.id}`,
+                source: "Scrape" as const,
+                type: s.issue_type,
+                preview: s.description || "(no description)",
+                detail: s.description || "(no description)",
+                user: s.user_email || s.user_id.slice(0, 8),
+                company: s.company_name,
+                pageUrl: null as string | null,
+                date: s.created_at,
+              })),
+            ]
+              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+              .map((report) => {
+                const isExpanded = expandedReport === report.key;
+                return (
+                  <div
+                    key={report.key}
+                    className={`border rounded-lg transition-colors ${isExpanded ? "border-stone-300 bg-stone-50" : "border-stone-200 hover:bg-stone-50"}`}
+                  >
+                    <button
+                      onClick={() => setExpandedReport(isExpanded ? null : report.key)}
+                      className="w-full text-left px-4 py-3 flex items-center gap-3"
+                    >
+                      <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${
+                        report.source === "Help" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
+                      }`}>
+                        {report.source}
+                      </span>
+                      <span className="text-xs text-stone-500 shrink-0 w-24">{report.type}</span>
+                      <span className="text-sm text-[#1A1A2E] flex-1 truncate">{report.preview}</span>
+                      <span className="text-xs text-stone-400 shrink-0 whitespace-nowrap">{formatDateTime(report.date)}</span>
+                      <svg
+                        className={`w-4 h-4 text-stone-400 shrink-0 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                    {isExpanded && (
+                      <div className="px-4 pb-3 border-t border-stone-200 pt-3 space-y-2 text-sm">
+                        <div>
+                          <span className="text-stone-500 text-xs font-medium">Full message:</span>
+                          <p className="text-[#1A1A2E] mt-0.5 whitespace-pre-wrap">{report.detail}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-stone-500">
+                          <span><span className="font-medium">User:</span> {report.user}</span>
+                          {report.company && <span><span className="font-medium">Company:</span> {report.company}</span>}
+                          {report.pageUrl && <span><span className="font-medium">Page:</span> {report.pageUrl}</span>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
           </div>
         )}
       </div>

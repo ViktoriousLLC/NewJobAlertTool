@@ -52,10 +52,10 @@ router.get("/stats", async (_req: Request, res: Response) => {
   }
 });
 
-// GET /api/admin/issues — combined scrape issues + help submissions
+// GET /api/admin/issues — combined scrape issues + help submissions, enriched with names/emails
 router.get("/issues", async (_req: Request, res: Response) => {
   try {
-    const [scrapeIssuesResult, helpResult] = await Promise.all([
+    const [scrapeIssuesResult, helpResult, companiesResult, usersResult] = await Promise.all([
       supabase
         .from("scrape_issues")
         .select("id, company_id, user_id, issue_type, description, created_at")
@@ -66,10 +66,32 @@ router.get("/issues", async (_req: Request, res: Response) => {
         .select("id, user_id, user_email, issue_type, message, page_url, created_at")
         .order("created_at", { ascending: false })
         .limit(100),
+      supabase
+        .from("companies")
+        .select("id, name"),
+      supabase.auth.admin.listUsers(),
     ]);
 
+    // Build lookup maps
+    const companyMap = new Map<string, string>();
+    for (const c of companiesResult.data || []) {
+      companyMap.set(c.id, c.name);
+    }
+
+    const userEmailMap = new Map<string, string>();
+    for (const u of usersResult.data?.users || []) {
+      if (u.email) userEmailMap.set(u.id, u.email);
+    }
+
+    // Enrich scrape issues with company name and user email
+    const enrichedScrapeIssues = (scrapeIssuesResult.data || []).map((s) => ({
+      ...s,
+      company_name: companyMap.get(s.company_id) || "Unknown",
+      user_email: userEmailMap.get(s.user_id) || null,
+    }));
+
     res.json({
-      scrape_issues: scrapeIssuesResult.data || [],
+      scrape_issues: enrichedScrapeIssues,
       help_submissions: helpResult.data || [],
     });
   } catch (err) {
