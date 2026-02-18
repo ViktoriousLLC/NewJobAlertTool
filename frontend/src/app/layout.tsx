@@ -3,6 +3,7 @@ import { Outfit } from "next/font/google";
 import NavBar from "@/components/NavBar";
 import PostHogProvider from "@/components/PostHogProvider";
 import HelpButton from "@/components/HelpButton";
+import { ToastProvider } from "@/components/Toast";
 import "./globals.css";
 
 const outfit = Outfit({
@@ -24,6 +25,7 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${outfit.className} antialiased`}>
         <PostHogProvider>
+        <ToastProvider>
         <div className="min-h-screen">
           <NavBar />
           <main className="max-w-[1400px] mx-auto px-6 py-8">{children}</main>
@@ -41,6 +43,7 @@ export default function RootLayout({
             </a>
           </footer>
         </div>
+        </ToastProvider>
         </PostHogProvider>
       </body>
     </html>

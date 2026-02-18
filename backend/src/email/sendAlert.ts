@@ -40,7 +40,7 @@ function getCompanyLogoUrl(companyName: string, careersUrl: string): string {
   }
 }
 
-function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
+function buildAlertHtml(alerts: NewJobAlert[], now: string, period: "daily" | "weekly" = "daily"): string {
   const sorted = [...alerts].sort(
     (a, b) => b.newJobs.length - a.newJobs.length
   );
@@ -52,10 +52,11 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
     "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif";
 
   // Summary banner: green if jobs found, muted grey if none
+  const periodLabel = period === "weekly" ? "this week" : "today";
   const summaryText =
     totalNewJobs > 0
-      ? `${totalNewJobs} new PM job${totalNewJobs === 1 ? "" : "s"} found today`
-      : "No new jobs today";
+      ? `${totalNewJobs} new PM job${totalNewJobs === 1 ? "" : "s"} found ${periodLabel}`
+      : `No new jobs ${periodLabel}`;
   const summaryBg = totalNewJobs > 0 ? "#16874D" : "#78716c";
 
   // Build company sections
@@ -187,7 +188,7 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
                       NewPMJobs.com &mdash; Product management job tracking
                     </p>
                     <p style="margin:8px 0 0 0;font-size:11px;color:#a8a29e;font-family:${font};">
-                      You're receiving this because you have daily alerts enabled.
+                      You're receiving this because you have ${period} alerts enabled.
                       <a href="https://www.newpmjobs.com/settings" target="_blank" style="color:#0EA5E9;text-decoration:underline;">Manage preferences</a>
                     </p>
                   </td>
@@ -205,10 +206,12 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string): string {
 
 /**
  * Send a personalized alert email to a specific user.
+ * @param period - "daily" (default) or "weekly" — affects subject line and footer text
  */
 export async function sendUserAlert(
   userEmail: string,
-  alerts: NewJobAlert[]
+  alerts: NewJobAlert[],
+  period: "daily" | "weekly" = "daily"
 ): Promise<void> {
   if (!process.env.RESEND_API_KEY) {
     console.log("RESEND_API_KEY not set — skipping email send");
@@ -229,16 +232,20 @@ export async function sendUserAlert(
     day: "numeric",
   });
 
-  const html = buildAlertHtml(alerts, now);
+  const html = buildAlertHtml(alerts, now, period);
+
+  const subject = period === "weekly"
+    ? `Weekly PM Digest: ${totalNewJobs} new job${totalNewJobs === 1 ? "" : "s"} this week`
+    : `Job Alert: ${totalNewJobs} new PM job${totalNewJobs === 1 ? "" : "s"} — ${now}`;
 
   await resend.emails.send({
     from: "NewPMJobs <alerts@newpmjobs.com>",
     to: userEmail,
-    subject: `Job Alert: ${totalNewJobs} new PM job${totalNewJobs === 1 ? "" : "s"} — ${now}`,
+    subject,
     html,
   });
 
-  console.log(`Email sent to ${userEmail}: ${totalNewJobs} new jobs reported`);
+  console.log(`${period} email sent to ${userEmail}: ${totalNewJobs} new jobs reported`);
 }
 
 /**

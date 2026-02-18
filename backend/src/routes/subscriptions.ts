@@ -43,20 +43,27 @@ router.post("/", async (req: Request, res: Response) => {
 
     if (insertError) throw insertError;
 
-    // Increment subscriber_count and set is_active for each company
-    for (const companyId of company_ids) {
-      const { data: countData } = await supabase
-        .from("user_subscriptions")
-        .select("id", { count: "exact", head: true })
-        .eq("company_id", companyId);
+    // Batch: get subscriber counts for all affected companies in one query
+    const { data: countRows } = await supabase
+      .from("user_subscriptions")
+      .select("company_id")
+      .in("company_id", company_ids);
 
-      const count = (countData as unknown as { count: number } | null)?.count ?? 1;
-
-      await supabase
-        .from("companies")
-        .update({ subscriber_count: count, is_active: true })
-        .eq("id", companyId);
+    const countMap = new Map<string, number>();
+    for (const row of countRows || []) {
+      countMap.set(row.company_id, (countMap.get(row.company_id) || 0) + 1);
     }
+
+    // Parallel: update all companies at once
+    await Promise.all(
+      company_ids.map((companyId: string) => {
+        const count = countMap.get(companyId) || 1;
+        return supabase
+          .from("companies")
+          .update({ subscriber_count: count, is_active: true })
+          .eq("id", companyId);
+      })
+    );
 
     res.json({ success: true, subscribed: company_ids.length });
   } catch (err) {

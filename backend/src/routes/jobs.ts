@@ -20,27 +20,29 @@ router.get("/", async (req: Request, res: Response) => {
       return;
     }
 
-    // Get company names for those IDs
-    const { data: companies, error: compErr } = await supabase
-      .from("companies")
-      .select("id, name, careers_url")
-      .in("id", companyIds);
+    // Parallel: fetch companies and jobs at the same time
+    const [companiesResult, jobsResult] = await Promise.all([
+      supabase
+        .from("companies")
+        .select("id, name, careers_url")
+        .in("id", companyIds),
+      supabase
+        .from("seen_jobs")
+        .select("id, company_id, job_title, job_location, job_url_path, first_seen_at, is_baseline, job_level, status")
+        .in("company_id", companyIds)
+        .eq("status", "active")
+        .order("first_seen_at", { ascending: false }),
+    ]);
 
-    if (compErr) throw compErr;
+    if (companiesResult.error) throw companiesResult.error;
+    if (jobsResult.error) throw jobsResult.error;
+
+    const companies = companiesResult.data;
+    const jobs = jobsResult.data;
 
     const companyMap = new Map(
       (companies || []).map((c) => [c.id, { name: c.name, careers_url: c.careers_url }])
     );
-
-    // Get all active jobs for these companies
-    const { data: jobs, error: jobsErr } = await supabase
-      .from("seen_jobs")
-      .select("id, company_id, job_title, job_location, job_url_path, first_seen_at, is_baseline, job_level, status")
-      .in("company_id", companyIds)
-      .eq("status", "active")
-      .order("first_seen_at", { ascending: false });
-
-    if (jobsErr) throw jobsErr;
 
     // Join company info onto each job
     const result = (jobs || []).map((j) => {

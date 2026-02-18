@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
+import { useToast } from "@/components/Toast";
 
 export default function SettingsPage() {
-  const [emailFrequency, setEmailFrequency] = useState<"daily" | "off">("daily");
+  const [emailFrequency, setEmailFrequency] = useState<"daily" | "weekly" | "off">("daily");
   const [loading, setLoading] = useState(true);
+  const { showToast } = useToast();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -16,11 +18,11 @@ export default function SettingsPage() {
       .then((data) => {
         setEmailFrequency(data.email_frequency || "daily");
       })
-      .catch((err) => console.error("Failed to load preferences:", err))
+      .catch((err) => { console.error("Failed to load preferences:", err); showToast("Failed to load preferences."); })
       .finally(() => setLoading(false));
   }, []);
 
-  async function handleSave(newFrequency: "daily" | "off") {
+  async function handleSave(newFrequency: "daily" | "weekly" | "off") {
     setEmailFrequency(newFrequency);
     setSaving(true);
     try {
@@ -33,6 +35,7 @@ export default function SettingsPage() {
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       console.error("Failed to save preferences:", err);
+      showToast("Failed to save preferences. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -85,6 +88,29 @@ export default function SettingsPage() {
                 <div className="text-sm font-medium text-[#1A1A2E]">Daily digest</div>
                 <div className="text-xs text-stone-500">
                   Receive a daily email with new PM jobs from your tracked companies
+                </div>
+              </div>
+            </label>
+
+            <label
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg border cursor-pointer transition-all ${
+                emailFrequency === "weekly"
+                  ? "border-[#0EA5E9] bg-blue-50"
+                  : "border-stone-200 hover:bg-stone-50"
+              }`}
+              onClick={() => handleSave("weekly")}
+            >
+              <input
+                type="radio"
+                name="email"
+                checked={emailFrequency === "weekly"}
+                onChange={() => handleSave("weekly")}
+                className="text-[#0EA5E9] focus:ring-[#0EA5E9]"
+              />
+              <div>
+                <div className="text-sm font-medium text-[#1A1A2E]">Weekly digest</div>
+                <div className="text-xs text-stone-500">
+                  Receive a weekly email every Monday with new PM jobs from the past 7 days
                 </div>
               </div>
             </label>

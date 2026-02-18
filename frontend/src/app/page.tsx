@@ -11,6 +11,7 @@ import {
   getFaviconUrl,
 } from "@/lib/brandColors";
 import AddCompanyModal from "@/components/AddCompanyModal";
+import { useToast } from "@/components/Toast";
 
 interface Company {
   id: string;
@@ -79,6 +80,7 @@ function DashboardContent() {
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [removeToast, setRemoveToast] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   useEffect(() => {
     fetchCompanies();
@@ -111,6 +113,7 @@ function DashboardContent() {
       setSubscribedIds(new Set(subIds));
     } catch (err) {
       console.error("Failed to fetch companies:", err);
+      showToast("Failed to load companies. Please refresh.");
     } finally {
       setLoading(false);
     }
@@ -131,6 +134,7 @@ function DashboardContent() {
       setTimeout(() => setRemoveToast(null), 3000);
     } catch (err) {
       console.error("Failed to remove company:", err);
+      showToast("Failed to remove company. Please try again.");
     }
   }
 

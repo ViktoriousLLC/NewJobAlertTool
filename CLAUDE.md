@@ -79,7 +79,7 @@ DELETE /api/subscriptions/{companyId}    — Unsubscribe from a company
 ```
 GET    /api/preferences                  — Get user preferences (creates default if none)
 PUT    /api/preferences                  — Update preferences
-         Body: {"email_frequency": "daily|off"}
+         Body: {"email_frequency": "daily|weekly|off"}
 ```
 
 ### Favorites
@@ -108,8 +108,15 @@ GET    /api/compensation/{companyName}   — Comp data for a single company
 
 ### Help / Feedback
 ```
-POST   /api/help                         — Send feedback email to admin
+POST   /api/help                         — Send feedback email to admin + store in help_submissions table
          Body: {"issue_type": "bug|missing_data|other", "message": "...", "page_url": "..."}
+```
+
+### Admin (requires admin email)
+```
+GET    /api/admin/stats                  — Dashboard stats (users, companies, jobs, errors)
+GET    /api/admin/issues                 — Combined scrape issues + help submissions
+GET    /api/admin/users                  — User list with subs count and email prefs
 ```
 
 ### Scraping
@@ -149,7 +156,7 @@ The CRON_SECRET is set in Railway env vars.
 
 ### `user_preferences` table
 - `id` (uuid PK), `user_id` (UNIQUE FK → auth.users), `email_frequency` (text, default 'daily'), `created_at`, `updated_at`
-- `email_frequency`: `'daily'` or `'off'`
+- `email_frequency`: `'daily'`, `'weekly'`, or `'off'`
 
 ### `comp_cache` table
 - `id` (uuid PK), `company_slug` (text, UNIQUE), `company_name` (text), `data` (jsonb), `fetched_at` (timestamptz)
@@ -162,6 +169,12 @@ The CRON_SECRET is set in Railway env vars.
 - RLS: users can insert/view their own issues
 - Any user can report issues on any shared company
 - Issue types: `wrong_jobs`, `missing_jobs`, `bad_locations`, `other`
+
+### `help_submissions` table
+- `id` (uuid PK), `user_id` (FK → auth.users), `user_email` (text), `issue_type` (text), `message` (text), `page_url` (text), `created_at`
+- RLS: users can insert/view their own submissions
+- Index on `created_at DESC` for admin dashboard queries
+- Populated by POST /api/help alongside Resend email
 
 ## Scraper Architecture (backend/src/scraper/scraper.ts)
 
@@ -235,6 +248,8 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `backend/src/routes/favorites.ts` — Favorites API (user_job_favorites table)
 - `backend/src/routes/issues.ts` — Scrape issue reporting API (any user, any company)
 - `backend/src/routes/compensation.ts` — Levels.fyi compensation API (subscription-scoped)
+- `backend/src/routes/admin.ts` — Admin-only dashboard API (stats, issues, users)
+- `backend/src/lib/constants.ts` — Shared constants (ADMIN_EMAIL)
 - `backend/src/lib/classifyLevel.ts` — Job level classification (early/mid/director) by title keywords
 - `backend/src/lib/levelsFyi.ts` — Levels.fyi fetcher, parser, and comp_cache manager
 - `frontend/src/lib/jobFilters.ts` — Shared `isUSLocation()`, job level labels/colors
@@ -262,7 +277,12 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `frontend/src/app/layout.tsx` — Root layout with navbar + HelpButton
 - `frontend/src/components/AddCompanyModal.tsx` — Two-path modal: catalog browse + new company submission
 - `frontend/src/components/HelpButton.tsx` — Floating help/feedback button
+- `frontend/src/components/Toast.tsx` — Toast notification system (context provider + UI)
+- `frontend/src/app/admin/page.tsx` — Admin dashboard (stats, errors, reports, users)
 - `cron/index.js` — Railway cron trigger script
+- `scripts/reset-test-user.sql` — Test account data wipe script
+- `scripts/create-help-submissions.sql` — SQL to create help_submissions table
+- `scripts/phase6-cleanup.sql` — Drop old favorites table + companies.user_id column
 - `supabase-schema.sql` — Database schema
 
 ## Frontend Pages
@@ -275,7 +295,8 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 | `/add` | `add/page.tsx` | Redirects to `/?addCompany=true` |
 | `/company/[id]` | `company/[id]/page.tsx` | Company detail — active jobs + saved inactive section |
 | `/jobs` | `jobs/page.tsx` | All Jobs — active jobs across subscribed companies |
-| `/settings` | `settings/page.tsx` | Email preferences (daily / off) |
+| `/settings` | `settings/page.tsx` | Email preferences (daily / weekly / off) |
+| `/admin` | `admin/page.tsx` | Admin dashboard (stats, issues, users) |
 
 ### Navbar (`layout.tsx`)
 Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Company] [Settings] | email + Sign Out
@@ -356,6 +377,37 @@ Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Compa
 - **NEXT_PUBLIC_ env vars:** Baked at build time. After changing in Vercel, must trigger a redeploy for changes to take effect.
 - **Cloudflare proxy (orange cloud):** Must be OFF (grey cloud / DNS only) for Vercel and Railway custom domains — they manage their own SSL.
 - **Supabase SMTP location:** Dashboard → Authentication → Notifications → Email → SMTP Settings (not under "Project Settings").
+- **Duplicate companies:** Name-based dedup is unreliable ("Open ai" vs "OpenAI"). Always validate by URL domain when adding companies. Extract domain from careers_url and check against existing companies.
+- **Subscription N+1:** When subscribing to N companies, don't loop 2N sequential queries. Batch the subscriber_count update. Same pattern for unsubscribe.
+- **Anon key for read queries:** The Supabase anon key works for tables with `USING (true)` SELECT policies (companies, seen_jobs). Useful for CLI debugging without a user JWT.
+- **Local .env placeholders:** The local `backend/.env` has placeholder values for SUPABASE_SERVICE_KEY. Production keys are only on Railway. For local DB queries, use anon key against Supabase REST API with appropriate RLS policies.
+
+## Multi-User Overhaul Status
+
+The app was converted from single-user to multi-user in Feb 2026. Key changes:
+- Companies are a shared catalog (one Uber entry, scraped once)
+- Users subscribe via `user_subscriptions` to track companies
+- Per-user email alerts based on subscriptions + preferences
+- Old `favorites` table replaced by `user_job_favorites`
+- Job status lifecycle: active → removed → archived (replaces hard delete)
+- **Phase 6 cleanup ready:** `user_id` removed from companies INSERT. Run `scripts/phase6-cleanup.sql` in Supabase SQL Editor to drop old `favorites` table + `companies.user_id` column.
+- **Admin email:** Extracted to `backend/src/lib/constants.ts` — reads `ADMIN_EMAIL` env var (Railway), falls back to `vik@viktoriousllc.com`
+- **Admin dashboard:** `/admin` page (frontend) + `/api/admin/*` routes (backend). Access restricted to `ADMIN_EMAIL`.
+- **Test account:** Use `test-account@example.com` (Gmail `+` alias → same inbox, separate Supabase user). Reset script at `scripts/reset-test-user.sql`.
+- **Rate limiting:** General API: 100 req/15min. Write endpoints (POST /api/companies, /api/help): 20 req/15min. Uses `express-rate-limit`.
+- **Toast notifications:** Frontend errors show toast notifications instead of silent console.error. Provider in layout.tsx, hook via `useToast()`.
+- **URL dedup:** Company creation checks for existing companies with the same domain. ATS-hosted URLs (Greenhouse, Lever, etc.) use hostname/slug as dedup key.
+
+## Performance Rules
+
+**These rules apply to ALL code changes — follow automatically, don't wait to be asked.**
+
+1. **Audit for N+1 queries:** After any feature, check if loops issue sequential DB queries. Use `Promise.all()` for independent queries or batch operations.
+2. **Parallel over sequential:** If two queries don't depend on each other's results, run them in `Promise.all()`.
+3. **Minimize round-trips:** Prefer one batch query over N individual queries.
+4. **Index awareness:** New query patterns may need new indexes. Check if WHERE/ORDER BY columns are indexed.
+5. **Suggest optimizations:** Before marking any task done, suggest any performance improvements found.
+6. **Frontend re-fetches:** Don't re-fetch data that's already available. Pass via props or context.
 
 ## Common Operations
 

@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
 import { isUSLocation, JobLevel, LEVEL_LABELS, LEVEL_COLORS, ALL_LEVELS } from "@/lib/jobFilters";
+import { useToast } from "@/components/Toast";
 
 interface ApiJob {
   id: string;
@@ -62,6 +63,7 @@ export default function AllJobsPageWrapper() {
 
 function AllJobsPage() {
   const searchParams = useSearchParams();
+  const { showToast } = useToast();
   const [jobs, setJobs] = useState<FlatJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [usOnly, setUsOnly] = useState(true);
@@ -130,6 +132,7 @@ function AllJobsPage() {
         setJobs(flat);
       } catch (err) {
         console.error("Failed to fetch jobs:", err);
+        showToast("Failed to load jobs. Please refresh.");
       } finally {
         setLoading(false);
       }

@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/node";
 import express from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import companiesRouter from "./routes/companies";
 import favoritesRouter from "./routes/favorites";
@@ -10,6 +11,7 @@ import jobsRouter from "./routes/jobs";
 import subscriptionsRouter from "./routes/subscriptions";
 import catalogRouter from "./routes/catalog";
 import preferencesRouter from "./routes/preferences";
+import adminRouter from "./routes/admin";
 import { runDailyCheck } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
@@ -17,6 +19,7 @@ import { scrapeCompanyCareers } from "./scraper/scraper";
 import { detectPlatform } from "./scraper/detectPlatform";
 import { validateScrapeResults } from "./scraper/validateScrape";
 import { classifyJobLevel } from "./lib/classifyLevel";
+import { ADMIN_EMAIL } from "./lib/constants";
 
 
 dotenv.config();
@@ -52,6 +55,27 @@ app.use((_req, res, next) => {
   next();
 });
 
+// Rate limiting
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later" },
+});
+
+const strictLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later" },
+});
+
+app.use("/api/", generalLimiter);
+app.post("/api/companies", strictLimiter);
+app.post("/api/help", strictLimiter);
+
 // Routes (protected by auth)
 app.use("/api/companies", requireAuth, companiesRouter);
 app.use("/api/favorites", requireAuth, favoritesRouter);
@@ -61,8 +85,9 @@ app.use("/api/jobs", requireAuth, jobsRouter);
 app.use("/api/subscriptions", requireAuth, subscriptionsRouter);
 app.use("/api/catalog", requireAuth, catalogRouter);
 app.use("/api/preferences", requireAuth, preferencesRouter);
+app.use("/api/admin", requireAuth, adminRouter);
 
-// Help/feedback endpoint (sends email to admin)
+// Help/feedback endpoint (sends email to admin + stores in DB)
 app.post("/api/help", requireAuth, async (req, res) => {
   try {
     const { issue_type, message, page_url } = req.body;
@@ -70,6 +95,16 @@ app.post("/api/help", requireAuth, async (req, res) => {
       res.status(400).json({ error: "message is required" });
       return;
     }
+
+    // Store in DB for admin dashboard visibility
+    const { error: dbError } = await supabase.from("help_submissions").insert({
+      user_id: req.userId!,
+      user_email: req.userEmail || null,
+      issue_type: issue_type || "other",
+      message,
+      page_url: page_url || null,
+    });
+    if (dbError) console.error("Failed to store help submission:", dbError);
 
     // Send email to admin via Resend
     if (process.env.RESEND_API_KEY) {
@@ -139,7 +174,6 @@ app.post("/api/admin/add-company", async (req, res) => {
 
   try {
     // Find admin user by email
-    const ADMIN_EMAIL = "vik@viktoriousllc.com";
     const { data: users } = await supabase.auth.admin.listUsers();
     const adminUser = users?.users?.find((u) => u.email === ADMIN_EMAIL);
     const adminUserId = adminUser?.id;

@@ -207,7 +207,7 @@ export default function AddCompanyModal({
                 : "text-stone-500 hover:text-stone-700"
             }`}
           >
-            Add New Company
+            Add a New Company
           </button>
         </div>
 
@@ -350,6 +350,15 @@ export default function AddCompanyModal({
               {addError && (
                 <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg text-sm">
                   {addError}
+                  {addError.includes("catalog") && (
+                    <button
+                      type="button"
+                      onClick={() => { setTab("catalog"); setAddError(""); }}
+                      className="block mt-1 text-[#0EA5E9] hover:underline text-xs font-medium"
+                    >
+                      Switch to catalog
+                    </button>
+                  )}
                 </div>
               )}
 

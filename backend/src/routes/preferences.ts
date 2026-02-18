@@ -43,7 +43,7 @@ router.put("/", async (req: Request, res: Response) => {
   try {
     const { email_frequency } = req.body;
 
-    const validFrequencies = ["daily", "off"];
+    const validFrequencies = ["daily", "weekly", "off"];
     if (!validFrequencies.includes(email_frequency)) {
       res.status(400).json({
         error: `email_frequency must be one of: ${validFrequencies.join(", ")}`,

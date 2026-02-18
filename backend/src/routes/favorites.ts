@@ -3,6 +3,8 @@ import { supabase } from "../lib/supabase";
 
 const router = Router();
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // GET /api/favorites — list user's favorited job IDs
 router.get("/", async (req: Request, res: Response) => {
   try {
@@ -24,7 +26,11 @@ router.get("/", async (req: Request, res: Response) => {
 // POST /api/favorites/:jobId — add a favorite
 router.post("/:jobId", async (req: Request, res: Response) => {
   try {
-    const { jobId } = req.params;
+    const jobId = req.params.jobId as string;
+    if (!UUID_REGEX.test(jobId)) {
+      res.status(400).json({ error: "Invalid job ID format" });
+      return;
+    }
 
     const { error } = await supabase
       .from("user_job_favorites")
@@ -45,7 +51,11 @@ router.post("/:jobId", async (req: Request, res: Response) => {
 // DELETE /api/favorites/:jobId — remove a favorite
 router.delete("/:jobId", async (req: Request, res: Response) => {
   try {
-    const { jobId } = req.params;
+    const jobId = req.params.jobId as string;
+    if (!UUID_REGEX.test(jobId)) {
+      res.status(400).json({ error: "Invalid job ID format" });
+      return;
+    }
 
     const { error } = await supabase
       .from("user_job_favorites")

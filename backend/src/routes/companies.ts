@@ -5,8 +5,40 @@ import { detectPlatform } from "../scraper/detectPlatform";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
+import { ADMIN_EMAIL } from "../lib/constants";
 
 const router = Router();
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ATS hostnames where multiple companies share the same domain
+const ATS_HOSTS = [
+  "greenhouse.io", "boards.greenhouse.io",
+  "lever.co", "jobs.lever.co",
+  "ashbyhq.com", "jobs.ashbyhq.com",
+  "myworkdayjobs.com",
+  "eightfold.ai",
+];
+
+/**
+ * Extract a dedup key from a careers URL.
+ * For ATS-hosted URLs, returns "hostname/slug" (e.g. "greenhouse.io/discord").
+ * For direct company domains, returns the hostname without "www." prefix.
+ */
+function extractDedupKey(url: string): string {
+  const parsed = new URL(url);
+  const hostname = parsed.hostname.replace(/^www\./, "").toLowerCase();
+
+  // Check if this is an ATS-hosted URL
+  for (const ats of ATS_HOSTS) {
+    if (hostname === ats || hostname.endsWith(`.${ats}`)) {
+      const slug = parsed.pathname.split("/").filter(Boolean)[0] || "";
+      return slug ? `${ats}/${slug.toLowerCase()}` : hostname;
+    }
+  }
+
+  return hostname;
+}
 
 // GET /api/companies — list user's subscribed companies
 router.get("/", async (req: Request, res: Response) => {
@@ -96,7 +128,11 @@ router.get("/", async (req: Request, res: Response) => {
 // GET /api/companies/:id — company detail with jobs + next company (subscription-based nav)
 router.get("/:id", async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
+    if (!UUID_REGEX.test(id)) {
+      res.status(400).json({ error: "Invalid company ID format" });
+      return;
+    }
 
     // Get user's subscribed company IDs for next-company nav
     const { data: subs } = await supabase
@@ -193,8 +229,30 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
+    // Dedup: check if a company with the same domain already exists
+    const newDedupKey = extractDedupKey(careers_url);
+    const { data: allCompanies } = await supabase
+      .from("companies")
+      .select("id, name, careers_url");
+
+    if (allCompanies) {
+      const match = allCompanies.find((c) => {
+        try {
+          return extractDedupKey(c.careers_url) === newDedupKey;
+        } catch {
+          return false;
+        }
+      });
+      if (match) {
+        res.status(409).json({
+          error: `A company with this domain already exists: "${match.name}". You can subscribe to it from the catalog instead.`,
+          existing_company: { id: match.id, name: match.name },
+        });
+        return;
+      }
+    }
+
     // Check submission limit (10 per user, admin bypass)
-    const ADMIN_EMAIL = "vik@viktoriousllc.com";
     const isAdmin = req.userEmail === ADMIN_EMAIL;
 
     if (!isAdmin) {
@@ -214,7 +272,7 @@ router.post("/", async (req: Request, res: Response) => {
     // Insert company with user_id
     const { data: company, error: insertError } = await supabase
       .from("companies")
-      .insert({ name, careers_url, user_id: req.userId!, is_active: true, subscriber_count: 1 })
+      .insert({ name, careers_url, is_active: true, subscriber_count: 1 })
       .select()
       .single();
 
@@ -321,8 +379,11 @@ router.post("/", async (req: Request, res: Response) => {
 // DELETE /api/companies/:id — unsubscribe (or admin-only true delete with ?hard=true)
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const ADMIN_EMAIL = "vik@viktoriousllc.com";
+    const id = req.params.id as string;
+    if (!UUID_REGEX.test(id)) {
+      res.status(400).json({ error: "Invalid company ID format" });
+      return;
+    }
     const isAdmin = req.userEmail === ADMIN_EMAIL;
     const hardDelete = req.query.hard === "true" && isAdmin;
 

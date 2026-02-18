@@ -228,7 +228,9 @@ async function sendPerUserAlerts(
     userSubsMap.set(sub.user_id, existing);
   }
 
+  const isMonday = new Date().getUTCDay() === 1;
   let emailsSent = 0;
+
   for (const user of users) {
     if (!user.email) continue;
 
@@ -239,28 +241,97 @@ async function sendPerUserAlerts(
       continue;
     }
 
+    // Weekly users only get emails on Mondays
+    if (freq === "weekly" && !isMonday) {
+      continue;
+    }
+
     // Get this user's subscribed company IDs
     const userCompanyIds = userSubsMap.get(user.id) || [];
     if (userCompanyIds.length === 0) continue;
 
-    // Filter alerts to only this user's subscriptions
-    const userAlerts: NewJobAlert[] = [];
-    for (const companyId of userCompanyIds) {
-      const alert = companyAlerts.get(companyId);
-      if (alert) {
-        userAlerts.push(alert);
+    if (freq === "weekly") {
+      // Weekly digest: fetch jobs from the past 7 days for this user's subscriptions
+      const weeklyAlerts = await getWeeklyAlerts(userCompanyIds);
+      if (weeklyAlerts.length === 0) continue;
+
+      try {
+        await sendUserAlert(user.email, weeklyAlerts, "weekly");
+        emailsSent++;
+      } catch (err) {
+        console.error(`Failed to send weekly digest to ${user.email}:`, err);
       }
-    }
+    } else {
+      // Daily: use today's scrape results
+      const userAlerts: NewJobAlert[] = [];
+      for (const companyId of userCompanyIds) {
+        const alert = companyAlerts.get(companyId);
+        if (alert) {
+          userAlerts.push(alert);
+        }
+      }
 
-    if (userAlerts.length === 0) continue;
+      if (userAlerts.length === 0) continue;
 
-    try {
-      await sendUserAlert(user.email, userAlerts);
-      emailsSent++;
-    } catch (err) {
-      console.error(`Failed to send alert to ${user.email}:`, err);
+      try {
+        await sendUserAlert(user.email, userAlerts, "daily");
+        emailsSent++;
+      } catch (err) {
+        console.error(`Failed to send alert to ${user.email}:`, err);
+      }
     }
   }
 
   console.log(`Per-user alerts sent to ${emailsSent} users`);
+}
+
+/**
+ * Fetch new jobs from the past 7 days for a set of companies.
+ * Used for weekly digest emails.
+ */
+async function getWeeklyAlerts(companyIds: string[]): Promise<NewJobAlert[]> {
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+  // Parallel: fetch companies + recent jobs
+  const [companiesResult, jobsResult] = await Promise.all([
+    supabase
+      .from("companies")
+      .select("id, name, careers_url")
+      .in("id", companyIds),
+    supabase
+      .from("seen_jobs")
+      .select("company_id, job_title, job_url_path")
+      .in("company_id", companyIds)
+      .eq("is_baseline", false)
+      .eq("status", "active")
+      .gte("first_seen_at", sevenDaysAgo.toISOString())
+      .order("first_seen_at", { ascending: false }),
+  ]);
+
+  const companies = companiesResult.data || [];
+  const jobs = jobsResult.data || [];
+
+  const companyMap = new Map(companies.map((c) => [c.id, c]));
+
+  // Group jobs by company
+  const jobsByCompany = new Map<string, { title: string; urlPath: string }[]>();
+  for (const job of jobs) {
+    const list = jobsByCompany.get(job.company_id) || [];
+    list.push({ title: job.job_title, urlPath: job.job_url_path });
+    jobsByCompany.set(job.company_id, list);
+  }
+
+  const alerts: NewJobAlert[] = [];
+  for (const companyId of companyIds) {
+    const company = companyMap.get(companyId);
+    if (!company) continue;
+    alerts.push({
+      companyName: company.name,
+      careersUrl: company.careers_url,
+      newJobs: jobsByCompany.get(companyId) || [],
+    });
+  }
+
+  return alerts;
 }
