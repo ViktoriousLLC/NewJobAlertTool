@@ -1404,6 +1404,13 @@ export async function scrapeCompanyCareers(
     return scrapeRedditCareers();
   }
 
+  // Roblox-specific: use Greenhouse API (board: roblox)
+  if (hostname.includes("roblox.com")) {
+    console.log("Detected Roblox careers page, using Greenhouse API scraper");
+    await browser.close();
+    return scrapeGreenhouseCareers("roblox", "Roblox");
+  }
+
   // Instacart-specific: use Greenhouse API
   if (hostname.includes("instacart.careers") || hostname.includes("instacart.com")) {
     console.log("Detected Instacart careers page, using Greenhouse API scraper");
