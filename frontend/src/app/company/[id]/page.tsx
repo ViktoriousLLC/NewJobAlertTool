@@ -381,7 +381,7 @@ function CompanyDetailContent() {
 
         <div className="mt-6 grid grid-cols-3 gap-4">
           <div className="bg-[#F8FAFC] rounded-lg p-4 text-center">
-            <div className="text-3xl font-bold text-[#1A1A2E]">{company.total_product_jobs}</div>
+            <div className="text-3xl font-bold text-[#1A1A2E]">{activeJobs.length}</div>
             <div className="text-stone-500 text-sm">Total Jobs</div>
           </div>
           <div className="bg-[#F8FAFC] rounded-lg p-4 text-center">

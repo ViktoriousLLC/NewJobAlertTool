@@ -124,6 +124,15 @@ export default function AddCompanyModal({
   async function handleAddNewCompany(e: React.FormEvent) {
     e.preventDefault();
     setAddError("");
+
+    // Block LinkedIn URLs — scraping is not possible
+    if (careersUrl.toLowerCase().includes("linkedin.com")) {
+      setAddError(
+        "LinkedIn blocks automated scraping, so we can't track jobs there. Please use the company's direct careers page instead (e.g. careers.company.com)."
+      );
+      return;
+    }
+
     setAddLoading(true);
 
     try {

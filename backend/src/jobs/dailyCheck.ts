@@ -122,6 +122,13 @@ export async function runDailyCheck(): Promise<void> {
         }
       }
 
+      // Count actual active jobs in DB (after inserts/removals above)
+      const { count: activeJobCount } = await supabase
+        .from("seen_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("company_id", company.id)
+        .eq("status", "active");
+
       // Update company status
       const checkStatus = validation.warnings.length > 0
         ? `success (quality: ${validation.qualityScore}/100)`
@@ -131,7 +138,7 @@ export async function runDailyCheck(): Promise<void> {
         .update({
           last_checked_at: new Date().toISOString(),
           last_check_status: checkStatus,
-          total_product_jobs: jobs.length,
+          total_product_jobs: activeJobCount ?? 0,
         })
         .eq("id", company.id);
 

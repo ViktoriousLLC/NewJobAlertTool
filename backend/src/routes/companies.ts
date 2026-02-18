@@ -213,6 +213,14 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
+    // Block LinkedIn — scraping is not possible
+    if (parsedUrl.hostname.includes("linkedin.com")) {
+      res.status(400).json({
+        error: "LinkedIn blocks automated scraping, so we can't track jobs there. Please use the company's direct careers page instead.",
+      });
+      return;
+    }
+
     const hostname = parsedUrl.hostname;
     if (
       hostname === "localhost" ||
