@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import { isUSLocation, JobLevel, LEVEL_LABELS, LEVEL_COLORS, ALL_LEVELS } from "@/lib/jobFilters";
+import { useToast } from "@/components/Toast";
 
 interface Job {
   id: string;
@@ -66,6 +67,7 @@ export default function CompanyDetailPage() {
 function CompanyDetailContent() {
   const params = useParams();
   const searchParams = useSearchParams();
+  const { showToast } = useToast();
   const id = params.id as string;
   const [company, setCompany] = useState<CompanyDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -114,6 +116,7 @@ function CompanyDetailContent() {
         }
       } catch (err) {
         console.error("Failed to fetch company:", err);
+        showToast("Failed to load company details. Please refresh.");
       } finally {
         setLoading(false);
       }
@@ -182,6 +185,7 @@ function CompanyDetailContent() {
       setTimeout(() => setReportSubmitted(false), 3000);
     } catch (err) {
       console.error("Failed to report issue:", err);
+      showToast("Failed to submit report. Please try again.");
     }
   }
 
