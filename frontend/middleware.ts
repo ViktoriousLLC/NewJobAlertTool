@@ -40,9 +40,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // If no user and not on login/callback, redirect to login
+  // If no user and not on login/callback/landing, redirect to login
   if (
     !user &&
+    request.nextUrl.pathname !== "/" &&
     !request.nextUrl.pathname.startsWith("/login") &&
     !request.nextUrl.pathname.startsWith("/auth/callback")
   ) {

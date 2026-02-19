@@ -284,6 +284,8 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `scripts/create-help-submissions.sql` — SQL to create help_submissions table
 - `scripts/phase6-cleanup.sql` — Drop old favorites table + companies.user_id column
 - `docs/planning/supabase-schema.sql` — Database schema
+- `docs/specs/NEWPMJOBS-LANDING-SPEC.md` — Landing page spec (primary design doc)
+- `docs/specs/newpmjobs-landing-v4.jsx` — Landing page visual reference artifact
 
 ## Frontend Pages
 

@@ -19,6 +19,11 @@
   --color-brand-hover: var(--brand-hover);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --animate-hero-float: heroFloat 3s ease-in-out infinite alternate;
+  --animate-hero-float-slow: heroFloat 3.5s ease-in-out infinite alternate;
+  --animate-hero-float-slower: heroFloat 4s ease-in-out infinite alternate;
+  --animate-slide-in: slideIn 0.6s ease both;
+  --animate-pulse-dot: pulse 2s ease infinite;
 }
 
 body {
@@ -40,4 +45,19 @@ body {
 @keyframes card-enter {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes heroFloat {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-10px); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }

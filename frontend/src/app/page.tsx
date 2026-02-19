@@ -12,6 +12,8 @@ import {
 } from "@/lib/brandColors";
 import AddCompanyModal from "@/components/AddCompanyModal";
 import { useToast } from "@/components/Toast";
+import { supabase } from "@/lib/supabase";
+import LandingPage from "@/components/LandingPage";
 
 interface Company {
   id: string;
@@ -62,7 +64,18 @@ function filterCompanies(
   }
 }
 
-export default function Dashboard() {
+export default function HomePage() {
+  const [authState, setAuthState] = useState<"loading" | "authenticated" | "unauthenticated">("loading");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setAuthState(session?.user ? "authenticated" : "unauthenticated");
+    });
+  }, []);
+
+  if (authState === "loading") return null;
+  if (authState === "unauthenticated") return <LandingPage />;
+
   return (
     <Suspense>
       <DashboardContent />
