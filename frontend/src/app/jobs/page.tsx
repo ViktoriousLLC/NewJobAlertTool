@@ -74,6 +74,7 @@ function AllJobsPage() {
   const [compData, setCompData] = useState<CompDataMap>({});
   const [sortKey, setSortKey] = useState<SortKey>("company");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     async function fetchAllJobs() {
@@ -215,7 +216,9 @@ function AllJobsPage() {
   }, []);
 
   // Filter
+  const searchLower = search.toLowerCase();
   let filteredJobs = jobs.filter((job) => {
+    if (search && !job.jobTitle.toLowerCase().includes(searchLower) && !(job.jobLocation || "").toLowerCase().includes(searchLower)) return false;
     if (usOnly && !isUSLocation(job.jobLocation)) return false;
     if (!levelFilter.has(job.jobLevel)) return false;
     return true;
@@ -300,6 +303,18 @@ function AllJobsPage() {
           </span>
         </h1>
         <div className="flex items-center gap-2">
+          <div className="relative max-w-[200px]">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Search jobs..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
+            />
+          </div>
           {ALL_LEVELS.map((level) => (
             <label
               key={level}

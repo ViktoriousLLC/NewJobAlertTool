@@ -79,6 +79,7 @@ function CompanyDetailContent() {
   const [reportSubmitted, setReportSubmitted] = useState(false);
   const [showAddedToast, setShowAddedToast] = useState(false);
   const [compData, setCompData] = useState<CompData | null>(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     if (searchParams.get("added") === "true") {
@@ -226,8 +227,10 @@ function CompanyDetailContent() {
   const inactiveJobs = company.jobs.filter((job) => job.status === "removed" || job.status === "archived");
   const savedInactiveJobs = inactiveJobs.filter((job) => favorites.has(job.id));
 
-  // Filter active jobs based on US-only toggle and level filter
+  // Filter active jobs based on search, US-only toggle and level filter
+  const searchLower = search.toLowerCase();
   const filteredJobs = activeJobs.filter((job) => {
+    if (search && !job.job_title.toLowerCase().includes(searchLower) && !(job.job_location || "").toLowerCase().includes(searchLower)) return false;
     if (usOnly && !isUSLocation(job.job_location)) return false;
     const level = (job.job_level || "early") as JobLevel;
     if (!levelFilter.has(level)) return false;
@@ -450,6 +453,18 @@ function CompanyDetailContent() {
           Product Jobs
         </h2>
         <div className="flex items-center gap-2">
+          <div className="relative max-w-[200px]">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Search jobs..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
+            />
+          </div>
           {ALL_LEVELS.map((level) => (
             <label
               key={level}
