@@ -283,7 +283,7 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `scripts/reset-test-user.sql` — Test account data wipe script
 - `scripts/create-help-submissions.sql` — SQL to create help_submissions table
 - `scripts/phase6-cleanup.sql` — Drop old favorites table + companies.user_id column
-- `supabase-schema.sql` — Database schema
+- `docs/planning/supabase-schema.sql` — Database schema
 
 ## Frontend Pages
 
