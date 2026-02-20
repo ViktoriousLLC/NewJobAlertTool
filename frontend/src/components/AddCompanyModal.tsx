@@ -491,13 +491,6 @@ export default function AddCompanyModal({
       // Sub-case: preview with results
       return (
         <div className="space-y-4">
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-            <p className="text-sm text-green-800 font-medium">
-              Found {checkResult.job_count} PM role{checkResult.job_count !== 1 ? "s" : ""}
-            </p>
-            <p className="text-xs text-green-700 mt-0.5">Does this look right?</p>
-          </div>
-
           {/* Editable company name */}
           <div>
             <label htmlFor="modal-edit-name" className="block text-sm font-medium text-stone-700 mb-1.5">
@@ -517,9 +510,9 @@ export default function AddCompanyModal({
           {checkResult.sample_jobs.length > 0 && (
             <div className="border border-stone-200 rounded-lg divide-y divide-stone-100">
               {checkResult.sample_jobs.map((job, i) => (
-                <div key={i} className="px-3 py-2 flex items-center justify-between">
-                  <span className="text-sm text-stone-800 truncate flex-1 mr-3">{job.title}</span>
-                  <span className="text-xs text-stone-400 shrink-0">{job.location || "No location"}</span>
+                <div key={i} className="px-3 py-2 flex items-center gap-3">
+                  <span className="text-sm text-stone-800 flex-1 min-w-0">{job.title}</span>
+                  <span className="text-xs text-stone-400 shrink-0 max-w-[20%] text-right truncate">{job.location || "No location"}</span>
                 </div>
               ))}
               {checkResult.job_count > checkResult.sample_jobs.length && (
@@ -529,6 +522,14 @@ export default function AddCompanyModal({
               )}
             </div>
           )}
+
+          {/* Found X roles summary */}
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+            <p className="text-sm text-green-800 font-medium">
+              Found {checkResult.job_count} PM role{checkResult.job_count !== 1 ? "s" : ""}
+            </p>
+            <p className="text-xs text-green-700 mt-0.5">Does this look right?</p>
+          </div>
 
           {/* Quality warnings */}
           {checkResult.warnings.length > 0 && (
