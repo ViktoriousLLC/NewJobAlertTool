@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { detectPlatform } from "../scraper/detectPlatform";
+import { detectCompanyName } from "../scraper/detectCompanyName";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
@@ -38,6 +39,70 @@ function extractDedupKey(url: string): string {
   }
 
   return hostname;
+}
+
+/**
+ * Validate a careers URL: HTTPS check, LinkedIn block, SSRF protection.
+ * Returns parsedUrl on success, or an error message on failure.
+ */
+function validateCareersUrl(url: string): { valid: true; parsedUrl: URL } | { valid: false; error: string } {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return { valid: false, error: "Invalid URL format" };
+  }
+
+  if (parsedUrl.protocol !== "https:") {
+    return { valid: false, error: "Only HTTPS URLs are allowed" };
+  }
+
+  if (parsedUrl.hostname.includes("linkedin.com")) {
+    return {
+      valid: false,
+      error: "LinkedIn blocks automated scraping, so we can't track jobs there. Please use the company's direct careers page instead.",
+    };
+  }
+
+  const hostname = parsedUrl.hostname;
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "0.0.0.0" ||
+    hostname.startsWith("10.") ||
+    hostname.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
+    hostname === "[::1]" ||
+    hostname.endsWith(".internal") ||
+    hostname.endsWith(".local")
+  ) {
+    return { valid: false, error: "URLs pointing to private/internal networks are not allowed" };
+  }
+
+  return { valid: true, parsedUrl };
+}
+
+/**
+ * Check for an existing company by dedup key.
+ * Returns the matching company or null.
+ */
+async function findExistingCompany(careersUrl: string): Promise<{ id: string; name: string; total_product_jobs: number } | null> {
+  const newDedupKey = extractDedupKey(careersUrl);
+  const { data: allCompanies } = await supabase
+    .from("companies")
+    .select("id, name, careers_url, total_product_jobs");
+
+  if (!allCompanies) return null;
+
+  const match = allCompanies.find((c) => {
+    try {
+      return extractDedupKey(c.careers_url) === newDedupKey;
+    } catch {
+      return false;
+    }
+  });
+
+  return match ? { id: match.id, name: match.name, total_product_jobs: match.total_product_jobs ?? 0 } : null;
 }
 
 // GET /api/companies — list user's subscribed companies
@@ -189,75 +254,112 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/companies/check — preview scrape results without saving
+router.post("/check", async (req: Request, res: Response) => {
+  try {
+    const { careers_url } = req.body;
+    if (!careers_url) {
+      res.status(400).json({ error: "careers_url is required" });
+      return;
+    }
+
+    // Validate URL
+    const urlCheck = validateCareersUrl(careers_url);
+    if (!urlCheck.valid) {
+      res.status(400).json({ error: urlCheck.error });
+      return;
+    }
+
+    // Dedup check — if match found, return existing company info
+    const existing = await findExistingCompany(careers_url);
+    if (existing) {
+      res.json({
+        status: "exists",
+        existing_company: existing,
+      });
+      return;
+    }
+
+    // Detect ATS platform
+    let platformType: string | null = null;
+    let platformConfig: Record<string, string> = {};
+    try {
+      const detection = await detectPlatform(careers_url);
+      platformType = detection.platformType;
+      platformConfig = detection.platformConfig;
+    } catch (err) {
+      console.error("Platform detection failed during check:", err);
+    }
+
+    // Auto-detect company name
+    const companyName = detectCompanyName(careers_url, platformType, platformConfig);
+
+    // Run the scrape (does NOT save to DB)
+    let jobs: { title: string; location: string; urlPath: string }[] = [];
+    try {
+      jobs = await scrapeCompanyCareers(careers_url, platformType, platformConfig);
+    } catch (err) {
+      console.error("Scrape failed during check:", err);
+      res.json({
+        status: "error",
+        company_name: companyName,
+        error: `Scrape failed: ${err instanceof Error ? err.message : "unknown error"}`,
+      });
+      return;
+    }
+
+    // Validate + filter PM roles
+    const validation = validateScrapeResults(jobs, companyName);
+    const filteredJobs = validation.filteredJobs;
+
+    // Build sample jobs (up to 5)
+    const sampleJobs = filteredJobs.slice(0, 5).map((j) => ({
+      title: j.title,
+      location: j.location,
+    }));
+
+    res.json({
+      status: "preview",
+      company_name: companyName,
+      platform_type: platformType,
+      platform_config: platformConfig,
+      job_count: filteredJobs.length,
+      sample_jobs: sampleJobs,
+      quality_score: validation.qualityScore,
+      warnings: validation.warnings,
+      jobs: filteredJobs,
+    });
+  } catch (err) {
+    console.error("POST /api/companies/check error:", err);
+    res.status(500).json({ error: "Failed to check company" });
+  }
+});
+
 // POST /api/companies — add a new company + initial scrape
 router.post("/", async (req: Request, res: Response) => {
   try {
-    const { name, careers_url } = req.body;
+    const { name, careers_url, jobs: preCheckedJobs, platform_type: preCheckedPlatformType, platform_config: preCheckedPlatformConfig } = req.body;
 
     if (!name || !careers_url) {
       res.status(400).json({ error: "name and careers_url are required" });
       return;
     }
 
-    // Validate URL to prevent SSRF
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(careers_url);
-    } catch {
-      res.status(400).json({ error: "Invalid URL format" });
+    // Validate URL
+    const urlCheck = validateCareersUrl(careers_url);
+    if (!urlCheck.valid) {
+      res.status(400).json({ error: urlCheck.error });
       return;
     }
 
-    if (parsedUrl.protocol !== "https:") {
-      res.status(400).json({ error: "Only HTTPS URLs are allowed" });
-      return;
-    }
-
-    // Block LinkedIn — scraping is not possible
-    if (parsedUrl.hostname.includes("linkedin.com")) {
-      res.status(400).json({
-        error: "LinkedIn blocks automated scraping, so we can't track jobs there. Please use the company's direct careers page instead.",
+    // Dedup check
+    const existing = await findExistingCompany(careers_url);
+    if (existing) {
+      res.status(409).json({
+        error: `A company with this domain already exists: "${existing.name}". You can subscribe to it from the catalog instead.`,
+        existing_company: { id: existing.id, name: existing.name },
       });
       return;
-    }
-
-    const hostname = parsedUrl.hostname;
-    if (
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "0.0.0.0" ||
-      hostname.startsWith("10.") ||
-      hostname.startsWith("192.168.") ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
-      hostname === "[::1]" ||
-      hostname.endsWith(".internal") ||
-      hostname.endsWith(".local")
-    ) {
-      res.status(400).json({ error: "URLs pointing to private/internal networks are not allowed" });
-      return;
-    }
-
-    // Dedup: check if a company with the same domain already exists
-    const newDedupKey = extractDedupKey(careers_url);
-    const { data: allCompanies } = await supabase
-      .from("companies")
-      .select("id, name, careers_url");
-
-    if (allCompanies) {
-      const match = allCompanies.find((c) => {
-        try {
-          return extractDedupKey(c.careers_url) === newDedupKey;
-        } catch {
-          return false;
-        }
-      });
-      if (match) {
-        res.status(409).json({
-          error: `A company with this domain already exists: "${match.name}". You can subscribe to it from the catalog instead.`,
-          existing_company: { id: match.id, name: match.name },
-        });
-        return;
-      }
     }
 
     // Check submission limit (10 per user, admin bypass)
@@ -277,7 +379,29 @@ router.post("/", async (req: Request, res: Response) => {
       }
     }
 
-    // Insert company with user_id
+    // Determine if we have pre-checked data from POST /check
+    const hasPreCheckedData = Array.isArray(preCheckedJobs) && preCheckedJobs.length >= 0;
+
+    // Validate pre-checked jobs structure if provided
+    if (hasPreCheckedData && preCheckedJobs.length > 0) {
+      const valid = preCheckedJobs.every(
+        (j: unknown) =>
+          typeof j === "object" && j !== null &&
+          typeof (j as Record<string, unknown>).title === "string" &&
+          typeof (j as Record<string, unknown>).location === "string" &&
+          typeof (j as Record<string, unknown>).urlPath === "string"
+      );
+      if (!valid) {
+        res.status(400).json({ error: "Invalid jobs data structure" });
+        return;
+      }
+    }
+
+    // Use pre-checked platform info or detect fresh
+    let platformType: string | null = hasPreCheckedData ? (preCheckedPlatformType || null) : null;
+    let platformConfig: Record<string, string> = hasPreCheckedData ? (preCheckedPlatformConfig || {}) : {};
+
+    // Insert company
     const { data: company, error: insertError } = await supabase
       .from("companies")
       .insert({ name, careers_url, is_active: true, subscriber_count: 1 })
@@ -300,38 +424,36 @@ router.post("/", async (req: Request, res: Response) => {
       }),
     ]);
 
-    // Detect ATS platform
-    let platformType: string | null = null;
-    let platformConfig: Record<string, string> = {};
-    try {
-      const detection = await detectPlatform(careers_url);
-      platformType = detection.platformType;
-      platformConfig = detection.platformConfig;
-      console.log(`Platform detected for ${name}: ${platformType} (${detection.confidence})`);
-    } catch (err) {
-      console.error("Platform detection failed:", err);
-    }
-
-    // Run initial scrape (with detected platform info if available)
     let jobs: { title: string; location: string; urlPath: string }[] = [];
     let scrapeStatus = "success";
-    let qualityWarnings: string[] = [];
 
-    try {
-      jobs = await scrapeCompanyCareers(careers_url, platformType, platformConfig);
-
-      // Run quality validation
-      const validation = validateScrapeResults(jobs, name);
-      jobs = validation.filteredJobs; // Use filtered (PM-only) jobs
-      qualityWarnings = validation.warnings;
-
-      if (validation.warnings.length > 0) {
-        console.log(`Quality warnings for ${name}:`, validation.warnings);
-        scrapeStatus = `success (quality: ${validation.qualityScore}/100)`;
+    if (hasPreCheckedData) {
+      // Use pre-checked data — skip detection + scrape + validation
+      jobs = preCheckedJobs as { title: string; location: string; urlPath: string }[];
+    } else {
+      // Legacy flow: detect + scrape + validate
+      try {
+        const detection = await detectPlatform(careers_url);
+        platformType = detection.platformType;
+        platformConfig = detection.platformConfig;
+        console.log(`Platform detected for ${name}: ${platformType} (${detection.confidence})`);
+      } catch (err) {
+        console.error("Platform detection failed:", err);
       }
-    } catch (err) {
-      scrapeStatus = `error: ${err instanceof Error ? err.message : "unknown"}`;
-      console.error("Initial scrape failed:", err);
+
+      try {
+        const rawJobs = await scrapeCompanyCareers(careers_url, platformType, platformConfig);
+        const validation = validateScrapeResults(rawJobs, name);
+        jobs = validation.filteredJobs;
+
+        if (validation.warnings.length > 0) {
+          console.log(`Quality warnings for ${name}:`, validation.warnings);
+          scrapeStatus = `success (quality: ${validation.qualityScore}/100)`;
+        }
+      } catch (err) {
+        scrapeStatus = `error: ${err instanceof Error ? err.message : "unknown"}`;
+        console.error("Initial scrape failed:", err);
+      }
     }
 
     // Insert all found jobs as baseline
@@ -355,7 +477,6 @@ router.post("/", async (req: Request, res: Response) => {
       total_product_jobs: jobs.length,
     };
 
-    // Save platform info if columns exist (graceful — won't fail if columns not yet added)
     if (platformType) {
       updateData.platform_type = platformType;
       updateData.platform_config = platformConfig;
@@ -374,7 +495,7 @@ router.post("/", async (req: Request, res: Response) => {
       platform_type: platformType,
     });
 
-    // Preload compensation data in background (warms the cache for detail page)
+    // Preload compensation data in background
     getCompData(name).catch((err) =>
       console.error(`Comp preload failed for ${name}:`, err)
     );
