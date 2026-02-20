@@ -899,6 +899,121 @@ async function scrapeRedditCareers(): Promise<ScrapedJob[]> {
 }
 
 /**
+ * EA (Electronic Arts) uses Avature ATS with server-rendered HTML and offset pagination.
+ * Searches for "product manager" keyword, paginates through all results (20 per page),
+ * extracts job title/URL/location from HTML attributes, then filters by PM_KEYWORDS.
+ */
+async function scrapeEACareers(): Promise<ScrapedJob[]> {
+  const baseUrl = "https://jobs.ea.com/en_US/careers/SearchJobs/product%20manager";
+  const perPage = 20;
+  const allJobs: ScrapedJob[] = [];
+  const seenUrls = new Set<string>();
+  let offset = 0;
+  let totalResults = 0;
+
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html",
+  };
+
+  // First page to get total count
+  const firstPageUrl = `${baseUrl}?jobRecordsPerPage=${perPage}&jobOffset=0`;
+  const firstRes = await fetch(firstPageUrl, { headers });
+  const firstHtml = await firstRes.text();
+
+  // Extract total results: "1-20 of 99 results"
+  const totalMatch = firstHtml.match(/of\s+(\d+)\s+results/);
+  if (totalMatch) {
+    totalResults = parseInt(totalMatch[1], 10);
+  }
+
+  console.log(`EA: Found ${totalResults} total search results for "product manager"`);
+
+  function extractJobsFromHtml(html: string) {
+    // Extract job URLs: href="https://jobs.ea.com/en_US/careers/JobDetail/{slug}/{id}"
+    const urlRegex = /href="(https:\/\/jobs\.ea\.com\/en_US\/careers\/JobDetail\/[^"]+)"/g;
+    const urls: string[] = [];
+    let urlMatch;
+    while ((urlMatch = urlRegex.exec(html)) !== null) {
+      const url = urlMatch[1];
+      if (!urls.includes(url)) {
+        urls.push(url);
+      }
+    }
+
+    // Extract job titles: data-jobname="{title}"
+    const titleRegex = /data-jobname="([^"]*)"/g;
+    const titles: string[] = [];
+    let titleMatch;
+    while ((titleMatch = titleRegex.exec(html)) !== null) {
+      // Decode HTML entities
+      const title = titleMatch[1]
+        .replace(/&amp;amp;/g, "&")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"');
+      titles.push(title);
+    }
+
+    // Extract locations: list-item-jobPostingLocation followed by first span
+    // Each job's location block has one or more <span class="list-item-N"> with location text
+    // We want the first location span per job block
+    const locRegex = /list-item-jobPostingLocation">\s*(?:<span[^>]*>)?\s*<span class="list-item-0">([^<]*)<\/span>/g;
+    const locations: string[] = [];
+    let locMatch;
+    while ((locMatch = locRegex.exec(html)) !== null) {
+      locations.push(locMatch[1].trim());
+    }
+
+    // Zip: titles and URLs should be 1:1 (same count), locations might have extras
+    const count = Math.min(urls.length, titles.length);
+    for (let i = 0; i < count; i++) {
+      const url = urls[i];
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      allJobs.push({
+        title: titles[i],
+        location: i < locations.length ? locations[i] : "",
+        urlPath: url,
+      });
+    }
+  }
+
+  // Process first page
+  extractJobsFromHtml(firstHtml);
+
+  // Paginate through remaining pages
+  offset = perPage;
+  while (offset < totalResults) {
+    const pageUrl = `${baseUrl}?jobRecordsPerPage=${perPage}&jobOffset=${offset}`;
+    console.log(`EA: Fetching jobs at offset ${offset}...`);
+
+    const res = await fetch(pageUrl, { headers });
+    const html = await res.text();
+    const prevCount = allJobs.length;
+    extractJobsFromHtml(html);
+
+    // Stop if no new jobs found (safety valve)
+    if (allJobs.length === prevCount) break;
+
+    offset += perPage;
+
+    // Respectful delay
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  // Filter for PM roles
+  const pmJobs = allJobs.filter((job) => {
+    const lowerTitle = job.title.toLowerCase();
+    return PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
+  });
+
+  console.log(`EA: Scraped ${allJobs.length} jobs from search, ${pmJobs.length} after PM keyword filter`);
+  return pmJobs;
+}
+
+/**
  * Netflix uses a JSON API with pagination.
  * Extracts team filters from the URL and fetches all jobs via API.
  */
@@ -1432,6 +1547,13 @@ export async function scrapeCompanyCareers(
   });
 
   const hostname = new URL(careersUrl).hostname;
+
+  // EA-specific: use Avature HTML scraper with pagination
+  if (hostname.includes("ea.com") || hostname.includes("jobs.ea.com")) {
+    console.log("Detected EA careers page, using Avature HTML scraper");
+    await browser.close();
+    return scrapeEACareers();
+  }
 
   // Atlassian-specific: use their JSON API directly
   if (hostname.includes("atlassian.com")) {

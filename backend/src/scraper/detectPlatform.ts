@@ -29,6 +29,7 @@ export async function detectPlatform(url: string): Promise<PlatformDetectionResu
     "google.com": "google",
     "netflix.net": "netflix",
     "netflix.com": "netflix",
+    "ea.com": "ea",
   };
 
   for (const [host, name] of Object.entries(customHosts)) {

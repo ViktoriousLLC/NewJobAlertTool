@@ -27,7 +27,7 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 - **Method:** Magic link (email-based, no passwords) via Supabase Auth
 - **SMTP:** Resend custom SMTP configured in Supabase dashboard
 - **Flow:** User enters email → magic link sent → clicks link → `/auth/callback` exchanges code for session → JWT stored in cookies
-- **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes (redirects to `/login`)
+- **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes except `/` (redirects to `/login`)
 - **Token flow:** Server-side cookies are HttpOnly, so browser JS can't read them. `apiFetch` calls `/api/auth/token` (a Next.js server route) to get the access token, then caches it in memory until near expiry.
 - **Backend:** `requireAuth` middleware extracts `Bearer <token>` from `Authorization` header. Fast path: local JWT verification via `SUPABASE_JWT_SECRET` (~0ms). Fallback: `supabase.auth.getUser(token)` (~100-150ms). Attaches `req.userId`.
 - **Data scoping:** Companies are shared (catalog). Users subscribe via `user_subscriptions`. Favorites via `user_job_favorites`. Dashboard/jobs filtered by subscription.
@@ -267,9 +267,10 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `frontend/src/app/api/auth/token/route.ts` — Server-side route to extract JWT from HttpOnly cookies
 - `frontend/src/app/login/page.tsx` — Magic link login page
 - `frontend/src/app/auth/callback/route.ts` — Magic link code exchange
-- `frontend/middleware.ts` — Route protection (redirects to /login if unauthenticated)
+- `frontend/src/components/LandingPage.tsx` — Marketing landing page for unauthenticated visitors (fixed overlay, all 10 sections)
+- `frontend/middleware.ts` — Route protection (redirects to /login if unauthenticated, except `/` which shows landing page)
 - `frontend/src/components/AuthNav.tsx` — User email + sign out in navbar
-- `frontend/src/app/page.tsx` — Dashboard UI (tile grid + AddCompanyModal + onboarding)
+- `frontend/src/app/page.tsx` — Auth-gated: LandingPage (unauth) or Dashboard (auth) with tile grid + AddCompanyModal + onboarding
 - `frontend/src/app/add/page.tsx` — Redirects to `/?addCompany=true` (modal handles everything)
 - `frontend/src/app/company/[id]/page.tsx` — Company detail page (with job status, saved inactive jobs)
 - `frontend/src/app/jobs/page.tsx` — "View All Jobs" flat table (active jobs only)
@@ -293,7 +294,7 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 |-------|------|-------------|
 | `/login` | `login/page.tsx` | Magic link login (email input + send link) |
 | `/auth/callback` | `auth/callback/route.ts` | Exchanges magic link code for session |
-| `/` | `page.tsx` | Dashboard — tile grid of subscribed companies + AddCompanyModal |
+| `/` | `page.tsx` | Auth-gated: Landing page (unauth) or Dashboard (auth) |
 | `/add` | `add/page.tsx` | Redirects to `/?addCompany=true` |
 | `/company/[id]` | `company/[id]/page.tsx` | Company detail — active jobs + saved inactive section |
 | `/jobs` | `jobs/page.tsx` | All Jobs — active jobs across subscribed companies |
@@ -383,6 +384,7 @@ Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Compa
 - **Subscription N+1:** When subscribing to N companies, don't loop 2N sequential queries. Batch the subscriber_count update. Same pattern for unsubscribe.
 - **Anon key for read queries:** The Supabase anon key works for tables with `USING (true)` SELECT policies (companies, seen_jobs). Useful for CLI debugging without a user JWT.
 - **Local .env placeholders:** The local `backend/.env` has placeholder values for SUPABASE_SERVICE_KEY. Production keys are only on Railway. For local DB queries, use anon key against Supabase REST API with appropriate RLS policies.
+- **Git CRLF warnings:** Repo has `.gitattributes` with `* text=auto` (LF normalization). Set `git config core.autocrlf input` at repo level to suppress "LF will be replaced by CRLF" warnings on Windows.
 
 ## Multi-User Overhaul Status
 
@@ -399,6 +401,40 @@ The app was converted from single-user to multi-user in Feb 2026. Key changes:
 - **Rate limiting:** General API: 100 req/15min. Write endpoints (POST /api/companies, /api/help): 20 req/15min. Uses `express-rate-limit`.
 - **Toast notifications:** Frontend errors show toast notifications instead of silent console.error. Provider in layout.tsx, hook via `useToast()`.
 - **URL dedup:** Company creation checks for existing companies with the same domain. ATS-hosted URLs (Greenhouse, Lever, etc.) use hostname/slug as dedup key.
+
+## Landing Page (added 2026-02-19)
+
+Marketing landing page at `/` for unauthenticated visitors. Authenticated users see the dashboard.
+
+### Architecture
+- **Fixed overlay approach**: `LandingPage.tsx` renders as `fixed inset-0 z-[200] overflow-y-auto`, covering the app shell behind it
+- Zero changes to `layout.tsx`, `NavBar.tsx`, or `HelpButton.tsx` — they render behind the overlay, invisible
+- Self-contained: own nav, footer, scroll behavior
+- Auth gating in `page.tsx`: checks `supabase.auth.getSession()` client-side, returns `<LandingPage />` or `<DashboardContent />`
+- Middleware allows `/` for unauthenticated users (all other routes still redirect to `/login`)
+
+### 10 Sections
+1. Fixed Nav (transparent → navy on scroll, links to #how-it-works, #jobs, /login)
+2. Hero (dark gradient, 7 floating company cards with 3 toast notifications, email CTA, company strip)
+3. Problem (2x2 pain point cards)
+4. How It Works (1x3 step cards)
+5. Product Screens (3 macOS-style mock UIs: Dashboard, All Jobs, Job Detail)
+6. Latest Jobs (9 sample job rows with hover effects)
+7. levels.fyi Callout (salary data card)
+8. Stats (4 stat boxes)
+9. Final CTA (email input + button)
+10. Footer
+
+### Key implementation details
+- `mix(hex, pct)` JS function blends brand colors toward white — used for card backgrounds/headers via inline styles
+- `useInView()` hook + `Reveal` component for scroll-triggered animations (IntersectionObserver, trigger once)
+- Hero cards with toasts are grouped in parent divs that float together; standalone cards float independently
+- Nav scroll detection listens to the overlay container (`#landing-scroll-container`), not `window`
+- All CTAs link to `/login`
+- Custom keyframes in `globals.css`: `heroFloat`, `slideIn`, `pulse`
+- Animation tokens in `@theme inline` block for Tailwind v4
+- Desktop only (no mobile responsiveness yet)
+- Spec: `docs/specs/NEWPMJOBS-LANDING-SPEC.md`, reference: `docs/specs/newpmjobs-landing-v4.jsx`
 
 ## Performance Rules
 
