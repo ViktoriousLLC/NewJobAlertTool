@@ -1,22 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { identifyUser, trackEvent } from "@/lib/analytics";
+import { trackEvent } from "@/lib/analytics";
 
-export default function AuthNav() {
+interface AuthNavProps {
+  email: string | null;
+}
+
+export default function AuthNav({ email }: AuthNavProps) {
   const router = useRouter();
-  const [email, setEmail] = useState<string | null>(null);
-
-  useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user?.email) {
-        setEmail(user.email);
-        identifyUser(user.email);
-      }
-    });
-  }, []);
 
   async function handleSignOut() {
     trackEvent("user_signed_out");

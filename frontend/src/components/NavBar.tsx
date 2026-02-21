@@ -1,13 +1,28 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
+import { supabase } from "@/lib/supabase";
+import { identifyUser } from "@/lib/analytics";
 import AuthNav from "./AuthNav";
+
+const ADMIN_EMAIL =
+  process.env.NEXT_PUBLIC_ADMIN_EMAIL || "vik@viktoriousllc.com";
 
 function NavBarInner() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user?.email) {
+        setUserEmail(user.email);
+        identifyUser(user.email);
+      }
+    });
+  }, []);
 
   const isHome = pathname === "/";
   const isJobs = pathname === "/jobs";
@@ -123,21 +138,23 @@ function NavBarInner() {
             </svg>
           </Link>
 
-          {/* Admin (link always rendered, backend enforces access) */}
-          <Link
-            href="/admin"
-            className="text-[#8B8FA3]/50 hover:text-white p-1.5 rounded-md hover:bg-white/10 transition-all"
-            title="Admin"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-            </svg>
-          </Link>
+          {/* Admin (only visible to admin user) */}
+          {userEmail === ADMIN_EMAIL && (
+            <Link
+              href="/admin"
+              className="text-[#8B8FA3]/50 hover:text-white p-1.5 rounded-md hover:bg-white/10 transition-all"
+              title="Admin"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+            </Link>
+          )}
 
           {/* Vertical divider */}
           <div className="w-px h-6 bg-white/15" />
 
-          <AuthNav />
+          <AuthNav email={userEmail} />
         </div>
       </div>
     </nav>
