@@ -61,7 +61,7 @@ const generalLimiter = rateLimit({
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Too many requests, please try again later" },
+  message: { error: "Too many requests. Please try again after 15 minutes — and if you think this is a bug, use the help button (bottom-right) to let us know." },
 });
 
 const strictLimiter = rateLimit({
@@ -69,7 +69,7 @@ const strictLimiter = rateLimit({
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Too many requests, please try again later" },
+  message: { error: "Too many requests. Please try again after 15 minutes — and if you think this is a bug, use the help button (bottom-right) to let us know." },
 });
 
 app.use("/api/", generalLimiter);
