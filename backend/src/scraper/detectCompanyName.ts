@@ -47,6 +47,8 @@ const KNOWN_HOSTS: Record<string, string> = {
   "twitch.tv": "Twitch",
   "zoom.us": "Zoom",
   "dropbox.com": "Dropbox",
+  "a16z.com": "a16z",
+  "jobs.a16z.com": "a16z",
 };
 
 /** Capitalize a slug: "doordashusa" → "Doordashusa", "open-ai" → "Open Ai" */

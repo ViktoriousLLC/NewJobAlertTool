@@ -188,6 +188,29 @@ function parseHTMLForATS(html: string): PlatformDetectionResult | null {
     };
   }
 
+  // Greenhouse via gh_jid query parameter (companies using custom frontends like Consider)
+  const ghJidMatch = html.match(/href=["'][^"']*[?&]gh_jid=\d+/);
+  if (ghJidMatch) {
+    // Try to extract board name from the link's domain
+    const ghLinkDomainMatch = html.match(/href=["'](https?:\/\/[^"']+[?&]gh_jid=\d+)/);
+    if (ghLinkDomainMatch) {
+      try {
+        const linkUrl = new URL(ghLinkDomainMatch[1]);
+        // Use the SLD (second-level domain) as board name guess
+        // e.g. a16z.com → "a16z", stripe.com → "stripe"
+        const parts = linkUrl.hostname.replace(/^www\./, "").split(".");
+        const boardGuess = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+        return {
+          platformType: "greenhouse",
+          platformConfig: { boardName: boardGuess },
+          confidence: "medium",
+        };
+      } catch {
+        // URL parse failed, skip
+      }
+    }
+  }
+
   // Lever embeds
   const leverMatch = html.match(/jobs\.lever\.co\/([a-zA-Z0-9_-]+)/);
   if (leverMatch) {
