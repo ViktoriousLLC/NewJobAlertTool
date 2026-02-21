@@ -1,4 +1,5 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
+import rateLimit from "express-rate-limit";
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { detectPlatform } from "../scraper/detectPlatform";
@@ -9,6 +10,20 @@ import { getCompData } from "../lib/levelsFyi";
 import { ADMIN_EMAIL } from "../lib/constants";
 
 const router = Router();
+
+// Rate limiter for /check — admin bypasses
+const checkLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many check requests, please try again later" },
+});
+
+function checkLimiterWithAdminBypass(req: Request, res: Response, next: NextFunction) {
+  if (req.userEmail === ADMIN_EMAIL) return next();
+  checkLimiter(req, res, next);
+}
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -255,7 +270,7 @@ router.get("/:id", async (req: Request, res: Response) => {
 });
 
 // POST /api/companies/check — preview scrape results without saving
-router.post("/check", async (req: Request, res: Response) => {
+router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Response) => {
   try {
     const { careers_url } = req.body;
     if (!careers_url) {
