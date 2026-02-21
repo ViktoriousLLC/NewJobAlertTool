@@ -73,7 +73,6 @@ export default function AddCompanyModal({
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
   const [editableName, setEditableName] = useState("");
   const [retryFeedback, setRetryFeedback] = useState("");
-  const [customKeywords, setCustomKeywords] = useState("");
   const [confirming, setConfirming] = useState(false);
   const stepTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const abortRef = useRef<AbortController | null>(null);
@@ -91,7 +90,6 @@ export default function AddCompanyModal({
     setCheckResult(null);
     setEditableName("");
     setRetryFeedback("");
-    setCustomKeywords("");
     setConfirming(false);
     clearTimers();
     if (abortRef.current) {
@@ -200,18 +198,12 @@ export default function AddCompanyModal({
     abortRef.current = controller;
 
     try {
-      // Parse custom keywords from comma/newline-separated input
-      const keywords = customKeywords
-        .split(/[,\n]+/)
-        .map((k) => k.trim())
-        .filter(Boolean);
-
       const res = await apiFetch("/api/companies/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           careers_url: url,
-          ...(keywords.length > 0 && { custom_keywords: keywords }),
+          ...(retryFeedback.trim() && { feedback: retryFeedback.trim() }),
         }),
         signal: controller.signal,
       });
@@ -612,34 +604,20 @@ export default function AddCompanyModal({
           </div>
 
           <div>
-            <label htmlFor="modal-keywords" className="block text-sm font-medium text-stone-700 mb-1.5">
-              Job title keywords to include (optional)
-            </label>
-            <input
-              id="modal-keywords"
-              type="text"
-              value={customKeywords}
-              onChange={(e) => setCustomKeywords(e.target.value)}
-              placeholder="e.g. partner growth, business development"
-              className="w-full px-3 py-2.5 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0EA5E9] focus:border-transparent bg-[#F8FAFC] text-stone-900 placeholder-stone-400 text-sm"
-            />
-            <p className="mt-1 text-xs text-stone-400">
-              We search for PM roles by default. Add keywords for non-standard titles to include them too.
-            </p>
-          </div>
-
-          <div>
             <label htmlFor="modal-feedback" className="block text-sm font-medium text-stone-700 mb-1.5">
-              What went wrong? (optional)
+              What roles should we look for?
             </label>
             <textarea
               id="modal-feedback"
-              rows={2}
+              rows={3}
               value={retryFeedback}
               onChange={(e) => setRetryFeedback(e.target.value)}
-              placeholder="e.g. The page has more PM jobs than what was found..."
+              placeholder={`e.g. "the role is called partner growth" or "look for business development and strategy"`}
               className="w-full px-3 py-2.5 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0EA5E9] focus:border-transparent bg-[#F8FAFC] text-stone-900 placeholder-stone-400 text-sm resize-none"
             />
+            <p className="mt-1 text-xs text-stone-400">
+              Describe the job titles in your own words — we&apos;ll figure out what to search for.
+            </p>
           </div>
 
           <div className="flex gap-3">

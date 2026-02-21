@@ -8,6 +8,7 @@ import { validateScrapeResults } from "../scraper/validateScrape";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
 import { ADMIN_EMAIL } from "../lib/constants";
+import { extractKeywordsFromFeedback } from "../lib/extractKeywords";
 
 const router = Router();
 
@@ -272,17 +273,19 @@ router.get("/:id", async (req: Request, res: Response) => {
 // POST /api/companies/check — preview scrape results without saving
 router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Response) => {
   try {
-    const { careers_url, custom_keywords } = req.body;
+    const { careers_url, feedback } = req.body;
     if (!careers_url) {
       res.status(400).json({ error: "careers_url is required" });
       return;
     }
 
-    // Validate custom_keywords if provided
-    const extraKeywords: string[] | undefined =
-      Array.isArray(custom_keywords) && custom_keywords.every((k: unknown) => typeof k === "string")
-        ? custom_keywords.filter((k: string) => k.trim().length > 0).map((k: string) => k.trim())
-        : undefined;
+    // Parse natural-language feedback into job-title keywords
+    const extraKeywords = typeof feedback === "string"
+      ? extractKeywordsFromFeedback(feedback)
+      : undefined;
+    if (extraKeywords?.length) {
+      console.log(`Check: custom keywords from feedback: ${JSON.stringify(extraKeywords)}`);
+    }
 
     // Validate URL
     const urlCheck = validateCareersUrl(careers_url);
