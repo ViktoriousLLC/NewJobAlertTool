@@ -42,6 +42,21 @@ export async function detectPlatform(url: string): Promise<PlatformDetectionResu
     }
   }
 
+  // 1b. Known Greenhouse boards behind custom domains (no fetch needed)
+  const knownGreenhouseHosts: Record<string, string> = {
+    "jobs.a16z.com": "a16z",
+  };
+
+  for (const [host, boardName] of Object.entries(knownGreenhouseHosts)) {
+    if (hostname === host) {
+      return {
+        platformType: "greenhouse",
+        platformConfig: { boardName },
+        confidence: "high",
+      };
+    }
+  }
+
   // 2. Direct ATS URLs (no fetch needed)
   // Greenhouse: boards.greenhouse.io/{board}
   if (hostname === "boards.greenhouse.io") {
