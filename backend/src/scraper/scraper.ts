@@ -206,6 +206,222 @@ async function extractAllJobsFromPage(
 }
 
 /**
+ * Fallback Phase 3: Extract jobs from JSON-LD structured data (Schema.org JobPosting).
+ * Many career pages include machine-readable job data in <script type="application/ld+json">.
+ */
+async function extractJobsFromJsonLd(
+  page: Page,
+  baseUrl: string
+): Promise<ScrapedJob[]> {
+  return page.evaluate((baseUrl: string) => {
+    const scripts = Array.from(
+      document.querySelectorAll('script[type="application/ld+json"]')
+    );
+
+    const jobs: { title: string; location: string; urlPath: string }[] = [];
+    const seen = new Set<string>();
+
+    for (const script of scripts) {
+      try {
+        const data = JSON.parse(script.textContent || "");
+        // Handle both single objects and arrays
+        const items = Array.isArray(data) ? data : data["@graph"] || [data];
+
+        for (const item of items) {
+          if (item["@type"] !== "JobPosting") continue;
+
+          const title = (item.title || "").trim();
+          if (!title || title.length < 3) continue;
+
+          let urlPath = item.url || "";
+          if (!urlPath) continue;
+          try {
+            urlPath = new URL(urlPath, baseUrl).href;
+          } catch {
+            continue;
+          }
+
+          if (seen.has(urlPath)) continue;
+          seen.add(urlPath);
+
+          // Extract location from jobLocation
+          let location = "";
+          const loc = item.jobLocation;
+          if (loc) {
+            const locations = Array.isArray(loc) ? loc : [loc];
+            const parts: string[] = [];
+            for (const l of locations) {
+              const addr = l.address || l;
+              const city = addr.addressLocality || "";
+              const state = addr.addressRegion || "";
+              const country = addr.addressCountry?.name || addr.addressCountry || "";
+              const locStr = [city, state, country].filter(Boolean).join(", ");
+              if (locStr) parts.push(locStr);
+            }
+            location = parts.join(" | ");
+          }
+
+          jobs.push({ title, location, urlPath });
+        }
+      } catch {
+        // Invalid JSON, skip
+      }
+    }
+
+    return jobs;
+  }, baseUrl);
+}
+
+/**
+ * Fallback Phase 4: Broader URL matching including query-param-based job URLs.
+ * Catches patterns like ?gh_jid=, ?job_id=, ?id=, plus /apply/, /vacancies/, /opportunity/.
+ */
+async function extractJobsFromBroadUrlMatch(
+  page: Page,
+  baseUrl: string
+): Promise<ScrapedJob[]> {
+  return page.evaluate((baseUrl: string) => {
+    // Broader URL patterns (path-based + query-param-based)
+    const broadPathRe = /\/(?:apply|vacancies|vacancy|opportunity|opportunities|requisition|job-detail|jobdetail)\/[a-z0-9][\w-]{1,}/i;
+    const jobQueryRe = /[?&](?:gh_jid|job_id|jid|requisitionId|req_id|position_id|opening_id)=\w+/i;
+
+    const skipRe = /\/(search|departments|locations|teams|categories|benefits|culture|about|faq)(\/|$|\?)/;
+
+    const links = Array.from(document.querySelectorAll("a[href]"));
+    const jobs: { title: string; location: string; urlPath: string }[] = [];
+    const seen = new Set<string>();
+
+    for (const link of links) {
+      const href = link.getAttribute("href") || "";
+      if (!href) continue;
+
+      const matchesPath = broadPathRe.test(href);
+      const matchesQuery = jobQueryRe.test(href);
+      if (!matchesPath && !matchesQuery) continue;
+      if (skipRe.test(href)) continue;
+
+      let urlPath: string;
+      try {
+        urlPath = new URL(href, baseUrl).href;
+      } catch {
+        continue;
+      }
+
+      if (seen.has(urlPath)) continue;
+      seen.add(urlPath);
+
+      // Extract title from link text or nearby heading
+      let title = (link.textContent || "").trim();
+      if (!title || title.length < 3 || title.toLowerCase() === "apply" || title.toLowerCase() === "apply now") {
+        // Look for a heading sibling or parent's heading
+        const parent = link.closest("[class*='job'], [class*='role'], [class*='position'], [class*='listing'], li, article, tr");
+        if (parent) {
+          const heading = parent.querySelector("h1, h2, h3, h4, [class*='title']");
+          if (heading) title = (heading.textContent || "").trim();
+        }
+      }
+
+      if (!title || title.length < 3) continue;
+      title = title.replace(/Apply(?:\s+now)?$/i, "").trim();
+
+      jobs.push({ title, location: "", urlPath });
+    }
+
+    return jobs;
+  }, baseUrl);
+}
+
+/**
+ * Fallback Phase 5: DOM structure heuristic.
+ * Finds repeated elements (same tag + class) containing links, indicating a job list.
+ * Uses the most common repeating pattern (5+ elements) as job cards.
+ */
+async function extractJobsFromDomStructure(
+  page: Page,
+  baseUrl: string
+): Promise<ScrapedJob[]> {
+  return page.evaluate((baseUrl: string) => {
+    // Find all elements that look like list items containing links
+    const candidates = Array.from(
+      document.querySelectorAll("li a[href], article a[href], [class*='job'] a[href], [class*='role'] a[href], [class*='listing'] a[href], [class*='position'] a[href], [class*='card'] a[href]")
+    );
+
+    // Group links by their container's tag+class signature
+    const groups = new Map<string, Element[]>();
+    for (const link of candidates) {
+      const container = link.closest("li, article, div[class], tr");
+      if (!container) continue;
+      const sig = `${container.tagName}.${(container.className?.toString() || "").split(/\s+/).sort().join(".")}`;
+      if (!groups.has(sig)) groups.set(sig, []);
+      groups.get(sig)!.push(link);
+    }
+
+    // Find the largest group with 5+ items (most likely the job list)
+    let bestGroup: Element[] = [];
+    for (const [, links] of groups) {
+      if (links.length >= 5 && links.length > bestGroup.length) {
+        bestGroup = links;
+      }
+    }
+
+    if (bestGroup.length === 0) return [];
+
+    const jobs: { title: string; location: string; urlPath: string }[] = [];
+    const seen = new Set<string>();
+
+    for (const link of bestGroup) {
+      const href = link.getAttribute("href") || "";
+      if (!href || href === "#" || href.startsWith("javascript:")) continue;
+
+      let urlPath: string;
+      try {
+        urlPath = new URL(href, baseUrl).href;
+      } catch {
+        continue;
+      }
+
+      // Skip nav/footer links (same page, short paths)
+      try {
+        const url = new URL(urlPath);
+        if (url.pathname.length < 3 && !url.search) continue;
+      } catch { continue; }
+
+      if (seen.has(urlPath)) continue;
+      seen.add(urlPath);
+
+      // Get title from the link or nearby heading
+      const container = link.closest("li, article, div[class], tr");
+      let title = "";
+      if (container) {
+        const heading = container.querySelector("h1, h2, h3, h4, [class*='title']");
+        if (heading) {
+          title = (heading.textContent || "").trim();
+        }
+      }
+      if (!title) {
+        title = (link.textContent || "").trim();
+      }
+
+      if (!title || title.length < 3) continue;
+      title = title.replace(/Apply(?:\s+now)?$/i, "").trim();
+
+      // Try to find location from a sibling element
+      let location = "";
+      if (container) {
+        const locEl = container.querySelector("[class*='location'], [class*='loc'], [class*='city'], [class*='place']");
+        if (locEl) {
+          location = (locEl.textContent || "").trim();
+        }
+      }
+
+      jobs.push({ title, location, urlPath });
+    }
+
+    return jobs;
+  }, baseUrl);
+}
+
+/**
  * Atlassian: Use their JSON API at /endpoint/careers/listings.
  * Filter for Product Management category and extract US locations.
  */
@@ -1798,7 +2014,7 @@ export async function scrapeCompanyCareers(
       return Array.from(allJobs.values());
     }
 
-    // Phase 2: No product sections found — extract all job links
+    // Phase 2: No product sections found — extract all job links via URL regex
     console.log("No product sections found, extracting all jobs from page");
     const allJobs = new Map<string, ScrapedJob>();
 
@@ -1808,7 +2024,37 @@ export async function scrapeCompanyCareers(
     }
 
     await paginateAndCollect(page, baseUrl, allJobs, false);
-    return Array.from(allJobs.values());
+
+    if (allJobs.size > 0) {
+      return Array.from(allJobs.values());
+    }
+
+    // Phase 3: JSON-LD structured data (Schema.org JobPosting)
+    console.log("Generic: Phase 2 found 0 jobs, trying JSON-LD extraction");
+    const jsonLdJobs = await extractJobsFromJsonLd(page, baseUrl);
+    if (jsonLdJobs.length > 0) {
+      console.log(`Generic: Found ${jsonLdJobs.length} jobs from JSON-LD`);
+      return jsonLdJobs;
+    }
+
+    // Phase 4: Broader URL pattern matching (query params, additional paths)
+    console.log("Generic: No JSON-LD, trying broad URL matching");
+    const broadJobs = await extractJobsFromBroadUrlMatch(page, baseUrl);
+    if (broadJobs.length > 0) {
+      console.log(`Generic: Found ${broadJobs.length} jobs from broad URL matching`);
+      return broadJobs;
+    }
+
+    // Phase 5: DOM structure heuristic (repeated elements with links)
+    console.log("Generic: No broad URL matches, trying DOM structure heuristic");
+    const structJobs = await extractJobsFromDomStructure(page, baseUrl);
+    if (structJobs.length > 0) {
+      console.log(`Generic: Found ${structJobs.length} jobs from DOM structure`);
+      return structJobs;
+    }
+
+    console.log("Generic: All phases returned 0 jobs");
+    return [];
   } finally {
     await browser.close();
   }
