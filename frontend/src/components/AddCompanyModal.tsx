@@ -21,6 +21,7 @@ interface CheckPreview {
   platform_type: string | null;
   platform_config: Record<string, string> | null;
   job_count: number;
+  total_jobs_found: number;
   sample_jobs: { title: string; location: string }[];
   quality_score: number;
   warnings: string[];
@@ -531,16 +532,19 @@ export default function AddCompanyModal({
             <div className="bg-green-50 border border-green-200 rounded-lg p-4">
               <p className="text-sm text-green-800 font-medium">
                 Found {checkResult.job_count} PM role{checkResult.job_count !== 1 ? "s" : ""}
+                {checkResult.total_jobs_found > checkResult.job_count && (
+                  <span className="font-normal text-green-700"> out of {checkResult.total_jobs_found} total listings</span>
+                )}
               </p>
               <p className="text-xs text-green-700 mt-0.5">Does this look right?</p>
             </div>
           ) : (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
               <p className="text-sm text-amber-800 font-medium">
-                No PM roles found
+                Found {checkResult.total_jobs_found} job listing{checkResult.total_jobs_found !== 1 ? "s" : ""} but none matched PM titles
               </p>
               <p className="text-xs text-amber-700 mt-0.5">
-                Click &ldquo;No, Try Again&rdquo; and add custom job title keywords to widen the search.
+                Click &ldquo;No, Try Again&rdquo; and describe the roles you&apos;re looking for so we can widen the search.
               </p>
             </div>
           )}

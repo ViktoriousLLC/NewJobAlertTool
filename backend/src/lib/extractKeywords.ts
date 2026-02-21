@@ -27,7 +27,9 @@ const STOP_WORDS = new Set([
   "called", "named", "titled", "listed", "find", "found",
   "look", "looking", "search", "searching", "try", "check",
   "see", "want", "need", "think", "know", "like",
-  "include", "including", "add", "adding",
+  "include", "including", "add", "adding", "give", "show", "get",
+  "error", "wrong", "broken", "fail", "failed", "again", "still",
+  "same", "keep", "keeps", "getting", "got", "why",
   // meta words about the tool
   "role", "roles", "job", "jobs", "title", "titles", "position", "positions",
   "company", "page", "website", "site", "listing", "listings",
@@ -51,7 +53,7 @@ const FILLER_PHRASES = [
 ];
 
 // Delimiters that separate distinct keyword phrases
-const DELIMITER = /[,\n]|\band\b|\bor\b|\bnot\b|\bversus\b|\bvs\.?\b|\balso\b|\binstead\s+of\b|\brather\s+than\b|\b\+\b/i;
+const DELIMITER = /[,;\n]|\band\b|\bor\b|\bnot\b|\bversus\b|\bvs\.?\b|\balso\b|\binstead\s+of\b|\brather\s+than\b|\b\+\b/i;
 
 export function extractKeywordsFromFeedback(text: string): string[] {
   if (!text || !text.trim()) return [];

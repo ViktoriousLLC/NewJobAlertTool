@@ -319,9 +319,9 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
     const companyName = detectCompanyName(careers_url, platformType, platformConfig);
 
     // Run the scrape (does NOT save to DB)
-    let jobs: { title: string; location: string; urlPath: string }[] = [];
+    let rawJobs: { title: string; location: string; urlPath: string }[] = [];
     try {
-      jobs = await scrapeCompanyCareers(careers_url, platformType, platformConfig);
+      rawJobs = await scrapeCompanyCareers(careers_url, platformType, platformConfig);
     } catch (err) {
       console.error("Scrape failed during check:", err);
       res.json({
@@ -332,8 +332,18 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
       return;
     }
 
+    // If scraper returned 0 jobs total, this is a scrape failure — not a filter issue
+    if (rawJobs.length === 0) {
+      res.json({
+        status: "error",
+        company_name: companyName,
+        error: "No job listings found on this page. The URL might be wrong, or the page format isn't supported yet. You can report this using the help button (bottom-right) so we can add support.",
+      });
+      return;
+    }
+
     // Validate + filter PM roles (include custom keywords if provided)
-    const validation = validateScrapeResults(jobs, companyName, extraKeywords);
+    const validation = validateScrapeResults(rawJobs, companyName, extraKeywords);
     const filteredJobs = validation.filteredJobs;
 
     // Build sample jobs (up to 5)
@@ -348,6 +358,7 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
       platform_type: platformType,
       platform_config: platformConfig,
       job_count: filteredJobs.length,
+      total_jobs_found: rawJobs.length,
       sample_jobs: sampleJobs,
       quality_score: validation.qualityScore,
       warnings: validation.warnings,
