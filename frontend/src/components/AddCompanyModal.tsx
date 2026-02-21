@@ -73,6 +73,7 @@ export default function AddCompanyModal({
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
   const [editableName, setEditableName] = useState("");
   const [retryFeedback, setRetryFeedback] = useState("");
+  const [customKeywords, setCustomKeywords] = useState("");
   const [confirming, setConfirming] = useState(false);
   const stepTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const abortRef = useRef<AbortController | null>(null);
@@ -90,6 +91,7 @@ export default function AddCompanyModal({
     setCheckResult(null);
     setEditableName("");
     setRetryFeedback("");
+    setCustomKeywords("");
     setConfirming(false);
     clearTimers();
     if (abortRef.current) {
@@ -198,10 +200,19 @@ export default function AddCompanyModal({
     abortRef.current = controller;
 
     try {
+      // Parse custom keywords from comma/newline-separated input
+      const keywords = customKeywords
+        .split(/[,\n]+/)
+        .map((k) => k.trim())
+        .filter(Boolean);
+
       const res = await apiFetch("/api/companies/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ careers_url: url }),
+        body: JSON.stringify({
+          careers_url: url,
+          ...(keywords.length > 0 && { custom_keywords: keywords }),
+        }),
         signal: controller.signal,
       });
 
@@ -524,12 +535,23 @@ export default function AddCompanyModal({
           )}
 
           {/* Found X roles summary */}
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-            <p className="text-sm text-green-800 font-medium">
-              Found {checkResult.job_count} PM role{checkResult.job_count !== 1 ? "s" : ""}
-            </p>
-            <p className="text-xs text-green-700 mt-0.5">Does this look right?</p>
-          </div>
+          {checkResult.job_count > 0 ? (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+              <p className="text-sm text-green-800 font-medium">
+                Found {checkResult.job_count} PM role{checkResult.job_count !== 1 ? "s" : ""}
+              </p>
+              <p className="text-xs text-green-700 mt-0.5">Does this look right?</p>
+            </div>
+          ) : (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <p className="text-sm text-amber-800 font-medium">
+                No PM roles found
+              </p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Click &ldquo;No, Try Again&rdquo; and add custom job title keywords to widen the search.
+              </p>
+            </div>
+          )}
 
           {/* Quality warnings */}
           {checkResult.warnings.length > 0 && (
@@ -590,15 +612,32 @@ export default function AddCompanyModal({
           </div>
 
           <div>
+            <label htmlFor="modal-keywords" className="block text-sm font-medium text-stone-700 mb-1.5">
+              Job title keywords to include (optional)
+            </label>
+            <input
+              id="modal-keywords"
+              type="text"
+              value={customKeywords}
+              onChange={(e) => setCustomKeywords(e.target.value)}
+              placeholder="e.g. partner growth, business development"
+              className="w-full px-3 py-2.5 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0EA5E9] focus:border-transparent bg-[#F8FAFC] text-stone-900 placeholder-stone-400 text-sm"
+            />
+            <p className="mt-1 text-xs text-stone-400">
+              We search for PM roles by default. Add keywords for non-standard titles to include them too.
+            </p>
+          </div>
+
+          <div>
             <label htmlFor="modal-feedback" className="block text-sm font-medium text-stone-700 mb-1.5">
               What went wrong? (optional)
             </label>
             <textarea
               id="modal-feedback"
-              rows={3}
+              rows={2}
               value={retryFeedback}
               onChange={(e) => setRetryFeedback(e.target.value)}
-              placeholder="e.g. The page has more PM jobs than what was found, the company name is wrong..."
+              placeholder="e.g. The page has more PM jobs than what was found..."
               className="w-full px-3 py-2.5 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0EA5E9] focus:border-transparent bg-[#F8FAFC] text-stone-900 placeholder-stone-400 text-sm resize-none"
             />
           </div>

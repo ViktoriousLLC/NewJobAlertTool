@@ -21,14 +21,23 @@ const HARD_EXCLUSIONS = [
   "technical program",
 ];
 
-function isPMTitle(title: string): boolean {
+function isPMTitle(title: string, extraKeywords?: string[]): boolean {
   const lower = title.toLowerCase();
 
-  // Must match at least one PM keyword
-  const matchesKeyword = PM_KEYWORDS.some((kw) => lower.includes(kw));
+  // Must match at least one PM keyword (or custom keyword)
+  const allKeywords = extraKeywords?.length
+    ? [...PM_KEYWORDS, ...extraKeywords.map((k) => k.toLowerCase())]
+    : PM_KEYWORDS;
+  const matchesKeyword = allKeywords.some((kw) => lower.includes(kw));
   if (!matchesKeyword) return false;
 
   // Hard exclusions — if any of these words appear, reject regardless
+  // Skip hard exclusions for custom keyword matches (user explicitly asked for these)
+  if (extraKeywords?.length) {
+    const matchesCustom = extraKeywords.some((kw) => lower.includes(kw.toLowerCase()));
+    if (matchesCustom) return true;
+  }
+
   const excluded = HARD_EXCLUSIONS.some((ex) => lower.includes(ex));
   return !excluded;
 }
@@ -54,7 +63,8 @@ export interface ValidationResult {
  */
 export function validateScrapeResults(
   jobs: ScrapedJob[],
-  companyName: string
+  companyName: string,
+  extraKeywords?: string[]
 ): ValidationResult {
   const warnings: string[] = [];
   let score = 100;
@@ -70,7 +80,7 @@ export function validateScrapeResults(
   }
 
   // Filter out non-PM jobs (with exclusion logic for design/marketing roles)
-  const pmJobs = jobs.filter((job) => isPMTitle(job.title));
+  const pmJobs = jobs.filter((job) => isPMTitle(job.title, extraKeywords));
 
   const nonPmCount = jobs.length - pmJobs.length;
   if (nonPmCount > 0) {

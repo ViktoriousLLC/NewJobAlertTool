@@ -272,11 +272,17 @@ router.get("/:id", async (req: Request, res: Response) => {
 // POST /api/companies/check — preview scrape results without saving
 router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Response) => {
   try {
-    const { careers_url } = req.body;
+    const { careers_url, custom_keywords } = req.body;
     if (!careers_url) {
       res.status(400).json({ error: "careers_url is required" });
       return;
     }
+
+    // Validate custom_keywords if provided
+    const extraKeywords: string[] | undefined =
+      Array.isArray(custom_keywords) && custom_keywords.every((k: unknown) => typeof k === "string")
+        ? custom_keywords.filter((k: string) => k.trim().length > 0).map((k: string) => k.trim())
+        : undefined;
 
     // Validate URL
     const urlCheck = validateCareersUrl(careers_url);
@@ -323,8 +329,8 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
       return;
     }
 
-    // Validate + filter PM roles
-    const validation = validateScrapeResults(jobs, companyName);
+    // Validate + filter PM roles (include custom keywords if provided)
+    const validation = validateScrapeResults(jobs, companyName, extraKeywords);
     const filteredJobs = validation.filteredJobs;
 
     // Build sample jobs (up to 5)
