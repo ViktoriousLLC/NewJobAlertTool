@@ -2,6 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
+import * as Sentry from "@sentry/nextjs";
 
 /**
  * Token-hash based auth confirmation — works cross-device (no PKCE code verifier needed).
@@ -45,6 +46,7 @@ export async function GET(request: NextRequest) {
     }
 
     console.error("Auth confirm verifyOtp failed:", error.message);
+    Sentry.captureMessage(`Magic link verify failed: ${error.message}`, "warning");
   }
 
   // Verification failed — redirect to login with error
