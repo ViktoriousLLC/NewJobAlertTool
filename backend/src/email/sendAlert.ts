@@ -246,31 +246,43 @@ export function buildAlertEmailPayload(
   };
 }
 
+export interface BatchSendResult {
+  sent: number;
+  failed: number;
+  errors: string[];
+}
+
 /**
  * Send multiple alert emails using Resend's batch API (up to 100 per request).
  * Respects the 2 req/s rate limit by adding 1s delay between batches.
+ * Returns detailed results so the caller can detect and report failures.
  */
-export async function sendBatchAlerts(payloads: EmailPayload[]): Promise<number> {
+export async function sendBatchAlerts(payloads: EmailPayload[]): Promise<BatchSendResult> {
+  const result: BatchSendResult = { sent: 0, failed: 0, errors: [] };
+
   if (!process.env.RESEND_API_KEY) {
     console.log("RESEND_API_KEY not set — skipping email send");
-    return 0;
+    return result;
   }
 
-  if (payloads.length === 0) return 0;
+  if (payloads.length === 0) return result;
 
   const resend = new Resend(process.env.RESEND_API_KEY);
   const BATCH_SIZE = 100;
-  let totalSent = 0;
 
   for (let i = 0; i < payloads.length; i += BATCH_SIZE) {
     const batch = payloads.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
 
     try {
       await resend.batch.send(batch);
-      totalSent += batch.length;
-      console.log(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: sent ${batch.length} emails`);
+      result.sent += batch.length;
+      console.log(`Batch ${batchNum}: sent ${batch.length} emails`);
     } catch (err) {
-      console.error(`Batch ${Math.floor(i / BATCH_SIZE) + 1} failed:`, err);
+      result.failed += batch.length;
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push(`Batch ${batchNum} (${batch.length} emails): ${msg}`);
+      console.error(`Batch ${batchNum} failed:`, err);
     }
 
     // Delay between batches to stay under 2 req/s rate limit
@@ -279,7 +291,36 @@ export async function sendBatchAlerts(payloads: EmailPayload[]): Promise<number>
     }
   }
 
-  return totalSent;
+  return result;
+}
+
+/**
+ * Send admin a notification when email delivery has failures.
+ * Best-effort: if Resend is completely down, this won't send either.
+ */
+export async function notifyAdminOfFailures(result: BatchSendResult): Promise<void> {
+  if (!process.env.RESEND_API_KEY || result.failed === 0) return;
+
+  const { ADMIN_EMAIL } = await import("../lib/constants");
+  const resend = new Resend(process.env.RESEND_API_KEY);
+
+  const errorList = result.errors.map((e) => `<li>${e}</li>`).join("");
+
+  try {
+    await resend.emails.send({
+      from: "NewPMJobs <alerts@newpmjobs.com>",
+      to: ADMIN_EMAIL,
+      subject: `Alert: ${result.failed} email${result.failed === 1 ? "" : "s"} failed to send`,
+      html: `
+        <p><strong>${result.sent}</strong> emails sent successfully, <strong style="color:red">${result.failed}</strong> failed.</p>
+        <p>Errors:</p>
+        <ul>${errorList}</ul>
+        <p style="color:#888;font-size:12px;">Check <a href="https://resend.com/emails">Resend dashboard</a> for details.</p>
+      `,
+    });
+  } catch (err) {
+    console.error("Failed to send admin failure notification:", err);
+  }
 }
 
 /**

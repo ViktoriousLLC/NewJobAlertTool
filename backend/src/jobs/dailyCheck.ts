@@ -1,7 +1,7 @@
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
-import { sendBatchAlerts, buildAlertEmailPayload, NewJobAlert, EmailPayload } from "../email/sendAlert";
+import { sendBatchAlerts, buildAlertEmailPayload, notifyAdminOfFailures, NewJobAlert, EmailPayload } from "../email/sendAlert";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
 
@@ -283,8 +283,13 @@ async function sendPerUserAlerts(
 
   // Batch send all emails (100 per API call, 1s delay between batches)
   console.log(`Sending ${emailPayloads.length} alert emails via batch API...`);
-  const emailsSent = await sendBatchAlerts(emailPayloads);
-  console.log(`Per-user alerts sent to ${emailsSent} users`);
+  const sendResult = await sendBatchAlerts(emailPayloads);
+  console.log(`Per-user alerts: ${sendResult.sent} sent, ${sendResult.failed} failed`);
+
+  // Notify admin if any emails failed
+  if (sendResult.failed > 0) {
+    await notifyAdminOfFailures(sendResult);
+  }
 }
 
 /**
