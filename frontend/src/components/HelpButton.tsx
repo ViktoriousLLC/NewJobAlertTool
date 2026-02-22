@@ -43,7 +43,7 @@ export default function HelpButton() {
       {/* Floating button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="fixed bottom-5 right-5 z-40 w-12 h-12 rounded-full bg-[#0C1E3A] text-white shadow-lg hover:bg-[#132B4D] transition-all flex items-center justify-center"
+        className="fixed bottom-3 right-3 sm:bottom-5 sm:right-5 z-40 w-12 h-12 rounded-full bg-[#0C1E3A] text-white shadow-lg hover:bg-[#132B4D] transition-all flex items-center justify-center"
         title="Help & Feedback"
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -53,7 +53,7 @@ export default function HelpButton() {
 
       {/* Help form popup */}
       {isOpen && (
-        <div className="fixed bottom-20 right-5 z-50 w-80 bg-white rounded-xl shadow-xl border border-stone-200 overflow-hidden">
+        <div className="fixed bottom-16 right-3 sm:bottom-20 sm:right-5 z-50 w-[calc(100vw-24px)] sm:w-80 max-w-80 bg-white rounded-xl shadow-xl border border-stone-200 overflow-hidden">
           <div className="px-4 py-3 border-b border-stone-200 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-[#1A1A2E]">Help & Feedback</h3>
             <button

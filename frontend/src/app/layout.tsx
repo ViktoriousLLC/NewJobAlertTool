@@ -28,7 +28,7 @@ export default function RootLayout({
         <ToastProvider>
         <div className="min-h-screen">
           <NavBar />
-          <main className="max-w-[1400px] mx-auto px-6 py-8">{children}</main>
+          <main className="max-w-[1400px] mx-auto px-4 py-5 sm:px-6 sm:py-8">{children}</main>
           <HelpButton />
           <footer className="border-t border-stone-200 py-5 text-center text-sm text-stone-400">
             Built by Vik Agarwal

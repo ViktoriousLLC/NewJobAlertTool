@@ -61,7 +61,7 @@ export default function SettingsPage() {
         Back to dashboard
       </Link>
 
-      <div className="bg-white rounded-xl border border-stone-200 p-6 shadow-sm">
+      <div className="bg-white rounded-xl border border-stone-200 p-4 sm:p-6 shadow-sm">
         <h1 className="text-xl font-bold text-[#1A1A2E] mb-1">Settings</h1>
         <p className="text-sm text-stone-500 mb-6">Manage your notification preferences</p>
 

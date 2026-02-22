@@ -306,66 +306,66 @@ function AllJobsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-4 sm:mb-6">
         <h1 className="text-[24px] font-[800] text-[#1A1A2E]">
           {starredOnly ? "Starred Jobs" : "All Jobs"}
           <span className="text-[13px] font-normal text-[#6B7280] ml-3">
             {filteredJobs.length} jobs{starredOnly ? " in your shortlist" : " across all companies"}
           </span>
         </h1>
-        <div className="flex items-center gap-2">
-          <div className="relative max-w-[200px]">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 mb-4 sm:mb-5">
+        <div className="relative w-full sm:w-auto sm:max-w-[200px]">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search jobs..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
+          />
+        </div>
+        {ALL_LEVELS.map((level) => (
+          <label
+            key={level}
+            className="flex items-center gap-1.5 text-sm cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors"
+          >
             <input
-              type="text"
-              placeholder="Search jobs..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
+              type="checkbox"
+              checked={levelFilter.has(level)}
+              onChange={() => toggleLevel(level)}
+              className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
             />
-          </div>
-          {ALL_LEVELS.map((level) => (
-            <label
-              key={level}
-              className="flex items-center gap-1.5 text-sm cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors"
+            <span
+              className="px-1.5 py-0.5 rounded text-xs font-semibold"
+              style={{ backgroundColor: LEVEL_COLORS[level].bg, color: LEVEL_COLORS[level].text }}
             >
-              <input
-                type="checkbox"
-                checked={levelFilter.has(level)}
-                onChange={() => toggleLevel(level)}
-                className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
-              />
-              <span
-                className="px-1.5 py-0.5 rounded text-xs font-semibold"
-                style={{ backgroundColor: LEVEL_COLORS[level].bg, color: LEVEL_COLORS[level].text }}
-              >
-                {LEVEL_LABELS[level]}
-              </span>
-            </label>
-          ))}
+              {LEVEL_LABELS[level]}
+            </span>
+          </label>
+        ))}
+        <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors">
+          <input
+            type="checkbox"
+            checked={usOnly}
+            onChange={(e) => setUsOnly(e.target.checked)}
+            className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
+          />
+          US only
+        </label>
+        {starredOnly && (
           <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors">
             <input
               type="checkbox"
-              checked={usOnly}
-              onChange={(e) => setUsOnly(e.target.checked)}
+              checked={showSalary}
+              onChange={(e) => setShowSalary(e.target.checked)}
               className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
             />
-            US only
+            Show Salary
           </label>
-          {starredOnly && (
-            <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer select-none bg-white border border-stone-200 px-3 py-2 rounded-lg hover:bg-[#F8FAFC] transition-colors">
-              <input
-                type="checkbox"
-                checked={showSalary}
-                onChange={(e) => setShowSalary(e.target.checked)}
-                className="rounded border-stone-300 text-[var(--brand)] focus:ring-[var(--brand)]"
-              />
-              Show Salary
-            </label>
-          )}
-        </div>
+        )}
       </div>
 
       {filteredJobs.length === 0 ? (
@@ -396,8 +396,10 @@ function AllJobsPage() {
         </div>
       ) : (
         <>
-          <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
-            <table className="w-full table-fixed">
+          <div className="bg-white rounded-xl border border-stone-200 overflow-hidden relative">
+            <div className="sm:hidden absolute top-0 right-0 bottom-0 w-8 bg-gradient-to-l from-white/80 to-transparent pointer-events-none z-[1]" />
+            <div className="overflow-x-auto">
+            <table className="w-full table-fixed min-w-[800px]">
               <colgroup>
                 <col className="w-[5%]" />
                 <col className="w-[11%]" />
@@ -433,7 +435,7 @@ function AllJobsPage() {
                     <td className="px-3 py-3.5 text-center">
                       <button
                         onClick={() => toggleFavorite(job.id)}
-                        className="hover:scale-110 transition-transform"
+                        className="hover:scale-110 transition-transform p-1.5 -m-1.5 sm:p-0 sm:m-0"
                         title={isFav ? "Remove from starred" : "Add to starred"}
                       >
                         {isFav ? (
@@ -508,6 +510,7 @@ function AllJobsPage() {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
           {showSalaryCol && (
             <div className="mt-3 text-right">

@@ -200,7 +200,7 @@ function DashboardContent() {
     <div>
       {/* Remove toast */}
       {removeToast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 animate-fade-in">
+        <div className="fixed top-16 sm:top-4 left-1/2 -translate-x-1/2 z-50 animate-fade-in w-[calc(100vw-32px)] sm:w-auto max-w-md">
           <div className="bg-stone-700 text-white px-5 py-3 rounded-lg shadow-lg text-sm font-medium">
             {removeToast}
           </div>
@@ -208,7 +208,7 @@ function DashboardContent() {
       )}
 
       {/* Header row */}
-      <div className="flex items-start justify-between mb-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between mb-6">
         <div>
           <h1 className="text-[22px] font-[700] text-[#1A1A2E]">
             Tracked Companies
@@ -219,25 +219,25 @@ function DashboardContent() {
         </div>
 
         {/* Stat boxes */}
-        <div className="flex items-center gap-3">
-          <div className="rounded-lg px-4 py-2.5 text-center min-w-[90px]" style={{ backgroundColor: "#FAF8F5", border: "1px solid #E8E4DF" }}>
-            <div className="text-[20px] font-bold text-[#1A1A2E]">
+        <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center sm:gap-3 w-full sm:w-auto">
+          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#FAF8F5", border: "1px solid #E8E4DF" }}>
+            <div className="text-[16px] sm:text-[20px] font-bold text-[#1A1A2E]">
               {totalRoles}
             </div>
             <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#9494A8", opacity: 0.7 }}>
               Total Roles
             </div>
           </div>
-          <div className="rounded-lg px-4 py-2.5 text-center min-w-[90px]" style={{ backgroundColor: "#F0FAF4", border: "1px solid #C8E6D5" }}>
-            <div className="text-[20px] font-bold text-[#16874D]">
+          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#F0FAF4", border: "1px solid #C8E6D5" }}>
+            <div className="text-[16px] sm:text-[20px] font-bold text-[#16874D]">
               {newToday}
             </div>
             <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#16874D", opacity: 0.7 }}>
               New Today
             </div>
           </div>
-          <div className="rounded-lg px-4 py-2.5 text-center min-w-[90px]" style={{ backgroundColor: "#FDF5F3", border: "1px solid #E8CFC9" }}>
-            <div className="text-[20px] font-bold text-[#A14B38]">
+          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#FDF5F3", border: "1px solid #E8CFC9" }}>
+            <div className="text-[16px] sm:text-[20px] font-bold text-[#A14B38]">
               {errorCount}
             </div>
             <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#A14B38", opacity: 0.7 }}>
@@ -248,8 +248,8 @@ function DashboardContent() {
       </div>
 
       {/* Search + Filter bar */}
-      <div className="flex items-center gap-3 mb-5">
-        <div className="relative flex-1 max-w-[200px]">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-5">
+        <div className="relative w-full sm:flex-initial sm:max-w-[200px]">
           <svg
             className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]"
             fill="none"
@@ -277,16 +277,10 @@ function DashboardContent() {
             <button
               key={f.key}
               onClick={() => { setFilter(f.key); trackEvent("dashboard_filter", { filter: f.key }); }}
-              style={{
-                padding: "6px 14px",
-                borderRadius: 7,
-                fontSize: 13,
-                fontWeight: filter === f.key ? 600 : 500,
-              }}
-              className={`transition-all ${
+              className={`px-3 py-1.5 sm:px-[14px] sm:py-[6px] rounded-[7px] text-[13px] transition-all ${
                 filter === f.key
-                  ? "bg-[#0C1E3A] text-white border border-[#0C1E3A]"
-                  : "bg-white border border-[#E0E0E6] text-[#1A1A2E] hover:bg-[#F3F4F6]"
+                  ? "font-semibold bg-[#0C1E3A] text-white border border-[#0C1E3A]"
+                  : "font-medium bg-white border border-[#E0E0E6] text-[#1A1A2E] hover:bg-[#F3F4F6]"
               }`}
             >
               {f.label}

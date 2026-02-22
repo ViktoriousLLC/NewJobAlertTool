@@ -21,7 +21,7 @@ export default function AuthNav({ email }: AuthNavProps) {
 
   return (
     <div className="flex items-center gap-3">
-      <span className="text-[13px] text-[#8B8FA3] truncate max-w-[180px]" title={email}>
+      <span className="text-[13px] text-[#8B8FA3] truncate max-w-[140px] sm:max-w-[180px]" title={email}>
         {email}
       </span>
       <button

@@ -277,7 +277,7 @@ function CompanyDetailContent() {
   return (
     <div>
       {showAddedToast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 animate-fade-in">
+        <div className="fixed top-16 sm:top-4 left-1/2 -translate-x-1/2 z-50 animate-fade-in w-[calc(100vw-32px)] sm:w-auto max-w-md">
           <div className="bg-green-600 text-white px-5 py-3 rounded-lg shadow-lg flex items-center gap-2 text-sm font-medium">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -287,10 +287,10 @@ function CompanyDetailContent() {
         </div>
       )}
 
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between gap-2 flex-wrap mb-4 sm:mb-6">
         <Link
           href="/"
-          className="inline-flex items-center gap-1.5 bg-white border border-stone-200 text-stone-700 px-4 py-2 rounded-lg text-sm font-medium hover:shadow-md hover:border-stone-300 transition-all"
+          className="inline-flex items-center gap-1.5 bg-white border border-stone-200 text-stone-700 px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium hover:shadow-md hover:border-stone-300 transition-all"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -300,7 +300,7 @@ function CompanyDetailContent() {
         {nextCompany && (
           <Link
             href={`/company/${nextCompany.id}`}
-            className="inline-flex items-center gap-1.5 bg-white border border-stone-200 text-stone-700 px-4 py-2 rounded-lg text-sm font-medium hover:shadow-md hover:border-stone-300 transition-all"
+            className="inline-flex items-center gap-1.5 bg-white border border-stone-200 text-stone-700 px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium hover:shadow-md hover:border-stone-300 transition-all"
           >
             {nextCompany.name}
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -311,7 +311,7 @@ function CompanyDetailContent() {
       </div>
 
       <div className="bg-white rounded-xl border border-stone-200 p-6 mb-6 shadow-sm">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div>
             <h1 className="text-[24px] font-[800] text-[#1A1A2E] mb-2">
               {company.name}
@@ -320,10 +320,10 @@ function CompanyDetailContent() {
               href={company.careers_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[var(--brand)] hover:underline text-sm inline-flex items-center gap-1"
+              className="text-[var(--brand)] hover:underline text-sm inline-flex items-center gap-1 break-all"
             >
               {company.careers_url}
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
               </svg>
             </a>
@@ -352,7 +352,7 @@ function CompanyDetailContent() {
               ) : (
                 <button
                   onClick={() => setShowReportMenu(!showReportMenu)}
-                  className="text-stone-400 hover:text-stone-600 p-1.5 rounded-lg hover:bg-stone-100 transition-colors"
+                  className="text-stone-400 hover:text-stone-600 p-2.5 sm:p-1.5 rounded-lg hover:bg-stone-100 transition-colors"
                   title="Report issue"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -393,13 +393,13 @@ function CompanyDetailContent() {
           </div>
         </div>
 
-        <div className="mt-6 grid grid-cols-3 gap-4">
+        <div className="mt-6 grid grid-cols-3 gap-2 sm:gap-4">
           <div className="bg-[#F8FAFC] rounded-lg p-4 text-center">
-            <div className="text-3xl font-bold text-[#1A1A2E]">{activeJobs.length}</div>
+            <div className="text-2xl sm:text-3xl font-bold text-[#1A1A2E]">{activeJobs.length}</div>
             <div className="text-stone-500 text-sm">Total Jobs</div>
           </div>
           <div className="bg-[#F8FAFC] rounded-lg p-4 text-center">
-            <div className="text-3xl font-bold text-[var(--brand)]">{filteredJobs.length}</div>
+            <div className="text-2xl sm:text-3xl font-bold text-[var(--brand)]">{filteredJobs.length}</div>
             <div className="text-stone-500 text-sm">{usOnly ? "US Jobs" : "Showing All"}</div>
           </div>
           <div className="bg-[#F8FAFC] rounded-lg p-4 text-center">
@@ -424,8 +424,9 @@ function CompanyDetailContent() {
           <h2 className="text-lg font-semibold text-[#1A1A2E] mb-4">
             PM Compensation at {company.name}
           </h2>
-          <div className="overflow-hidden rounded-lg border border-stone-200">
-            <table className="w-full">
+          <div className="rounded-lg border border-stone-200 overflow-hidden">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[360px]">
               <thead>
                 <tr className="bg-[#F8FAFC] border-b border-stone-200">
                   <th className="text-left px-4 py-2.5 text-xs font-semibold text-stone-500 uppercase tracking-wider">Level</th>
@@ -441,6 +442,7 @@ function CompanyDetailContent() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
           <div className="mt-3 flex items-center justify-between">
             <a
@@ -459,12 +461,12 @@ function CompanyDetailContent() {
         </div>
       )}
 
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-[#1A1A2E]">
+      <div className="mb-4">
+        <h2 className="text-lg font-semibold text-[#1A1A2E] mb-3">
           Product Jobs
         </h2>
-        <div className="flex items-center gap-2">
-          <div className="relative max-w-[200px]">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative w-full sm:w-auto sm:max-w-[200px]">
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
@@ -541,11 +543,11 @@ function CompanyDetailContent() {
                   const isFav = favorites.has(job.id);
                   const level = (job.job_level || "early") as JobLevel;
                   return (
-                  <div key={job.id} className="px-5 py-4 flex items-center justify-between gap-4 hover:bg-[#F8FAFC] transition-colors">
+                  <div key={job.id} className="px-3 py-3 sm:px-5 sm:py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-4 hover:bg-[#F8FAFC] transition-colors">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
                       <button
                         onClick={() => toggleFavorite(job.id)}
-                        className="shrink-0 hover:scale-110 transition-transform"
+                        className="shrink-0 hover:scale-110 transition-transform p-1.5 -m-1.5 sm:p-0 sm:m-0"
                         title={isFav ? "Remove from starred" : "Add to starred"}
                       >
                         {isFav ? (
@@ -574,26 +576,28 @@ function CompanyDetailContent() {
                       </span>
                       <span className="text-[#1A1A2E] font-medium truncate">{job.job_title}</span>
                     </div>
-                    {job.job_location && (
-                      <span className="text-stone-500 text-sm shrink-0 max-w-[250px] truncate flex items-center gap-1">
-                        <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <div className="flex items-center gap-2 sm:gap-4 ml-[28px] sm:ml-0">
+                      {job.job_location && (
+                        <span className="text-stone-500 text-xs sm:text-sm shrink-0 max-w-[160px] sm:max-w-[250px] truncate flex items-center gap-1">
+                          <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                          {job.job_location}
+                        </span>
+                      )}
+                      <a
+                        href={buildJobUrl(job.job_url_path)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[var(--brand)] hover:text-[var(--brand-hover)] text-sm font-medium shrink-0 flex items-center gap-1 hover:underline"
+                      >
+                        View
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                         </svg>
-                        {job.job_location}
-                      </span>
-                    )}
-                    <a
-                      href={buildJobUrl(job.job_url_path)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[var(--brand)] hover:text-[var(--brand-hover)] text-sm font-medium shrink-0 flex items-center gap-1 hover:underline"
-                    >
-                      View
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                    </a>
+                      </a>
+                    </div>
                   </div>
                   );
                 })}
@@ -614,11 +618,11 @@ function CompanyDetailContent() {
               const isFav = favorites.has(job.id);
               const level = (job.job_level || "early") as JobLevel;
               return (
-                <div key={job.id} className="px-5 py-4 flex items-center justify-between gap-4">
+                <div key={job.id} className="px-3 py-3 sm:px-5 sm:py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-4">
                   <div className="flex items-center gap-3 min-w-0 flex-1">
                     <button
                       onClick={() => toggleFavorite(job.id)}
-                      className="shrink-0"
+                      className="shrink-0 p-1.5 -m-1.5 sm:p-0 sm:m-0"
                       title="Remove from starred"
                     >
                       <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
@@ -640,7 +644,7 @@ function CompanyDetailContent() {
                     href={buildJobUrl(job.job_url_path)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-stone-400 hover:text-stone-600 text-sm font-medium shrink-0"
+                    className="text-stone-400 hover:text-stone-600 text-sm font-medium shrink-0 ml-[28px] sm:ml-0"
                   >
                     View
                   </a>

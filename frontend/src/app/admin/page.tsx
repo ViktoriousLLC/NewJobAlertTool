@@ -155,7 +155,7 @@ export default function AdminPage() {
             Error Companies ({stats.error_companies.length})
           </h2>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm min-w-[500px]">
               <thead>
                 <tr className="border-b border-stone-200 text-left text-stone-500">
                   <th className="pb-2 font-medium">Company</th>
@@ -221,7 +221,7 @@ export default function AdminPage() {
                   >
                     <button
                       onClick={() => setExpandedReport(isExpanded ? null : report.key)}
-                      className="w-full text-left px-4 py-3 flex items-center gap-3"
+                      className="w-full text-left px-3 sm:px-4 py-3 flex flex-wrap sm:flex-nowrap items-start sm:items-center gap-3"
                     >
                       <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${
                         report.source === "Help" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
@@ -264,7 +264,7 @@ export default function AdminPage() {
           Users ({users.length})
         </h2>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm min-w-[600px]">
             <thead>
               <tr className="border-b border-stone-200 text-left text-stone-500">
                 <th className="pb-2 font-medium">Email</th>

@@ -33,7 +33,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-stone-50">
-      <div className="bg-white rounded-xl border border-stone-200 p-8 shadow-sm max-w-md w-full">
+      <div className="bg-white rounded-xl border border-stone-200 p-5 sm:p-8 shadow-sm max-w-md w-full mx-4 sm:mx-0">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 bg-[var(--brand)] rounded-lg flex items-center justify-center">
             <span className="text-white font-bold text-sm">PM</span>

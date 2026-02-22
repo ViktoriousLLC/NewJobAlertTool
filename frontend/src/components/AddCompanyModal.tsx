@@ -654,8 +654,8 @@ export default function AddCompanyModal({
 
       {/* Modal */}
       <div
-        className="relative bg-white rounded-xl shadow-xl border border-stone-200 w-full max-w-2xl mx-4 flex flex-col"
-        style={{ maxHeight: "85vh" }}
+        className="relative bg-white rounded-xl shadow-xl border border-stone-200 w-full max-w-2xl mx-2 sm:mx-4 flex flex-col"
+        style={{ maxHeight: "92vh" }}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-stone-200 shrink-0">
