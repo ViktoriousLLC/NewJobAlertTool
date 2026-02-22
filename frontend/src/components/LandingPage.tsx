@@ -862,7 +862,7 @@ export default function LandingPage() {
             </p>
           </div>
 
-          {/* Right: floating cards + toasts — hidden on mobile */}
+          {/* Right: floating cards + toasts — DESKTOP (hidden on mobile) */}
           <div className="hidden md:block" style={{ position: "relative", height: 480, animation: "slideIn 0.8s ease 0.3s both" }}>
             {/* Google + toast group */}
             <div
@@ -917,6 +917,124 @@ export default function LandingPage() {
 
             {/* Figma (standalone) */}
             <HeroCard co={{ ...COMPANIES[8], roles: 5, newCount: 0 }} delay={1.4} style={{ position: "absolute", top: 360, right: 5 }} />
+          </div>
+
+          {/* MOBILE hero graphic — compact grid of cards + toasts */}
+          <div className="md:hidden relative mt-4" style={{ animation: "slideIn 0.8s ease 0.3s both" }}>
+            {/* 3x2 grid of company cards */}
+            <div className="grid grid-cols-3 gap-2 max-w-[340px] mx-auto">
+              {[
+                { ...COMPANIES[0], roles: 44, newCount: 2 },
+                { ...COMPANIES[2], roles: 33, newCount: 1 },
+                { ...COMPANIES[1], roles: 35, newCount: 0 },
+                { ...COMPANIES[5], roles: 8, newCount: 0 },
+                { ...COMPANIES[3], roles: 45, newCount: 1 },
+                { ...COMPANIES[7], roles: 12, newCount: 0 },
+              ].map((co, i) => (
+                <div
+                  key={co.name}
+                  style={{
+                    background: mix(co.color, 96),
+                    borderRadius: 10,
+                    overflow: "hidden",
+                    boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    animation: `slideIn 0.5s ease ${0.4 + i * 0.08}s both`,
+                  }}
+                >
+                  <div
+                    style={{
+                      background: `linear-gradient(135deg, ${mix(co.color, 55)}, ${mix(co.color, 30)})`,
+                      padding: "4px 7px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 16,
+                        height: 16,
+                        borderRadius: 3,
+                        background: co.color,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "#fff",
+                        fontSize: 7,
+                        fontWeight: 700,
+                      }}
+                    >
+                      {co.letter}
+                    </div>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#1A1A2E" }}>{co.name}</span>
+                  </div>
+                  <div style={{ padding: "8px 6px", textAlign: "center" }}>
+                    {co.newCount > 0 && (
+                      <span
+                        style={{
+                          background: "#E8F5EE",
+                          color: "#16874D",
+                          fontSize: 7,
+                          fontWeight: 700,
+                          padding: "1px 5px",
+                          borderRadius: 3,
+                          display: "inline-block",
+                          marginBottom: 3,
+                        }}
+                      >
+                        +{co.newCount} new
+                      </span>
+                    )}
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 2 }}>
+                      <span style={{ fontSize: 16, fontWeight: 700, color: "#1A1A2E" }}>{co.roles}</span>
+                      <span style={{ fontSize: 8, fontWeight: 500, color: "#6E6E80" }}>roles</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Overlay toasts on the card grid */}
+            <div className="absolute -bottom-4 left-2 right-2 flex flex-col gap-2 items-center">
+              <div
+                style={{
+                  background: "rgba(255,255,255,0.97)",
+                  borderRadius: 10,
+                  padding: "8px 12px",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  animation: "slideIn 0.5s ease 1s both",
+                  border: "1px solid rgba(14,165,233,0.15)",
+                  maxWidth: 280,
+                  width: "100%",
+                }}
+              >
+                <div
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 7,
+                    background: "linear-gradient(135deg, #0EA5E9, #0284C7)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#fff",
+                    fontWeight: 800,
+                    fontSize: 8,
+                    flexShrink: 0,
+                  }}
+                >
+                  PM
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#0C1E3A" }}>New PM role at Google</div>
+                  <div style={{ fontSize: 9, color: "#6E6E80" }}>Sr. Product Manager, Cloud AI</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
