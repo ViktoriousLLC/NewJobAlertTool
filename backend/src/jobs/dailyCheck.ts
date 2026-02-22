@@ -1,7 +1,7 @@
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
-import { sendUserAlert, NewJobAlert } from "../email/sendAlert";
+import { sendBatchAlerts, buildAlertEmailPayload, NewJobAlert, EmailPayload } from "../email/sendAlert";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
 
@@ -236,7 +236,9 @@ async function sendPerUserAlerts(
   }
 
   const isMonday = new Date().getUTCDay() === 1;
-  let emailsSent = 0;
+
+  // Collect all email payloads first, then batch-send via Resend batch API
+  const emailPayloads: EmailPayload[] = [];
 
   for (const user of users) {
     if (!user.email) continue;
@@ -262,12 +264,7 @@ async function sendPerUserAlerts(
       const weeklyAlerts = await getWeeklyAlerts(userCompanyIds);
       if (weeklyAlerts.length === 0) continue;
 
-      try {
-        await sendUserAlert(user.email, weeklyAlerts, "weekly");
-        emailsSent++;
-      } catch (err) {
-        console.error(`Failed to send weekly digest to ${user.email}:`, err);
-      }
+      emailPayloads.push(buildAlertEmailPayload(user.email, weeklyAlerts, "weekly"));
     } else {
       // Daily: use today's scrape results
       const userAlerts: NewJobAlert[] = [];
@@ -280,15 +277,13 @@ async function sendPerUserAlerts(
 
       if (userAlerts.length === 0) continue;
 
-      try {
-        await sendUserAlert(user.email, userAlerts, "daily");
-        emailsSent++;
-      } catch (err) {
-        console.error(`Failed to send alert to ${user.email}:`, err);
-      }
+      emailPayloads.push(buildAlertEmailPayload(user.email, userAlerts, "daily"));
     }
   }
 
+  // Batch send all emails (100 per API call, 1s delay between batches)
+  console.log(`Sending ${emailPayloads.length} alert emails via batch API...`);
+  const emailsSent = await sendBatchAlerts(emailPayloads);
   console.log(`Per-user alerts sent to ${emailsSent} users`);
 }
 

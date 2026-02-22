@@ -204,22 +204,22 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string, period: "daily" | "w
 </html>`;
 }
 
+export interface EmailPayload {
+  from: string;
+  to: string;
+  subject: string;
+  html: string;
+}
+
 /**
- * Send a personalized alert email to a specific user.
- * @param period - "daily" (default) or "weekly" — affects subject line and footer text
+ * Build an alert email payload without sending it.
+ * Used by batch sending in dailyCheck.ts.
  */
-export async function sendUserAlert(
+export function buildAlertEmailPayload(
   userEmail: string,
   alerts: NewJobAlert[],
   period: "daily" | "weekly" = "daily"
-): Promise<void> {
-  if (!process.env.RESEND_API_KEY) {
-    console.log("RESEND_API_KEY not set — skipping email send");
-    return;
-  }
-
-  const resend = new Resend(process.env.RESEND_API_KEY);
-
+): EmailPayload {
   const sorted = [...alerts].sort(
     (a, b) => b.newJobs.length - a.newJobs.length
   );
@@ -238,13 +238,70 @@ export async function sendUserAlert(
     ? `Weekly PM Digest: ${totalNewJobs} new job${totalNewJobs === 1 ? "" : "s"} this week`
     : `Job Alert: ${totalNewJobs} new PM job${totalNewJobs === 1 ? "" : "s"} — ${now}`;
 
-  await resend.emails.send({
+  return {
     from: "NewPMJobs <alerts@newpmjobs.com>",
     to: userEmail,
     subject,
     html,
-  });
+  };
+}
 
+/**
+ * Send multiple alert emails using Resend's batch API (up to 100 per request).
+ * Respects the 2 req/s rate limit by adding 1s delay between batches.
+ */
+export async function sendBatchAlerts(payloads: EmailPayload[]): Promise<number> {
+  if (!process.env.RESEND_API_KEY) {
+    console.log("RESEND_API_KEY not set — skipping email send");
+    return 0;
+  }
+
+  if (payloads.length === 0) return 0;
+
+  const resend = new Resend(process.env.RESEND_API_KEY);
+  const BATCH_SIZE = 100;
+  let totalSent = 0;
+
+  for (let i = 0; i < payloads.length; i += BATCH_SIZE) {
+    const batch = payloads.slice(i, i + BATCH_SIZE);
+
+    try {
+      await resend.batch.send(batch);
+      totalSent += batch.length;
+      console.log(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: sent ${batch.length} emails`);
+    } catch (err) {
+      console.error(`Batch ${Math.floor(i / BATCH_SIZE) + 1} failed:`, err);
+    }
+
+    // Delay between batches to stay under 2 req/s rate limit
+    if (i + BATCH_SIZE < payloads.length) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+
+  return totalSent;
+}
+
+/**
+ * Send a personalized alert email to a specific user.
+ * Use sendBatchAlerts() for bulk sending (daily cron) — this is for one-off sends only.
+ */
+export async function sendUserAlert(
+  userEmail: string,
+  alerts: NewJobAlert[],
+  period: "daily" | "weekly" = "daily"
+): Promise<void> {
+  if (!process.env.RESEND_API_KEY) {
+    console.log("RESEND_API_KEY not set — skipping email send");
+    return;
+  }
+
+  const resend = new Resend(process.env.RESEND_API_KEY);
+  const payload = buildAlertEmailPayload(userEmail, alerts, period);
+
+  await resend.emails.send(payload);
+
+  const totalNewJobs = alerts.reduce((sum, a) => sum + a.newJobs.length, 0);
   console.log(`${period} email sent to ${userEmail}: ${totalNewJobs} new jobs reported`);
 }
 
