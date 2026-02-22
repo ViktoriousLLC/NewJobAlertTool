@@ -123,10 +123,10 @@ function LandingNav() {
       }}
     >
       <div
+        className="px-5 md:px-10"
         style={{
           maxWidth: 1140,
           margin: "0 auto",
-          padding: "0 40px",
           height: 64,
           display: "flex",
           alignItems: "center",
@@ -154,10 +154,10 @@ function LandingNav() {
           <span style={{ fontSize: 18, fontWeight: 700, color: "#fff" }}>NewPMJobs</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
-          <a href="#how-it-works" style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontWeight: 500, textDecoration: "none" }}>
+          <a href="#how-it-works" className="hidden sm:inline" style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontWeight: 500, textDecoration: "none" }}>
             How it Works
           </a>
-          <a href="#jobs" style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontWeight: 500, textDecoration: "none" }}>
+          <a href="#jobs" className="hidden sm:inline" style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontWeight: 500, textDecoration: "none" }}>
             Latest Jobs
           </a>
           <Link
@@ -337,47 +337,47 @@ function JobRow({ job, delay }: { job: (typeof SAMPLE_JOBS)[number]; delay: numb
       <div
         onMouseEnter={() => setHov(true)}
         onMouseLeave={() => setHov(false)}
+        className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-[14px]"
         style={{
           background: hov ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.6)",
           backdropFilter: "blur(12px)",
           border: hov ? "1px solid #0EA5E9" : "1px solid rgba(224,224,230,0.5)",
           borderRadius: 12,
           padding: "16px 20px",
-          display: "flex",
-          alignItems: "center",
-          gap: 14,
           cursor: "pointer",
           transition: "all 0.2s ease",
           transform: hov ? "translateY(-2px)" : "none",
           boxShadow: hov ? "0 8px 24px rgba(14,165,233,0.1)" : "0 1px 4px rgba(0,0,0,0.02)",
         }}
       >
-        <div
-          style={{
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            background: job.color,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#fff",
-            fontSize: 16,
-            fontWeight: 700,
-            flexShrink: 0,
-          }}
-        >
-          {job.company[0]}
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 15, fontWeight: 650, color: "#0C1E3A", marginBottom: 3 }}>{job.title}</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 13, color: "#6E6E80", fontWeight: 500 }}>{job.company}</span>
-            <span style={{ fontSize: 11, color: "#C0C0CC" }}>|</span>
-            <span style={{ fontSize: 13, color: "#6E6E80", fontWeight: 500 }}>{job.location}</span>
+        <div className="flex items-center gap-3 sm:gap-[14px] flex-1 min-w-0">
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 10,
+              background: job.color,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#fff",
+              fontSize: 16,
+              fontWeight: 700,
+              flexShrink: 0,
+            }}
+          >
+            {job.company[0]}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="text-[14px] sm:text-[15px]" style={{ fontWeight: 650, color: "#0C1E3A", marginBottom: 3 }}>{job.title}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, color: "#6E6E80", fontWeight: 500 }}>{job.company}</span>
+              <span style={{ fontSize: 11, color: "#C0C0CC" }}>|</span>
+              <span style={{ fontSize: 13, color: "#6E6E80", fontWeight: 500 }}>{job.location}</span>
+            </div>
           </div>
         </div>
-        <div style={{ textAlign: "right", flexShrink: 0 }}>
+        <div className="flex items-center gap-3 sm:block sm:text-right ml-[52px] sm:ml-0" style={{ flexShrink: 0 }}>
           <div
             style={{
               fontSize: 13,
@@ -386,9 +386,10 @@ function JobRow({ job, delay }: { job: (typeof SAMPLE_JOBS)[number]; delay: numb
               background: "#E8F5EE",
               padding: "3px 10px",
               borderRadius: 6,
-              marginBottom: 4,
+              marginBottom: 0,
               display: "inline-block",
             }}
+            className="sm:mb-1"
           >
             {job.salary}
           </div>
@@ -465,7 +466,7 @@ function DashboardMock() {
         <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#27C93F" }} />
         <span style={{ fontSize: 11, color: "#9494A8", marginLeft: 8, fontWeight: 500 }}>Dashboard</span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+      <div className="grid grid-cols-3 md:grid-cols-5 gap-1.5">
         {cards.map((co) => (
           <div key={co.name} style={{ borderRadius: 7, overflow: "hidden", background: mix(co.color, 96), border: "1px solid #E0E0E6" }}>
             <div
@@ -736,16 +737,11 @@ export default function LandingPage() {
         />
 
         <div
+          className="flex-1 grid grid-cols-1 md:grid-cols-[1fr_1.1fr] gap-10 md:gap-10 items-center relative px-5 md:px-10 pt-24 md:pt-[110px] pb-10 md:pb-10"
           style={{
-            flex: 1,
             maxWidth: 1140,
             margin: "0 auto",
-            padding: "110px 40px 40px",
-            display: "grid",
-            gridTemplateColumns: "1fr 1.1fr",
-            gap: 40,
-            alignItems: "center",
-            position: "relative",
+            width: "100%",
           }}
         >
           {/* Left: copy */}
@@ -778,8 +774,8 @@ export default function LandingPage() {
             </div>
 
             <h1
+              className="text-[32px] sm:text-[40px] md:text-[48px]"
               style={{
-                fontSize: 48,
                 fontWeight: 900,
                 color: "#fff",
                 lineHeight: 1.1,
@@ -804,8 +800,8 @@ export default function LandingPage() {
             </h1>
 
             <p
+              className="text-[15px] sm:text-[17px] md:text-[18px]"
               style={{
-                fontSize: 18,
                 color: "rgba(255,255,255,0.5)",
                 lineHeight: 1.65,
                 marginBottom: 34,
@@ -818,12 +814,12 @@ export default function LandingPage() {
               posted. Pick your companies, and let the jobs come to you.
             </p>
 
-            <form onSubmit={handleCtaSubmit} style={{ display: "flex", alignItems: "center", gap: 10, animation: "slideIn 0.6s ease 0.4s both" }}>
+            <form onSubmit={handleCtaSubmit} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-[10px]" style={{ animation: "slideIn 0.6s ease 0.4s both" }}>
               <input
                 type="email"
                 placeholder="Your email address"
+                className="w-full sm:w-[260px]"
                 style={{
-                  width: 260,
                   padding: "14px 16px",
                   borderRadius: 10,
                   border: "1px solid rgba(255,255,255,0.1)",
@@ -866,8 +862,8 @@ export default function LandingPage() {
             </p>
           </div>
 
-          {/* Right: floating cards + toasts */}
-          <div style={{ position: "relative", height: 480, animation: "slideIn 0.8s ease 0.3s both" }}>
+          {/* Right: floating cards + toasts — hidden on mobile */}
+          <div className="hidden md:block" style={{ position: "relative", height: 480, animation: "slideIn 0.8s ease 0.3s both" }}>
             {/* Google + toast group */}
             <div
               style={{
@@ -926,8 +922,9 @@ export default function LandingPage() {
 
         {/* Company strip */}
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.04)", padding: "18px 0" }}>
-          <div style={{ maxWidth: 1140, margin: "0 auto", padding: "0 40px", display: "flex", alignItems: "center", gap: 16 }}>
+          <div className="px-5 md:px-10 flex items-center gap-4" style={{ maxWidth: 1140, margin: "0 auto" }}>
             <span
+              className="hidden sm:inline"
               style={{
                 fontSize: 11,
                 fontWeight: 600,
@@ -940,7 +937,7 @@ export default function LandingPage() {
             >
               Tracking daily
             </span>
-            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+            <div className="flex gap-1.5 flex-wrap overflow-hidden max-h-[28px] sm:max-h-none">
               {COMPANIES.map((c) => (
                 <div
                   key={c.name}
@@ -992,19 +989,19 @@ export default function LandingPage() {
 
       {/* ═══ PROBLEM ═══ */}
       <section style={{ background: "linear-gradient(180deg, #F0F4F8 0%, #E8EDF4 40%, #F5F3F0 100%)", padding: "100px 0 60px" }}>
-        <div style={{ maxWidth: 1140, margin: "0 auto", padding: "0 40px" }}>
+        <div className="px-5 md:px-10" style={{ maxWidth: 1140, margin: "0 auto" }}>
           <Reveal>
             <div style={{ textAlign: "center", marginBottom: 56 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: "#A14B38", textTransform: "uppercase", letterSpacing: "0.1em" }}>
                 The problem with PM job hunting
               </span>
-              <h2 style={{ fontSize: 38, fontWeight: 800, color: "#0C1E3A", lineHeight: 1.15, marginTop: 12, letterSpacing: "-0.015em" }}>
+              <h2 className="text-[28px] sm:text-[34px] md:text-[38px]" style={{ fontWeight: 800, color: "#0C1E3A", lineHeight: 1.15, marginTop: 12, letterSpacing: "-0.015em" }}>
                 Job boards weren{"'"}t built for product managers.
               </h2>
             </div>
           </Reveal>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, maxWidth: 900, margin: "0 auto" }}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4" style={{ maxWidth: 900, margin: "0 auto" }}>
             {[
               {
                 icon: "\uD83D\uDD0D",
@@ -1055,17 +1052,17 @@ export default function LandingPage() {
 
       {/* ═══ HOW IT WORKS ═══ */}
       <section id="how-it-works" style={{ background: "linear-gradient(180deg, #F5F3F0 0%, #EEF1F5 50%, #F0F4F8 100%)", padding: "80px 0" }}>
-        <div style={{ maxWidth: 1140, margin: "0 auto", padding: "0 40px" }}>
+        <div className="px-5 md:px-10" style={{ maxWidth: 1140, margin: "0 auto" }}>
           <Reveal>
             <div style={{ textAlign: "center", marginBottom: 56 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: "#16874D", textTransform: "uppercase", letterSpacing: "0.1em" }}>How it works</span>
-              <h2 style={{ fontSize: 38, fontWeight: 800, color: "#0C1E3A", lineHeight: 1.15, marginTop: 12, letterSpacing: "-0.015em" }}>
+              <h2 className="text-[28px] sm:text-[34px] md:text-[38px]" style={{ fontWeight: 800, color: "#0C1E3A", lineHeight: 1.15, marginTop: 12, letterSpacing: "-0.015em" }}>
                 Three steps. Zero manual searching.
               </h2>
             </div>
           </Reveal>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
             <StepCard
               number="1"
               icon={"\uD83C\uDFAF"}
@@ -1109,13 +1106,13 @@ export default function LandingPage() {
           style={{ bottom: -80, right: -80, width: 350, height: 350, background: "radial-gradient(circle, rgba(99,91,255,0.06), transparent 65%)" }}
         />
 
-        <div style={{ maxWidth: 1140, margin: "0 auto", padding: "0 40px" }}>
+        <div className="px-5 md:px-10" style={{ maxWidth: 1140, margin: "0 auto" }}>
           <Reveal>
             <div style={{ textAlign: "center", marginBottom: 48 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: "#0EA5E9", textTransform: "uppercase", letterSpacing: "0.1em" }}>
                 See it in action
               </span>
-              <h2 style={{ fontSize: 34, fontWeight: 800, color: "#fff", lineHeight: 1.15, marginTop: 12, letterSpacing: "-0.015em" }}>
+              <h2 className="text-[26px] sm:text-[30px] md:text-[34px]" style={{ fontWeight: 800, color: "#fff", lineHeight: 1.15, marginTop: 12, letterSpacing: "-0.015em" }}>
                 Everything you need, all in one place.
               </h2>
               <p style={{ fontSize: 16, color: "rgba(255,255,255,0.4)", marginTop: 10, fontWeight: 400 }}>
@@ -1124,7 +1121,7 @@ export default function LandingPage() {
             </div>
           </Reveal>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 0.9fr 0.9fr", gap: 16, alignItems: "start" }}>
+          <div className="grid grid-cols-1 md:grid-cols-[1.3fr_0.9fr_0.9fr] gap-4 items-start">
             <Reveal delay={0}>
               <div>
                 <DashboardMock />
@@ -1155,19 +1152,20 @@ export default function LandingPage() {
 
       {/* ═══ LATEST JOBS ═══ */}
       <section id="jobs" style={{ background: "linear-gradient(180deg, #F0F4F8 0%, #EDF0F5 50%, #F2EFE8 100%)", padding: "80px 0" }}>
-        <div style={{ maxWidth: 1140, margin: "0 auto", padding: "0 40px" }}>
+        <div className="px-5 md:px-10" style={{ maxWidth: 1140, margin: "0 auto" }}>
           <Reveal>
-            <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 32 }}>
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
               <div>
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#0EA5E9", textTransform: "uppercase", letterSpacing: "0.1em" }}>
                   Fresh from today{"'"}s scan
                 </span>
-                <h2 style={{ fontSize: 34, fontWeight: 800, color: "#0C1E3A", lineHeight: 1.15, marginTop: 8, letterSpacing: "-0.015em" }}>
+                <h2 className="text-[28px] sm:text-[34px]" style={{ fontWeight: 800, color: "#0C1E3A", lineHeight: 1.15, marginTop: 8, letterSpacing: "-0.015em" }}>
                   Latest PM roles
                 </h2>
               </div>
               <Link
                 href="/login"
+                className="self-start sm:self-auto"
                 style={{
                   background: "rgba(255,255,255,0.8)",
                   backdropFilter: "blur(8px)",
@@ -1202,19 +1200,15 @@ export default function LandingPage() {
 
       {/* ═══ LEVELS.FYI CALLOUT ═══ */}
       <section style={{ background: "linear-gradient(180deg, #F2EFE8 0%, #F5F2EB 50%, #EEF1F5 100%)", padding: "40px 0 80px" }}>
-        <div style={{ maxWidth: 1140, margin: "0 auto", padding: "0 40px" }}>
+        <div className="px-5 md:px-10" style={{ maxWidth: 1140, margin: "0 auto" }}>
           <Reveal>
             <div
+              className="grid grid-cols-1 md:grid-cols-2 gap-8 md:gap-10 items-center p-6 sm:p-8 md:p-[40px_48px]"
               style={{
                 background: "linear-gradient(145deg, rgba(255,251,240,0.8), rgba(255,248,232,0.6))",
                 backdropFilter: "blur(16px)",
                 border: "1px solid rgba(240,222,176,0.5)",
                 borderRadius: 18,
-                padding: "40px 48px",
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 40,
-                alignItems: "center",
                 boxShadow: "0 2px 16px rgba(184,134,11,0.04)",
               }}
             >
@@ -1222,7 +1216,7 @@ export default function LandingPage() {
                 <div style={{ fontSize: 12, fontWeight: 700, color: "#B8860B", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
                   Salary Intelligence
                 </div>
-                <h3 style={{ fontSize: 28, fontWeight: 800, color: "#0C1E3A", lineHeight: 1.2, marginBottom: 12 }}>
+                <h3 className="text-[22px] sm:text-[26px] md:text-[28px]" style={{ fontWeight: 800, color: "#0C1E3A", lineHeight: 1.2, marginBottom: 12 }}>
                   Know the comp before you apply.
                 </h3>
                 <p style={{ fontSize: 15, color: "#6E6E80", lineHeight: 1.6, fontWeight: 430 }}>
@@ -1240,14 +1234,14 @@ export default function LandingPage() {
                 }}
               >
                 <div style={{ fontSize: 12, fontWeight: 700, color: "#B8860B", marginBottom: 14 }}>Google Sr. Product Manager</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+                <div className="grid grid-cols-3 gap-4">
                   {[
                     { label: "Median Total", value: "$284K" },
                     { label: "Base Salary", value: "$198K" },
                     { label: "Stock/yr", value: "$86K" },
                   ].map((s) => (
                     <div key={s.label}>
-                      <div style={{ fontSize: 26, fontWeight: 800, color: "#0C1E3A" }}>{s.value}</div>
+                      <div className="text-[20px] sm:text-[26px]" style={{ fontWeight: 800, color: "#0C1E3A" }}>{s.value}</div>
                       <div style={{ fontSize: 11, color: "#9494A8", fontWeight: 500, marginTop: 2 }}>{s.label}</div>
                     </div>
                   ))}
@@ -1273,9 +1267,9 @@ export default function LandingPage() {
 
       {/* ═══ STATS ═══ */}
       <section style={{ background: "linear-gradient(180deg, #EEF1F5 0%, #F0F4F8 100%)", padding: "0 0 80px" }}>
-        <div style={{ maxWidth: 1140, margin: "0 auto", padding: "0 40px" }}>
+        <div className="px-5 md:px-10" style={{ maxWidth: 1140, margin: "0 auto" }}>
           <Reveal>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 16 }}>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
                 { val: "20+", label: "Companies tracked", color: "#0C1E3A" },
                 { val: "250+", label: "PM roles monitored", color: "#0C1E3A" },
@@ -1294,7 +1288,7 @@ export default function LandingPage() {
                     boxShadow: "0 1px 4px rgba(0,0,0,0.02)",
                   }}
                 >
-                  <div style={{ fontSize: 32, fontWeight: 900, color: s.color }}>{s.val}</div>
+                  <div className="text-[24px] sm:text-[32px]" style={{ fontWeight: 900, color: s.color }}>{s.val}</div>
                   <div style={{ fontSize: 13, color: "#6E6E80", fontWeight: 500, marginTop: 4 }}>{s.label}</div>
                 </div>
               ))}
@@ -1328,20 +1322,20 @@ export default function LandingPage() {
           }}
         />
 
-        <div style={{ maxWidth: 1140, margin: "0 auto", padding: "80px 40px", textAlign: "center", position: "relative" }}>
+        <div className="px-5 md:px-10 py-16 md:py-20 text-center relative" style={{ maxWidth: 1140, margin: "0 auto" }}>
           <Reveal>
-            <h2 style={{ fontSize: 38, fontWeight: 800, color: "#fff", marginBottom: 14, letterSpacing: "-0.015em" }}>
+            <h2 className="text-[28px] sm:text-[34px] md:text-[38px]" style={{ fontWeight: 800, color: "#fff", marginBottom: 14, letterSpacing: "-0.015em" }}>
               Your next PM role is one scan away.
             </h2>
             <p style={{ fontSize: 17, color: "rgba(255,255,255,0.4)", marginBottom: 32, fontWeight: 400 }}>
               Join free. Pick your companies. Get daily alerts.
             </p>
-            <form onSubmit={handleCtaSubmit} style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+            <form onSubmit={handleCtaSubmit} className="inline-flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-[10px]">
               <input
                 type="email"
                 placeholder="Your email address"
+                className="w-full sm:w-[260px]"
                 style={{
-                  width: 260,
                   padding: "14px 16px",
                   borderRadius: 10,
                   border: "1px solid rgba(255,255,255,0.1)",
@@ -1375,8 +1369,8 @@ export default function LandingPage() {
       </section>
 
       {/* ═══ FOOTER ═══ */}
-      <footer style={{ background: "#060E1D", borderTop: "1px solid rgba(255,255,255,0.03)", padding: "28px 40px" }}>
-        <div style={{ maxWidth: 1140, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <footer className="px-5 md:px-10 py-7" style={{ background: "#060E1D", borderTop: "1px solid rgba(255,255,255,0.03)" }}>
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3" style={{ maxWidth: 1140, margin: "0 auto" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div
               style={{
@@ -1397,7 +1391,7 @@ export default function LandingPage() {
             </div>
             <span style={{ fontSize: 14, fontWeight: 600, color: "rgba(255,255,255,0.4)" }}>NewPMJobs</span>
           </div>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.25)" }}>
+          <div className="text-center sm:text-right" style={{ fontSize: 13, color: "rgba(255,255,255,0.25)" }}>
             Built by{" "}
             <a
               href="https://www.linkedin.com/in/vik-agarwal/"
