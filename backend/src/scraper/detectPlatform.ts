@@ -13,8 +13,8 @@ export interface PlatformDetectionResult {
  * 1. Known custom hostnames (no fetch)
  * 2. Direct ATS URLs (no fetch)
  * 3. Fetch HTML + detect embeds
- * 4. Validate via public API
- * 5. Puppeteer fallback for SPAs
+ * 4. Puppeteer fallback for SPAs
+ * 5. Speculative API probes (try slug against Greenhouse/Lever APIs)
  * 6. Return "generic" if nothing detected
  */
 export async function detectPlatform(url: string): Promise<PlatformDetectionResult> {
@@ -137,7 +137,16 @@ export async function detectPlatform(url: string): Promise<PlatformDetectionResu
     console.log(`Platform detection: Puppeteer fallback failed for ${url}:`, err);
   }
 
-  // 6. Nothing detected → generic Puppeteer scraper
+  // 6. Speculative API probes — try the company slug against Greenhouse/Lever APIs.
+  // Catches custom-domain companies backed by these ATS (e.g., careers.twitch.com → Greenhouse "twitch")
+  try {
+    const result = await probeATSApis(hostname);
+    if (result) return result;
+  } catch (err) {
+    console.log(`Platform detection: API probe failed for ${url}:`, err);
+  }
+
+  // 7. Nothing detected → generic Puppeteer scraper
   return {
     platformType: "generic",
     platformConfig: {},
@@ -369,6 +378,69 @@ async function detectWithPuppeteer(url: string): Promise<PlatformDetectionResult
   } finally {
     await browser.close();
   }
+}
+
+/**
+ * Extracts candidate ATS slugs from a hostname.
+ * e.g., "careers.twitch.com" → ["twitch"]
+ *       "jobs.notion.so" → ["notion"]
+ *       "acme.com" → ["acme"]
+ */
+function extractCandidateSlugs(hostname: string): string[] {
+  const CAREER_PREFIXES = ["careers", "jobs", "www", "work", "hiring", "join", "apply", "hire"];
+  const slugs: string[] = [];
+
+  // Strip common career-site subdomain prefixes to get the company domain
+  const parts = hostname.split(".");
+  const prefix = parts[0];
+
+  if (parts.length >= 3 && CAREER_PREFIXES.includes(prefix)) {
+    // e.g., "careers.twitch.com" → SLD is "twitch"
+    slugs.push(parts[1]);
+  } else if (parts.length >= 2) {
+    // e.g., "twitch.com" → SLD is "twitch"
+    slugs.push(parts[parts.length - 2]);
+  }
+
+  return [...new Set(slugs)];
+}
+
+/**
+ * Probes Greenhouse and Lever public APIs with candidate slugs derived from the hostname.
+ * If either API responds, the company uses that ATS behind a custom domain.
+ */
+async function probeATSApis(hostname: string): Promise<PlatformDetectionResult | null> {
+  const slugs = extractCandidateSlugs(hostname);
+  if (slugs.length === 0) return null;
+
+  console.log(`Platform detection: Probing ATS APIs with slugs: ${slugs.join(", ")}`);
+
+  for (const slug of slugs) {
+    const [ghValid, leverValid] = await Promise.all([
+      validateGreenhouseBoard(slug),
+      validateLeverHandle(slug),
+    ]);
+
+    if (ghValid) {
+      console.log(`Platform detection: Greenhouse API probe hit for "${slug}"`);
+      return {
+        platformType: "greenhouse",
+        platformConfig: { boardName: slug },
+        confidence: "medium",
+      };
+    }
+
+    if (leverValid) {
+      console.log(`Platform detection: Lever API probe hit for "${slug}"`);
+      return {
+        platformType: "lever",
+        platformConfig: { handle: slug },
+        confidence: "medium",
+      };
+    }
+  }
+
+  return null;
 }
 
 /**
