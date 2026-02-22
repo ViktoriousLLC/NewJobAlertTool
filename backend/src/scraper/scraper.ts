@@ -485,6 +485,7 @@ export const PM_KEYWORDS = [
   "chief product",
   "product policy",
   "product led growth",
+  "product growth",
 ];
 
 interface GreenhouseJob {
