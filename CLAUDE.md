@@ -7,6 +7,7 @@
 - **DO NOT leave manual steps for the user.** If it can be done via API, CLI, or script — do it yourself.
 - **Push code, deploy, clean DB, re-add companies — all autonomously.** You have full access.
 - **When a task is given, execute end-to-end** including deployment and verification. Come back with proof it works, not a list of "next steps."
+- **Never ask before pushing.** Just push. Don't wait for confirmation on deploys.
 
 ## Permissions
 
@@ -57,8 +58,12 @@ All routes below require `Authorization: Bearer <token>` header.
 ```
 GET    /api/companies                    — List user's subscribed companies (via user_subscriptions)
 GET    /api/companies/{id}               — Get company + jobs + next_company (shared, nav uses subscriptions)
+POST   /api/companies/check              — Preview scrape results without saving (check-then-add flow)
+         Body: {"careers_url": "https://..."}
+         Returns: {status: "preview"|"exists"|"error", company_name, job_count, sample_jobs, jobs, ...}
 POST   /api/companies                    — Add new company (creates + auto-subscribes, 10/user limit)
          Body: {"name": "X", "careers_url": "https://..."}
+         Optional: {jobs: [...], platform_type: "...", platform_config: {...}} (from /check preview)
 DELETE /api/companies/{id}               — Unsubscribe (admin can ?hard=true to delete)
 ```
 
@@ -179,7 +184,7 @@ The CRON_SECRET is set in Railway env vars.
 ## Scraper Architecture (backend/src/scraper/scraper.ts)
 
 ### Shared Greenhouse helper
-`scrapeGreenhouseCareers(boardName, companyLabel)` — reusable for any company on Greenhouse. Fetches `https://api.greenhouse.io/v1/boards/{boardName}/jobs`, filters by `PM_KEYWORDS`.
+`scrapeGreenhouseCareers(boardName, companyLabel)` — reusable for any company on Greenhouse. Fetches `https://api.greenhouse.io/v1/boards/{boardName}/jobs`, filters by `PM_KEYWORDS` (17 keywords including product manager, product lead, product growth, etc.).
 
 ### Company → Scraper Routing
 | Company | Scraper | Board/Platform |
@@ -206,10 +211,12 @@ The CRON_SECRET is set in Railway env vars.
 ### Platform Auto-Detection
 When a new company is added, `detectPlatform(url)` runs to identify the ATS:
 1. **Known custom hostnames** — Atlassian, Stripe, Uber, Google, Netflix → `custom_api`
-2. **Direct ATS URLs** — greenhouse.io, lever.co, ashbyhq.com, myworkdayjobs.com, eightfold.ai
-3. **HTML embed detection** — fetches page HTML and looks for Greenhouse/Lever/Ashby/Workday/Eightfold embed signatures
-4. **Puppeteer fallback** — renders SPA and re-checks for embeds
-5. **Generic** — falls back to Puppeteer scraper
+2. **Known Greenhouse custom domains** — a16z, Twitch (hardcoded fast-path)
+3. **Direct ATS URLs** — greenhouse.io, lever.co, ashbyhq.com, myworkdayjobs.com, eightfold.ai
+4. **HTML embed detection** — fetches page HTML and looks for Greenhouse/Lever/Ashby/Workday/Eightfold embed signatures
+5. **Puppeteer fallback** — renders SPA and re-checks for embeds
+6. **Speculative API probes** — extracts company slug from hostname (e.g., `careers.twitch.com` → `twitch`), tries it against Greenhouse and Lever public APIs in parallel. Catches custom-domain companies backed by these ATS without manual config.
+7. **Generic** — falls back to Puppeteer scraper
 
 Detected platform is cached in `companies.platform_type` + `companies.platform_config` (jsonb) for daily checks.
 
@@ -239,6 +246,7 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 
 - `backend/src/scraper/scraper.ts` — All scraper logic (Greenhouse, Lever, Ashby, Workday, Eightfold, custom APIs, generic Puppeteer)
 - `backend/src/scraper/detectPlatform.ts` — ATS platform auto-detection engine
+- `backend/src/scraper/detectCompanyName.ts` — Auto-detect company name from URL + platform info (40+ known hosts, ATS slug fallback, generic hostname fallback)
 - `backend/src/scraper/validateScrape.ts` — Post-scrape quality validation
 - `backend/src/jobs/dailyCheck.ts` — Daily cron job logic (per-user email, job status tracking)
 - `backend/src/routes/companies.ts` — Companies API (subscription-scoped)
@@ -256,7 +264,7 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `frontend/src/lib/brandColors.ts` — Brand color map, `softenColor()`, `getFaviconUrl()` for dashboard cards
 - `frontend/src/lib/analytics.ts` — PostHog event tracking wrapper (`trackEvent`, `identifyUser`)
 - `frontend/src/components/NavBar.tsx` — Dark navy sticky nav bar with active route detection
-- `frontend/src/components/PostHogProvider.tsx` — PostHog init + SPA pageview tracking provider
+- `frontend/src/components/PostHogProvider.tsx` — PostHog deferred init (useEffect) + SPA pageview tracking provider
 - `frontend/sentry.client.config.ts` — Sentry browser-side init
 - `frontend/sentry.server.config.ts` — Sentry server-side init
 - `frontend/instrumentation.ts` — Next.js instrumentation hook for Sentry
@@ -267,7 +275,8 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `frontend/src/app/api/auth/token/route.ts` — Server-side route to extract JWT from HttpOnly cookies
 - `frontend/src/app/login/page.tsx` — Magic link login page
 - `frontend/src/app/auth/callback/route.ts` — Magic link code exchange
-- `frontend/src/components/LandingPage.tsx` — Marketing landing page for unauthenticated visitors (fixed overlay, all 10 sections)
+- `frontend/src/components/LandingPage.tsx` — Landing page above-fold (Nav + Hero, sections 1-2) + exported shared utils (`mix`, `useInView`, `Reveal`, `COMPANIES`, `SAMPLE_JOBS`, `COMPANY_COLORS`)
+- `frontend/src/components/LandingBelowFold.tsx` — Landing page below-fold (sections 3-10: Problem → Footer), lazy-loaded via `next/dynamic`
 - `frontend/middleware.ts` — Route protection (redirects to /login if unauthenticated, except `/` which shows landing page)
 - `frontend/src/components/AuthNav.tsx` — User email + sign out in navbar
 - `frontend/src/app/page.tsx` — Auth-gated: LandingPage (unauth) or Dashboard (auth) with tile grid + AddCompanyModal + onboarding
@@ -276,7 +285,7 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `frontend/src/app/jobs/page.tsx` — "View All Jobs" flat table (active jobs only)
 - `frontend/src/app/settings/page.tsx` — Email preferences (daily/off)
 - `frontend/src/app/layout.tsx` — Root layout with navbar + HelpButton
-- `frontend/src/components/AddCompanyModal.tsx` — Two-path modal: catalog browse + new company submission
+- `frontend/src/components/AddCompanyModal.tsx` — Two-tab modal: catalog browse + check-then-add flow (4-state: input → checking → preview → retry)
 - `frontend/src/components/HelpButton.tsx` — Floating help/feedback button
 - `frontend/src/components/Toast.tsx` — Toast notification system (context provider + UI)
 - `frontend/src/app/admin/page.tsx` — Admin dashboard (stats, errors, reports, users)
@@ -361,8 +370,27 @@ Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Compa
 | Sentry | Error monitoring + tracing | Frontend (`@sentry/nextjs`) + Backend (`@sentry/node`) |
 | UptimeRobot/BetterUptime | Uptime monitoring | External SaaS, pings `/api/health` |
 
-- **PostHog:** Initialized in `PostHogProvider.tsx`, SPA-aware pageview tracking via `usePathname()`, user identification on auth. Events: `company_added`, `company_deleted`, `job_starred`, `job_unstarred`, `dashboard_filter`.
+- **PostHog:** Deferred init in `PostHogProvider.tsx` (useEffect, not top-level), SPA-aware pageview tracking via `usePathname()`, user identification on auth. Events: `company_added`, `company_deleted`, `job_starred`, `job_unstarred`, `dashboard_filter`.
 - **Sentry:** DSN shared between frontend and backend. Frontend uses `withSentryConfig()` in `next.config.ts` + `instrumentation.ts`. Backend uses `Sentry.init()` + `Sentry.setupExpressErrorHandler(app)`.
+
+## Security Headers (added 2026-02-21)
+
+All security headers are configured in `frontend/next.config.ts` via `headers()`:
+
+| Header | Value | Purpose |
+|--------|-------|---------|
+| `X-Frame-Options` | `DENY` | Blocks iframe embedding |
+| `X-Content-Type-Options` | `nosniff` | Blocks MIME-type sniffing |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | Controls referrer leakage |
+| `Content-Security-Policy` | Dynamic (see below) | Blocks XSS data exfiltration, script/style injection |
+| `Strict-Transport-Security` | `max-age=63072000; includeSubDomains; preload` | Forces HTTPS (2 years) |
+
+### CSP details
+- Built dynamically from `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_API_URL` env vars
+- `connect-src` whitelist: `'self'`, backend API origin, Supabase HTTPS + WSS, PostHog (`us.i.posthog.com`, `us-assets.i.posthog.com`), Sentry (`o4510870199730176.ingest.us.sentry.io`)
+- `img-src`: `'self' data: https://www.google.com` (for company favicons)
+- `script-src` / `style-src`: `'self' 'unsafe-inline'` — Next.js requires inline scripts/styles for hydration. Nonce-based CSP is a future upgrade.
+- `frame-src 'none'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`
 
 ## Gotchas & Lessons
 
@@ -385,6 +413,7 @@ Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Compa
 - **Anon key for read queries:** The Supabase anon key works for tables with `USING (true)` SELECT policies (companies, seen_jobs). Useful for CLI debugging without a user JWT.
 - **Local .env placeholders:** The local `backend/.env` has placeholder values for SUPABASE_SERVICE_KEY. Production keys are only on Railway. For local DB queries, use anon key against Supabase REST API with appropriate RLS policies.
 - **Git CRLF warnings:** Repo has `.gitattributes` with `* text=auto` (LF normalization). Set `git config core.autocrlf input` at repo level to suppress "LF will be replaced by CRLF" warnings on Windows.
+- **PM_KEYWORDS false negatives:** VC firms and non-traditional companies use different job titles (e.g., a16z uses "Product Growth" not "Product Manager"). When a company's check returns 0 PM roles but has total jobs, check if their titles use PM-adjacent terms not in the keyword list. Added `"product growth"` on 2026-02-21.
 
 ## Multi-User Overhaul Status
 
@@ -398,7 +427,7 @@ The app was converted from single-user to multi-user in Feb 2026. Key changes:
 - **Admin email:** Extracted to `backend/src/lib/constants.ts` — reads `ADMIN_EMAIL` env var (Railway), falls back to `vik@viktoriousllc.com`
 - **Admin dashboard:** `/admin` page (frontend) + `/api/admin/*` routes (backend). Access restricted to `ADMIN_EMAIL`.
 - **Test account:** Use `test-account@example.com` (Gmail `+` alias → same inbox, separate Supabase user). Reset script at `scripts/reset-test-user.sql`.
-- **Rate limiting:** General API: 100 req/15min. Write endpoints (POST /api/companies, /api/help): 20 req/15min. Uses `express-rate-limit`.
+- **Rate limiting:** General API: 100 req/15min. Write endpoints (POST /api/companies, /api/help): 20 req/15min. Check endpoint (POST /api/companies/check): 5 req/15min. Uses `express-rate-limit`.
 - **Toast notifications:** Frontend errors show toast notifications instead of silent console.error. Provider in layout.tsx, hook via `useToast()`.
 - **URL dedup:** Company creation checks for existing companies with the same domain. ATS-hosted URLs (Greenhouse, Lever, etc.) use hostname/slug as dedup key.
 
@@ -433,8 +462,42 @@ Marketing landing page at `/` for unauthenticated visitors. Authenticated users 
 - All CTAs link to `/login`
 - Custom keyframes in `globals.css`: `heroFloat`, `slideIn`, `pulse`
 - Animation tokens in `@theme inline` block for Tailwind v4
-- Desktop only (no mobile responsiveness yet)
 - Spec: `docs/specs/NEWPMJOBS-LANDING-SPEC.md`, reference: `docs/specs/newpmjobs-landing-v4.jsx`
+
+### Performance optimization (2026-02-22)
+- **Code-split:** `LandingPage.tsx` (1,528 lines) split into above-fold hero (783 lines) + lazy `LandingBelowFold.tsx` (791 lines) via `next/dynamic({ ssr: false })`
+- **Pre-computed colors:** `COMPANY_COLORS` map computed once at module level (16 companies x 5 variants), eliminates ~24 runtime `mix()` calls per render
+- **Deferred PostHog:** `posthog.init()` moved from top-level module scope to `useEffect` inside `PostHogProvider` — no longer blocks main thread before first paint
+- **Browserslist:** Added `"defaults and supports es6-module"` to `frontend/package.json` — drops legacy polyfills like `Number.isInteger`
+- **Results:** Desktop Lighthouse 49 → **100** (TBT 0ms). Mobile ~72-77 (unchanged — bottlenecked by React DOM 225KB runtime, not our code).
+- **Next step for mobile:** Convert landing page to React Server Component (renders as pure HTML, no React runtime for static sections). This is a bigger architectural change not yet done.
+
+## Check-Then-Add Flow (added 2026-02-20)
+
+Preview scrape results before committing to DB. Nothing saved until user confirms.
+
+### User flow
+1. User enters **URL only** (no company name — auto-detected by `detectCompanyName.ts`)
+2. Button says **"Check PM Roles"** — calls `POST /api/companies/check`
+3. Backend scrapes but does **NOT save to DB** — returns preview
+4. User sees: company name (editable), sample job titles + locations, "Found X PM roles — Does this look right?"
+5. **Yes, Add It** → `POST /api/companies` with pre-checked `jobs[]` + `platform_type` + `platform_config` (skips re-scraping)
+6. **No, Try Again** → retry state with editable URL + feedback textarea
+7. **Cancel after feedback** → feedback filed via `POST /api/help` for admin review
+8. If URL matches existing company → shows it and offers to subscribe instead
+
+### Backend changes
+- `validateCareersUrl()` — extracted shared helper (HTTPS, LinkedIn block, SSRF protection)
+- `findExistingCompany()` — extracted dedup check helper
+- `POST /api/companies/check` — detect platform → detect name → scrape → validate → return preview (no DB writes)
+- `POST /api/companies` — accepts optional `jobs`, `platform_type`, `platform_config` to skip re-scraping; legacy flow still works without them
+
+### Frontend state machine (`AddCompanyModal.tsx` "Add New Company" tab)
+`"input"` → `"checking"` → `"preview"` → `"retry"`
+- **input**: URL-only field, "Check PM Roles" button
+- **checking**: 4-step progress animation (reuses `STEP_DURATIONS` + `getStepLabel`), cancel button
+- **preview**: company name input + sample jobs + "Found X roles" summary + "Yes, Add It" / "No, Try Again" buttons. Dedup match shows "Add to Dashboard" subscribe button. Scrape error shows "Try Different URL".
+- **retry**: editable URL + feedback textarea, "Re-check" / "Cancel"
 
 ## Performance Rules
 

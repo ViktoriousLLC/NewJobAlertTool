@@ -1,3 +1,15 @@
+# Backlog
+
+## UI Polish
+- [ ] **Star animation feedback** — When user stars a job, the star icon does a quick scale-up bounce + color fill animation (CSS transition, ~300ms). Provides instant visual confirmation without interrupting rapid multi-starring.
+
+## Features
+- [ ] **Share starred roles via link** — Generate a shareable URL (`/shared/<token>`) that shows a read-only list of the user's starred jobs (title, company, location, link to original posting). No login required for viewers. Live view (always reflects current stars). Implementation: `shared_lists` table (user_id, token, created_at), public GET endpoint, lightweight read-only page with "Copy link" button on starred page.
+
+---
+
+# Completed Tasks
+
 # Job Level Classification + Levels.fyi Compensation Integration
 
 ## Phase 1: Job Level Classification + Filtering
