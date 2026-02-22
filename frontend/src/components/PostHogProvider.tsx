@@ -9,15 +9,6 @@ import { Suspense } from "react";
 const POSTHOG_KEY = "POSTHOG_KEY_REDACTED";
 const POSTHOG_HOST = "https://us.i.posthog.com";
 
-if (typeof window !== "undefined" && !posthog.__loaded) {
-  posthog.init(POSTHOG_KEY, {
-    api_host: POSTHOG_HOST,
-    person_profiles: "identified_only",
-    capture_pageview: false, // we handle manually for SPA navigation
-    capture_pageleave: true,
-  });
-}
-
 function PostHogPageView() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -39,6 +30,17 @@ export default function PostHogProvider({
 }: {
   children: React.ReactNode;
 }) {
+  useEffect(() => {
+    if (!posthog.__loaded) {
+      posthog.init(POSTHOG_KEY, {
+        api_host: POSTHOG_HOST,
+        person_profiles: "identified_only",
+        capture_pageview: false,
+        capture_pageleave: true,
+      });
+    }
+  }, []);
+
   return (
     <PHProvider client={posthog}>
       <Suspense fallback={null}>
