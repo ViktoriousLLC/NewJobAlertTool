@@ -31,8 +31,16 @@ export async function GET(request: NextRequest) {
     if (!error) {
       return NextResponse.redirect(`${origin}/`);
     }
+
+    // PKCE exchange failed — likely opened in a different browser/device than where
+    // the magic link was requested, or the link expired (5 min validity for codes).
+    console.error("Auth callback code exchange failed:", error.message);
+    return NextResponse.redirect(
+      `${origin}/login?error=${encodeURIComponent("Magic link verification failed. Please open the link in the same browser where you requested it, or request a new one.")}`
+    );
   }
 
-  // If code exchange fails, redirect to login with error
-  return NextResponse.redirect(`${origin}/login`);
+  return NextResponse.redirect(
+    `${origin}/login?error=${encodeURIComponent("Invalid magic link. Please request a new one.")}`
+  );
 }
