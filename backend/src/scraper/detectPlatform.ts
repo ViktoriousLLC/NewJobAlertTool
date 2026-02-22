@@ -45,6 +45,7 @@ export async function detectPlatform(url: string): Promise<PlatformDetectionResu
   // 1b. Known Greenhouse boards behind custom domains (no fetch needed)
   const knownGreenhouseHosts: Record<string, string> = {
     "jobs.a16z.com": "a16z",
+    "careers.twitch.com": "twitch",
   };
 
   for (const [host, boardName] of Object.entries(knownGreenhouseHosts)) {
