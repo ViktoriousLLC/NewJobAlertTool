@@ -87,22 +87,33 @@ app.use("/api/catalog", requireAuth, catalogRouter);
 app.use("/api/preferences", requireAuth, preferencesRouter);
 app.use("/api/admin", requireAuth, adminRouter);
 
+// HTML-escape user input to prevent XSS in emails
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 // Help/feedback endpoint (sends email to admin + stores in DB)
 app.post("/api/help", requireAuth, async (req, res) => {
   try {
     const { issue_type, message, page_url } = req.body;
-    if (!message) {
+    if (typeof message !== "string" || !message.trim()) {
       res.status(400).json({ error: "message is required" });
       return;
     }
+    if (message.length > 5000) {
+      res.status(400).json({ error: "Message too long (max 5000 characters)" });
+      return;
+    }
+    const validHelpTypes = ["bug", "missing_data", "other"];
+    const safeType = validHelpTypes.includes(issue_type) ? issue_type : "other";
 
     // Store in DB for admin dashboard visibility
     const { error: dbError } = await supabase.from("help_submissions").insert({
       user_id: req.userId!,
       user_email: req.userEmail || null,
-      issue_type: issue_type || "other",
-      message,
-      page_url: page_url || null,
+      issue_type: safeType,
+      message: message.slice(0, 5000),
+      page_url: typeof page_url === "string" ? page_url.slice(0, 2000) : null,
     });
     if (dbError) console.error("Failed to store help submission:", dbError);
 
@@ -112,13 +123,13 @@ app.post("/api/help", requireAuth, async (req, res) => {
       const resend = new Resend(process.env.RESEND_API_KEY);
       await resend.emails.send({
         from: "NewPMJobs <alerts@newpmjobs.com>",
-        to: "vik@viktoriousllc.com",
-        subject: `[NewPMJobs Feedback] ${issue_type || "other"}`,
-        html: `<p><strong>From:</strong> ${req.userEmail || req.userId}</p>
-               <p><strong>Type:</strong> ${issue_type || "other"}</p>
-               <p><strong>Page:</strong> ${page_url || "unknown"}</p>
+        to: ADMIN_EMAIL,
+        subject: `[NewPMJobs Feedback] ${safeType}`,
+        html: `<p><strong>From:</strong> ${escapeHtml(req.userEmail || req.userId || "unknown")}</p>
+               <p><strong>Type:</strong> ${escapeHtml(safeType)}</p>
+               <p><strong>Page:</strong> ${escapeHtml(typeof page_url === "string" ? page_url : "unknown")}</p>
                <p><strong>Message:</strong></p>
-               <p>${(message as string).replace(/\n/g, "<br>")}</p>`,
+               <p>${escapeHtml(message).replace(/\n/g, "<br>")}</p>`,
       });
     }
 
@@ -131,20 +142,12 @@ app.post("/api/help", requireAuth, async (req, res) => {
 
 // Manual trigger for daily check (protected by secret)
 app.get("/api/cron/trigger", async (req, res) => {
-  // Primary: read secret from Authorization header
   const authHeader = req.headers.authorization;
-  const headerSecret = authHeader?.startsWith("Bearer ")
+  const secret = authHeader?.startsWith("Bearer ")
     ? authHeader.slice(7)
     : null;
 
-  // Fallback: query param (deprecated)
-  const querySecret = req.query.secret as string | undefined;
-  if (querySecret) {
-    console.warn("DEPRECATED: cron secret via query param. Use Authorization: Bearer <secret> header instead.");
-  }
-
-  const secret = headerSecret || querySecret;
-  if (secret !== process.env.CRON_SECRET) {
+  if (!secret || secret !== process.env.CRON_SECRET) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }

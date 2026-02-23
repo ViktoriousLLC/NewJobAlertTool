@@ -3,6 +3,8 @@ import { supabase } from "../lib/supabase";
 
 const router = Router();
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // GET /api/subscriptions — list user's subscribed company IDs
 router.get("/", async (req: Request, res: Response) => {
   try {
@@ -28,6 +30,10 @@ router.post("/", async (req: Request, res: Response) => {
 
     if (!Array.isArray(company_ids) || company_ids.length === 0) {
       res.status(400).json({ error: "company_ids array is required" });
+      return;
+    }
+    if (!company_ids.every((id: unknown) => typeof id === "string" && UUID_RE.test(id))) {
+      res.status(400).json({ error: "Invalid company ID format" });
       return;
     }
 
@@ -75,7 +81,11 @@ router.post("/", async (req: Request, res: Response) => {
 // DELETE /api/subscriptions/:companyId — unsubscribe from a company
 router.delete("/:companyId", async (req: Request, res: Response) => {
   try {
-    const { companyId } = req.params;
+    const companyId = req.params.companyId as string;
+    if (!UUID_RE.test(companyId)) {
+      res.status(400).json({ error: "Invalid company ID format" });
+      return;
+    }
 
     const { error: deleteError } = await supabase
       .from("user_subscriptions")

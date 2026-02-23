@@ -9,7 +9,24 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Overlap guard: prevent concurrent daily check runs
+let dailyCheckRunning = false;
+
 export async function runDailyCheck(): Promise<void> {
+  if (dailyCheckRunning) {
+    console.warn("Daily check already running — skipping this trigger to prevent overlap");
+    return;
+  }
+  dailyCheckRunning = true;
+
+  try {
+    await runDailyCheckInner();
+  } finally {
+    dailyCheckRunning = false;
+  }
+}
+
+async function runDailyCheckInner(): Promise<void> {
   console.log("Starting daily job check...");
 
   // Only scrape active companies (at least one subscriber)
@@ -246,7 +263,7 @@ async function sendPerUserAlerts(
     // Check preference: default to 'daily' if not set
     const freq = prefsMap.get(user.id) || "daily";
     if (freq === "off") {
-      console.log(`Skipping email for ${user.email} (preference: off)`);
+      console.log(`Skipping email for user ${user.id.slice(0, 8)}... (preference: off)`);
       continue;
     }
 

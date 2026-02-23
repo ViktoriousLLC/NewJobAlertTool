@@ -7,8 +7,7 @@ import { supabase } from "@/lib/supabase";
 import { identifyUser } from "@/lib/analytics";
 import AuthNav from "./AuthNav";
 
-const ADMIN_EMAIL =
-  process.env.NEXT_PUBLIC_ADMIN_EMAIL || "vik@viktoriousllc.com";
+const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL || "";
 
 function NavBarInner() {
   const pathname = usePathname();

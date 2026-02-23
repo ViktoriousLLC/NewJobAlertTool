@@ -343,7 +343,7 @@ export async function sendUserAlert(
   await resend.emails.send(payload);
 
   const totalNewJobs = alerts.reduce((sum, a) => sum + a.newJobs.length, 0);
-  console.log(`${period} email sent to ${userEmail}: ${totalNewJobs} new jobs reported`);
+  console.log(`${period} email sent: ${totalNewJobs} new jobs reported`);
 }
 
 /**
