@@ -27,8 +27,11 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 
 - **Method:** Magic link (email-based, no passwords) via Supabase Auth
 - **SMTP:** Resend custom SMTP configured in Supabase dashboard
-- **Flow:** User enters email → magic link sent → clicks link → `/auth/callback` exchanges code for session → JWT stored in cookies
-- **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes except `/` (redirects to `/login`)
+- **Flow (cross-device, primary):** User enters email → magic link sent → clicks link → `/auth/confirm` verifies token_hash via `verifyOtp()` → JWT stored in cookies. Works from any device/browser.
+- **Flow (PKCE, legacy fallback):** `/auth/callback` exchanges code for session using PKCE code verifier cookie. Only works in the same browser where the magic link was requested.
+- **Email template:** Supabase Dashboard → Auth → Email Templates → Magic Link uses `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=magiclink` (changed 2026-02-22 from `{{ .ConfirmationURL }}` which used PKCE-only flow)
+- **Auth error handling:** Both `/auth/callback` and `/auth/confirm` redirect to `/login?error=...` with a human-readable message on failure. Login page reads the `error` query param and displays it. Failures also reported to Sentry via `captureMessage()`.
+- **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes except `/`, `/auth/callback`, `/auth/confirm` (redirects to `/login`)
 - **Token flow:** Server-side cookies are HttpOnly, so browser JS can't read them. `apiFetch` calls `/api/auth/token` (a Next.js server route) to get the access token, then caches it in memory until near expiry.
 - **Backend:** `requireAuth` middleware extracts `Bearer <token>` from `Authorization` header. Fast path: local JWT verification via `SUPABASE_JWT_SECRET` (~0ms). Fallback: `supabase.auth.getUser(token)` (~100-150ms). Attaches `req.userId`.
 - **Data scoping:** Companies are shared (catalog). Users subscribe via `user_subscriptions`. Favorites via `user_job_favorites`. Dashboard/jobs filtered by subscription.
@@ -273,8 +276,9 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `frontend/src/lib/supabase.ts` — Browser Supabase client (`@supabase/ssr`)
 - `frontend/src/lib/api.ts` — Authenticated fetch wrapper (attaches JWT, caches token)
 - `frontend/src/app/api/auth/token/route.ts` — Server-side route to extract JWT from HttpOnly cookies
-- `frontend/src/app/login/page.tsx` — Magic link login page
-- `frontend/src/app/auth/callback/route.ts` — Magic link code exchange
+- `frontend/src/app/login/page.tsx` — Magic link login page (shows error from ?error= query param)
+- `frontend/src/app/auth/callback/route.ts` — PKCE code exchange (legacy, same-browser only) + Sentry on failure
+- `frontend/src/app/auth/confirm/route.ts` — Token-hash verification via verifyOtp() (cross-device) + Sentry on failure
 - `frontend/src/components/LandingPage.tsx` — Landing page above-fold (Nav + Hero, sections 1-2) + exported shared utils (`mix`, `useInView`, `Reveal`, `COMPANIES`, `SAMPLE_JOBS`, `COMPANY_COLORS`)
 - `frontend/src/components/LandingBelowFold.tsx` — Landing page below-fold (sections 3-10: Problem → Footer), lazy-loaded via `next/dynamic`
 - `frontend/middleware.ts` — Route protection (redirects to /login if unauthenticated, except `/` which shows landing page)
@@ -301,8 +305,9 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 
 | Route | File | Description |
 |-------|------|-------------|
-| `/login` | `login/page.tsx` | Magic link login (email input + send link) |
-| `/auth/callback` | `auth/callback/route.ts` | Exchanges magic link code for session |
+| `/login` | `login/page.tsx` | Magic link login (email input + send link + error display) |
+| `/auth/callback` | `auth/callback/route.ts` | PKCE code exchange (same-browser only) |
+| `/auth/confirm` | `auth/confirm/route.ts` | Token-hash verification (cross-device magic links) |
 | `/` | `page.tsx` | Auth-gated: Landing page (unauth) or Dashboard (auth) |
 | `/add` | `add/page.tsx` | Redirects to `/?addCompany=true` |
 | `/company/[id]` | `company/[id]/page.tsx` | Company detail — active jobs + saved inactive section |
@@ -328,12 +333,15 @@ Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Compa
 ## Email
 
 - **Daily alerts:** Per-user, personalized. Each user gets only alerts for their subscribed companies.
+- **Batch sending (added 2026-02-22):** `sendBatchAlerts()` uses `resend.batch.send()` (up to 100 emails per API call, 1s delay between batches). Replaced individual `resend.emails.send()` loop that was hitting Resend's 2 req/s rate limit (429 errors).
+- **Failure notifications:** `notifyAdminOfFailures()` sends a single email to `ADMIN_EMAIL` after the daily cron if any batches failed, with error details and a link to the Resend dashboard.
 - **Sent from:** `alerts@newpmjobs.com` (via Resend API in `sendAlert.ts`)
 - **Magic link emails:** Sent from `noreply@newpmjobs.com` (via Supabase custom SMTP → Resend)
 - **Per-user logic:** `dailyCheck.ts` gets all users via `listUsers()`, checks `user_preferences.email_frequency`, filters alerts to subscriptions
 - **Company logos:** Email includes Google favicon images for each company
 - **Unsubscribe:** Footer links to `/settings` page where users can set email to "off"
 - **API key:** Only in Railway production env vars (`RESEND_API_KEY`). Empty locally — cannot send from local.
+- **Resend limits:** Free plan = 100 emails/day, 3,000/month, 2 req/s. SMTP (magic links) and API (daily alerts) share the same account quota. Upgrade to Pro ($20/month) removes daily limit.
 
 ## Performance Architecture
 
@@ -404,7 +412,9 @@ All security headers are configured in `frontend/next.config.ts` via `headers()`
 - **SUPABASE_SERVICE_KEY:** Must be the `service_role` key, NOT the `anon` key. The anon key respects RLS and `auth.uid()` returns NULL, causing all user-scoped queries to return empty. The local `.env` previously had the anon key mislabeled — always verify the JWT `role` claim.
 - **HttpOnly cookies + browser JS:** `createServerClient` from `@supabase/ssr` sets HttpOnly cookies that `createBrowserClient` cannot read. Solution: use a Next.js server route (`/api/auth/token`) to extract the access token from cookies server-side, then cache it on the client.
 - **CORS with www redirect:** Vercel redirects root → `www` subdomain. Backend CORS must allow BOTH origins. Set `FRONTEND_URL=https://<your-domain>` and the code auto-adds the `www` variant.
-- **Supabase redirect URLs:** Must include both `https://<your-domain>/auth/callback` AND `https://www.<your-domain>/auth/callback` due to Vercel's www redirect.
+- **Supabase redirect URLs:** Must include all 4: `https://<your-domain>/auth/callback`, `https://www.<your-domain>/auth/callback`, `https://<your-domain>/auth/confirm`, `https://www.<your-domain>/auth/confirm` due to Vercel's www redirect.
+- **Magic link PKCE cross-device failure:** PKCE flow stores a code verifier cookie in the browser where `signInWithOtp` was called. If user opens the magic link on a different device/browser/email app webview, `exchangeCodeForSession` silently fails. Fixed 2026-02-22 by switching email template to token_hash flow (`/auth/confirm` + `verifyOtp`).
+- **Resend 429 rate limit:** Daily alert emails were firing individual `resend.emails.send()` calls in a tight loop, exceeding Resend's 2 req/s limit. Fixed 2026-02-22 by switching to `resend.batch.send()` (up to 100 per API call).
 - **NEXT_PUBLIC_ env vars:** Baked at build time. After changing in Vercel, must trigger a redeploy for changes to take effect.
 - **Cloudflare proxy (orange cloud):** Must be OFF (grey cloud / DNS only) for Vercel and Railway custom domains — they manage their own SSL.
 - **Supabase SMTP location:** Dashboard → Authentication → Notifications → Email → SMTP Settings (not under "Project Settings").
