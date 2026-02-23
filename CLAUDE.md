@@ -374,12 +374,12 @@ Sticky top nav with: Logo + "NewPMJobs" | [Starred] [View All Jobs] [+ Add Compa
 
 | Service | Purpose | Where |
 |---------|---------|-------|
-| PostHog | Product analytics (pageviews, events, user identity) | Frontend only (`posthog-js`) |
+| PostHog | Product analytics (pageviews, events, hashed user ID) | Frontend only (`posthog-js`) |
 | Sentry | Error monitoring + tracing | Frontend (`@sentry/nextjs`) + Backend (`@sentry/node`) |
 | UptimeRobot/BetterUptime | Uptime monitoring | External SaaS, pings `/api/health` |
 
-- **PostHog:** Deferred init in `PostHogProvider.tsx` (useEffect, not top-level), SPA-aware pageview tracking via `usePathname()`, user identification on auth. Events: `company_added`, `company_deleted`, `job_starred`, `job_unstarred`, `dashboard_filter`.
-- **Sentry:** DSN shared between frontend and backend. Frontend uses `withSentryConfig()` in `next.config.ts` + `instrumentation.ts`. Backend uses `Sentry.init()` + `Sentry.setupExpressErrorHandler(app)`.
+- **PostHog:** Deferred init in `PostHogProvider.tsx` (useEffect, not top-level), SPA-aware pageview tracking via `usePathname()`, user identified by SHA-256 hash of email (no raw PII sent). Events: `company_added`, `company_deleted`, `job_starred`, `job_unstarred`, `dashboard_filter`.
+- **Sentry:** DSN shared between frontend and backend. Frontend uses `withSentryConfig()` in `next.config.ts` + `instrumentation.ts`. Backend uses `Sentry.init()` + `Sentry.setupExpressErrorHandler(app)`. All backend route catch blocks call `Sentry.captureException(err)`. Frontend replay rate: 10% on error (reduced from 100% on 2026-02-23).
 
 ## Security Headers (added 2026-02-21)
 
@@ -424,6 +424,35 @@ All security headers are configured in `frontend/next.config.ts` via `headers()`
 - **Local .env placeholders:** The local `backend/.env` has placeholder values for SUPABASE_SERVICE_KEY. Production keys are only on Railway. For local DB queries, use anon key against Supabase REST API with appropriate RLS policies.
 - **Git CRLF warnings:** Repo has `.gitattributes` with `* text=auto` (LF normalization). Set `git config core.autocrlf input` at repo level to suppress "LF will be replaced by CRLF" warnings on Windows.
 - **PM_KEYWORDS false negatives:** VC firms and non-traditional companies use different job titles (e.g., a16z uses "Product Growth" not "Product Manager"). When a company's check returns 0 PM roles but has total jobs, check if their titles use PM-adjacent terms not in the keyword list. Added `"product growth"` on 2026-02-21.
+
+## Security Hardening (2026-02-23)
+
+Pre-public-launch audit. All fixes deployed in 2 commits:
+
+### Fixes applied
+- **Open redirect:** `/auth/confirm` `?next` param validated to only allow relative paths (not `//evil.com`)
+- **XSS in help email:** All user input HTML-escaped via `escapeHtml()` before embedding in email HTML
+- **Hardcoded admin email:** `index.ts` help route changed from hardcoded email to `ADMIN_EMAIL` constant
+- **PII in logs:** User emails replaced with truncated user IDs in `sendAlert.ts` and `dailyCheck.ts`
+- **Scraper timeout:** Generic Puppeteer scraper wrapped in 120s `Promise.race` timeout to prevent cron hangs
+- **Cron overlap guard:** `dailyCheckRunning` flag prevents concurrent daily check runs
+- **Input validation:** UUID regex on subscription endpoints, string length/type checks on help endpoint
+- **Cron secret:** Removed deprecated query param support, header-only (`Authorization: Bearer`)
+- **Sentry error capture:** `Sentry.captureException(err)` added to all 18 backend route catch blocks
+- **PostHog privacy:** User identity hashed with SHA-256 before `posthog.identify()` (no raw emails)
+- **Sentry replay:** `replaysOnErrorSampleRate` reduced from 1.0 to 0.1 (10%)
+- **Cleanup:** Removed unused `node-cron` dependency, removed hardcoded admin email fallback from `NavBar.tsx`
+
+### DB indexes added (manual SQL in Supabase)
+```sql
+CREATE INDEX idx_seen_jobs_company_status ON seen_jobs(company_id, status);
+CREATE INDEX idx_seen_jobs_status_date ON seen_jobs(status, first_seen_at DESC);
+CREATE INDEX idx_companies_is_active ON companies(is_active);
+```
+
+### DNS
+- DMARC record added: `_dmarc.newpmjobs.com` TXT `v=DMARC1; p=none; rua=mailto:dmarc@example.com`
+- DKIM + SPF were already configured via Resend
 
 ## Multi-User Overhaul Status
 
