@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 
 const router = Router();
@@ -46,6 +47,7 @@ router.post("/", async (req: Request, res: Response) => {
 
     res.json(issue);
   } catch (err) {
+    Sentry.captureException(err);
     console.error("POST /api/issues error:", err);
     res.status(500).json({ error: "Failed to report issue" });
   }

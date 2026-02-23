@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from "express";
+import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 import { ADMIN_EMAIL } from "../lib/constants";
 
@@ -47,6 +48,7 @@ router.get("/stats", async (_req: Request, res: Response) => {
       error_companies: errorCompaniesResult.data || [],
     });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/admin/stats error:", err);
     res.status(500).json({ error: "Failed to fetch stats" });
   }
@@ -95,6 +97,7 @@ router.get("/issues", async (_req: Request, res: Response) => {
       help_submissions: helpResult.data || [],
     });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/admin/issues error:", err);
     res.status(500).json({ error: "Failed to fetch issues" });
   }
@@ -136,6 +139,7 @@ router.get("/users", async (_req: Request, res: Response) => {
 
     res.json(result);
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/admin/users error:", err);
     res.status(500).json({ error: "Failed to fetch users" });
   }

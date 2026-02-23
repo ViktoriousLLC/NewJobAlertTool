@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
+import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { detectPlatform } from "../scraper/detectPlatform";
@@ -201,6 +202,7 @@ router.get("/", async (req: Request, res: Response) => {
 
     res.json(result);
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/companies error:", err);
     res.status(500).json({ error: "Failed to fetch companies" });
   }
@@ -265,6 +267,7 @@ router.get("/:id", async (req: Request, res: Response) => {
       next_company,
     });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/companies/:id error:", err);
     res.status(500).json({ error: "Failed to fetch company" });
   }
@@ -365,6 +368,7 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
       jobs: filteredJobs,
     });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("POST /api/companies/check error:", err);
     res.status(500).json({ error: "Failed to check company" });
   }
@@ -535,6 +539,7 @@ router.post("/", async (req: Request, res: Response) => {
       console.error(`Comp preload failed for ${name}:`, err)
     );
   } catch (err) {
+    Sentry.captureException(err);
     console.error("POST /api/companies error:", err);
     res.status(500).json({ error: "Failed to add company" });
   }
@@ -590,6 +595,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
 
     res.json({ success: true, action: "unsubscribed", subscriber_count: newCount });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("DELETE /api/companies/:id error:", err);
     res.status(500).json({ error: "Failed to remove company" });
   }

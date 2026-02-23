@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 
 const router = Router();
@@ -18,6 +19,7 @@ router.get("/", async (req: Request, res: Response) => {
     const jobIds = (data || []).map((row) => row.seen_job_id);
     res.json(jobIds);
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/favorites error:", err);
     res.status(500).json({ error: "Failed to fetch favorites" });
   }
@@ -43,6 +45,7 @@ router.post("/:jobId", async (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("POST /api/favorites/:jobId error:", err);
     res.status(500).json({ error: "Failed to add favorite" });
   }
@@ -67,6 +70,7 @@ router.delete("/:jobId", async (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("DELETE /api/favorites/:jobId error:", err);
     res.status(500).json({ error: "Failed to remove favorite" });
   }

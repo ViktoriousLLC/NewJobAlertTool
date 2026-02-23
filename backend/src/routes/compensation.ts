@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 import { getCompData, getAllCompData } from "../lib/levelsFyi";
 
@@ -37,6 +38,7 @@ router.get("/", async (req: Request, res: Response) => {
     const compData = await getAllCompData(names);
     res.json(compData);
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/compensation error:", err);
     res.status(500).json({ error: "Failed to fetch compensation data" });
   }
@@ -55,6 +57,7 @@ router.get("/:companyName", async (req: Request, res: Response) => {
 
     res.json(data);
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/compensation/:companyName error:", err);
     res.status(500).json({ error: "Failed to fetch compensation data" });
   }

@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 
 const router = Router();
@@ -33,6 +34,7 @@ router.get("/", async (req: Request, res: Response) => {
 
     res.json(created);
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/preferences error:", err);
     res.status(500).json({ error: "Failed to fetch preferences" });
   }
@@ -68,6 +70,7 @@ router.put("/", async (req: Request, res: Response) => {
 
     res.json(data);
   } catch (err) {
+    Sentry.captureException(err);
     console.error("PUT /api/preferences error:", err);
     res.status(500).json({ error: "Failed to update preferences" });
   }

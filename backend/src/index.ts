@@ -135,6 +135,7 @@ app.post("/api/help", requireAuth, async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("POST /api/help error:", err);
     res.status(500).json({ error: "Failed to send feedback" });
   }
@@ -265,6 +266,7 @@ app.post("/api/admin/add-company", async (req, res) => {
       }).eq("id", company.id);
     }
   } catch (err) {
+    Sentry.captureException(err);
     console.error("Admin add-company error:", err);
     if (!res.headersSent) {
       res.status(500).json({ error: "Failed to add company" });

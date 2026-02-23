@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 
 const router = Router();
@@ -18,6 +19,7 @@ router.get("/", async (req: Request, res: Response) => {
     const companyIds = (data || []).map((row) => row.company_id);
     res.json(companyIds);
   } catch (err) {
+    Sentry.captureException(err);
     console.error("GET /api/subscriptions error:", err);
     res.status(500).json({ error: "Failed to fetch subscriptions" });
   }
@@ -73,6 +75,7 @@ router.post("/", async (req: Request, res: Response) => {
 
     res.json({ success: true, subscribed: company_ids.length });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("POST /api/subscriptions error:", err);
     res.status(500).json({ error: "Failed to subscribe" });
   }
@@ -114,6 +117,7 @@ router.delete("/:companyId", async (req: Request, res: Response) => {
 
     res.json({ success: true, subscriber_count: newCount });
   } catch (err) {
+    Sentry.captureException(err);
     console.error("DELETE /api/subscriptions/:companyId error:", err);
     res.status(500).json({ error: "Failed to unsubscribe" });
   }
