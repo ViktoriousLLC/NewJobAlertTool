@@ -41,6 +41,11 @@ next-env.d.ts
 *.txt
 2/
 
+# Internal working docs, tasks, and scripts
+tasks/
+docs/
+scripts/
+
 # One-off investigation/debug scripts
 backend/investigate-*.js
 backend/src/scripts/
