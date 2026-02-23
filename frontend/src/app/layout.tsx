@@ -41,6 +41,13 @@ export default function RootLayout({
             >
               LinkedIn
             </a>
+            <span className="mx-2">&middot;</span>
+            <a
+              href="/privacy"
+              className="text-stone-500 hover:text-[var(--brand)] transition-colors underline underline-offset-2"
+            >
+              Privacy
+            </a>
           </footer>
         </div>
         </ToastProvider>

@@ -783,6 +783,13 @@ export default function LandingBelowFold({ onCtaSubmit }: { onCtaSubmit: (e: Rea
               Vik Agarwal
             </a>
             {" "}| Made by a PM, for PMs
+            {" "}|{" "}
+            <Link
+              href="/privacy"
+              style={{ color: "rgba(255,255,255,0.4)", textDecoration: "none", fontWeight: 500 }}
+            >
+              Privacy
+            </Link>
           </div>
         </div>
       </footer>
