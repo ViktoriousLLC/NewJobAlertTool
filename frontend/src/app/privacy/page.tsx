@@ -73,8 +73,8 @@ export default function PrivacyPage() {
             <h2 className="text-base font-semibold text-[#1A1A2E] mb-2">Contact</h2>
             <p>
               Questions about this policy? Email{" "}
-              <a href="mailto:vik@viktoriousllc.com" className="text-[#0EA5E9] hover:underline">
-                vik@viktoriousllc.com
+              <a href="mailto:privacy@newpmjobs.com" className="text-[#0EA5E9] hover:underline">
+                privacy@newpmjobs.com
               </a>
             </p>
           </section>
