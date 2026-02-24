@@ -153,12 +153,14 @@ app.get("/api/cron/trigger", async (req, res) => {
     return;
   }
 
-  // Run in background so the request doesn't timeout
-  runDailyCheck().catch((err) =>
-    console.error("Manual daily check failed:", err)
-  );
-
-  res.json({ message: "Daily check triggered" });
+  try {
+    await runDailyCheck();
+    res.json({ message: "Daily check completed" });
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("Daily check failed:", err);
+    res.status(500).json({ error: "Daily check failed" });
+  }
 });
 
 // Admin: add company (protected by CRON_SECRET, for CLI/automation use)
