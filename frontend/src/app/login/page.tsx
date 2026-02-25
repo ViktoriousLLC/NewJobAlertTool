@@ -23,21 +23,43 @@ function LoginForm() {
     setError("");
     setLoading(true);
 
-    const { error: authError } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
+    // Retry up to 2 times on network failures (e.g., "Failed to fetch")
+    let lastError: string | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { error: authError } = await supabase.auth.signInWithOtp({
+          email,
+          options: {
+            emailRedirectTo: `${window.location.origin}/auth/callback`,
+          },
+        });
 
-    setLoading(false);
+        if (!authError) {
+          setLoading(false);
+          setSent(true);
+          return;
+        }
 
-    if (authError) {
-      setError(authError.message);
-      return;
+        // Auth-level error (not network) — don't retry
+        if (!authError.message.toLowerCase().includes("fetch")) {
+          setLoading(false);
+          setError(authError.message);
+          return;
+        }
+
+        lastError = authError.message;
+      } catch {
+        lastError = "Network error";
+      }
+
+      // Wait before retrying
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
     }
 
-    setSent(true);
+    setLoading(false);
+    setError("Unable to reach the authentication server. Please check your internet connection and try again.");
   }
 
   return (
