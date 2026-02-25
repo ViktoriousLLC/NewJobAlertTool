@@ -585,20 +585,15 @@ router.delete("/:id", async (req: Request, res: Response) => {
 
     const newCount = count ?? 0;
 
-    if (newCount === 0) {
-      // Last subscriber left — delete the company entirely (cascades to jobs)
-      await supabase.from("companies").delete().eq("id", id);
-      res.json({ success: true, action: "deleted", subscriber_count: 0 });
-    } else {
-      await supabase
-        .from("companies")
-        .update({
-          subscriber_count: newCount,
-          is_active: true,
-        })
-        .eq("id", id);
-      res.json({ success: true, action: "unsubscribed", subscriber_count: newCount });
-    }
+    await supabase
+      .from("companies")
+      .update({
+        subscriber_count: newCount,
+        is_active: newCount > 0,
+      })
+      .eq("id", id);
+
+    res.json({ success: true, action: "unsubscribed", subscriber_count: newCount });
   } catch (err) {
     Sentry.captureException(err);
     console.error("DELETE /api/companies/:id error:", err);

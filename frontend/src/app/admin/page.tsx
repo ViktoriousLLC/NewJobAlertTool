@@ -34,6 +34,17 @@ interface HelpSubmission {
   created_at: string;
 }
 
+interface CompanyRow {
+  id: string;
+  name: string;
+  careers_url: string;
+  total_product_jobs: number;
+  subscriber_count: number;
+  is_active: boolean;
+  last_checked_at: string | null;
+  last_check_status: string | null;
+}
+
 interface UserRow {
   id: string;
   email: string;
@@ -47,10 +58,12 @@ export default function AdminPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [scrapeIssues, setScrapeIssues] = useState<ScrapeIssue[]>([]);
   const [helpSubmissions, setHelpSubmissions] = useState<HelpSubmission[]>([]);
+  const [companies, setCompanies] = useState<CompanyRow[]>([]);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
   const [expandedReport, setExpandedReport] = useState<string | null>(null);
+  const [deletingCompanyId, setDeletingCompanyId] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -59,12 +72,14 @@ export default function AdminPage() {
         return r.json();
       }),
       apiFetch("/api/admin/issues").then((r) => r.json()),
+      apiFetch("/api/admin/companies").then((r) => r.json()),
       apiFetch("/api/admin/users").then((r) => r.json()),
     ])
-      .then(([statsData, issuesData, usersData]) => {
+      .then(([statsData, issuesData, companiesData, usersData]) => {
         setStats(statsData);
         setScrapeIssues(issuesData.scrape_issues || []);
         setHelpSubmissions(issuesData.help_submissions || []);
+        setCompanies(companiesData || []);
         setUsers(usersData || []);
       })
       .catch((err) => {
@@ -114,6 +129,27 @@ export default function AdminPage() {
       hour: "numeric",
       minute: "2-digit",
     });
+  }
+
+  async function handleDeleteCompany(company: CompanyRow) {
+    if (!confirm(`Delete "${company.name}" for all users? This removes the company and all its jobs.`)) {
+      return;
+    }
+    setDeletingCompanyId(company.id);
+    try {
+      const res = await apiFetch(`/api/companies/${company.id}?hard=true`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        alert(data.error || "Failed to delete company");
+        return;
+      }
+      setCompanies((prev) => prev.filter((c) => c.id !== company.id));
+    } catch (err) {
+      console.error("Delete company failed:", err);
+      alert("Failed to delete company");
+    } finally {
+      setDeletingCompanyId(null);
+    }
   }
 
   const statCards = [
@@ -256,6 +292,58 @@ export default function AdminPage() {
               })}
           </div>
         )}
+      </div>
+
+      {/* Companies table */}
+      <div className="bg-white rounded-xl border border-stone-200 p-5 shadow-sm mb-6">
+        <h2 className="text-sm font-semibold text-stone-700 mb-3">
+          Companies ({companies.length})
+        </h2>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[700px]">
+            <thead>
+              <tr className="border-b border-stone-200 text-left text-stone-500">
+                <th className="pb-2 font-medium">Company</th>
+                <th className="pb-2 font-medium">PM Roles</th>
+                <th className="pb-2 font-medium">Subscribers</th>
+                <th className="pb-2 font-medium">Last Checked</th>
+                <th className="pb-2 font-medium">Status</th>
+                <th className="pb-2 font-medium"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {companies.map((c) => {
+                const isError = c.last_check_status?.startsWith("error");
+                return (
+                  <tr key={c.id} className="border-b border-stone-100">
+                    <td className="py-2 text-[#1A1A2E] font-medium">{c.name}</td>
+                    <td className="py-2 text-stone-600">{c.total_product_jobs}</td>
+                    <td className="py-2 text-stone-600">{c.subscriber_count}</td>
+                    <td className="py-2 text-stone-500 text-xs">{formatDateTime(c.last_checked_at)}</td>
+                    <td className="py-2">
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        isError
+                          ? "bg-red-100 text-red-700"
+                          : "bg-green-100 text-green-700"
+                      }`}>
+                        {isError ? "error" : "ok"}
+                      </span>
+                    </td>
+                    <td className="py-2 text-right">
+                      <button
+                        onClick={() => handleDeleteCompany(c)}
+                        disabled={deletingCompanyId === c.id}
+                        className="text-xs text-red-600 hover:text-red-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {deletingCompanyId === c.id ? "Deleting..." : "Delete"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Users table */}

@@ -103,6 +103,23 @@ router.get("/issues", async (_req: Request, res: Response) => {
   }
 });
 
+// GET /api/admin/companies — all companies for management
+router.get("/companies", async (_req: Request, res: Response) => {
+  try {
+    const { data: companies, error } = await supabase
+      .from("companies")
+      .select("id, name, careers_url, total_product_jobs, subscriber_count, is_active, last_checked_at, last_check_status")
+      .order("name", { ascending: true });
+
+    if (error) throw error;
+    res.json(companies || []);
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("GET /api/admin/companies error:", err);
+    res.status(500).json({ error: "Failed to fetch companies" });
+  }
+});
+
 // GET /api/admin/users — user list with subscription count and preferences
 router.get("/users", async (_req: Request, res: Response) => {
   try {

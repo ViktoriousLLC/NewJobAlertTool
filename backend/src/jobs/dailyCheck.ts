@@ -29,18 +29,17 @@ export async function runDailyCheck(): Promise<void> {
 async function runDailyCheckInner(): Promise<void> {
   console.log("Starting daily job check...");
 
-  // Only scrape active companies (at least one subscriber)
+  // Scrape all companies so the catalog stays fresh (even with 0 subscribers)
   const { data: companies, error } = await supabase
     .from("companies")
-    .select("*")
-    .eq("is_active", true);
+    .select("*");
 
   if (error || !companies) {
     console.error("Failed to fetch companies:", error);
     return;
   }
 
-  console.log(`Checking ${companies.length} active companies...`);
+  console.log(`Checking ${companies.length} companies...`);
 
   // Collect alerts per company for later per-user email distribution
   const companyAlerts: Map<
