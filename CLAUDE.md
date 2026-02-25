@@ -20,7 +20,7 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 | Frontend | Next.js 16 | Vercel (auto-deploys from `main`) |
 | Backend | Express + Puppeteer | Railway (auto-deploys from `main`) |
 | Database | PostgreSQL | Supabase |
-| Scheduler | Railway Cron | Triggers daily scrape at 10:00 UTC |
+| Scheduler | Railway Cron | Triggers daily scrape at 14:00 UTC (9 AM ET) |
 | Auth | Supabase Auth | Magic link via Resend SMTP |
 
 ## Authentication
@@ -31,7 +31,7 @@ All file tools (Read, Write, Edit, Glob, Grep) and Bash are auto-allowed in `.cl
 - **Flow (PKCE, legacy fallback):** `/auth/callback` exchanges code for session using PKCE code verifier cookie. Only works in the same browser where the magic link was requested.
 - **Email template:** Supabase Dashboard → Auth → Email Templates → Magic Link uses `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=magiclink` (changed 2026-02-22 from `{{ .ConfirmationURL }}` which used PKCE-only flow)
 - **Auth error handling:** Both `/auth/callback` and `/auth/confirm` redirect to `/login?error=...` with a human-readable message on failure. Login page reads the `error` query param and displays it. Failures also reported to Sentry via `captureMessage()`.
-- **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes except `/`, `/auth/callback`, `/auth/confirm` (redirects to `/login`)
+- **Frontend:** `@supabase/ssr` for cookie-based sessions, `middleware.ts` protects all routes except `/`, `/auth/callback`, `/auth/confirm`, `/privacy` (redirects to `/login`)
 - **Token flow:** Server-side cookies are HttpOnly, so browser JS can't read them. `apiFetch` calls `/api/auth/token` (a Next.js server route) to get the access token, then caches it in memory until near expiry.
 - **Backend:** `requireAuth` middleware extracts `Bearer <token>` from `Authorization` header. Fast path: local JWT verification via `SUPABASE_JWT_SECRET` (~0ms). Fallback: `supabase.auth.getUser(token)` (~100-150ms). Attaches `req.userId`.
 - **Data scoping:** Companies are shared (catalog). Users subscribe via `user_subscriptions`. Favorites via `user_job_favorites`. Dashboard/jobs filtered by subscription.
@@ -287,7 +287,8 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 - `frontend/src/app/add/page.tsx` — Redirects to `/?addCompany=true` (modal handles everything)
 - `frontend/src/app/company/[id]/page.tsx` — Company detail page (with job status, saved inactive jobs)
 - `frontend/src/app/jobs/page.tsx` — "View All Jobs" flat table (active jobs only)
-- `frontend/src/app/settings/page.tsx` — Email preferences (daily/off)
+- `frontend/src/app/settings/page.tsx` — Email preferences (daily/weekly/off)
+- `frontend/src/app/privacy/page.tsx` — Privacy policy (static, public route)
 - `frontend/src/app/layout.tsx` — Root layout with navbar + HelpButton
 - `frontend/src/components/AddCompanyModal.tsx` — Two-tab modal: catalog browse + check-then-add flow (4-state: input → checking → preview → retry)
 - `frontend/src/components/HelpButton.tsx` — Floating help/feedback button
@@ -313,6 +314,7 @@ When a new platform-specific scraper is added (e.g., Eightfold API for PayPal), 
 | `/company/[id]` | `company/[id]/page.tsx` | Company detail — active jobs + saved inactive section |
 | `/jobs` | `jobs/page.tsx` | All Jobs — active jobs across subscribed companies |
 | `/settings` | `settings/page.tsx` | Email preferences (daily / weekly / off) |
+| `/privacy` | `privacy/page.tsx` | Privacy policy (public, no auth required) |
 | `/admin` | `admin/page.tsx` | Admin dashboard (stats, issues, users) |
 
 ### Navbar (`layout.tsx`)
@@ -424,6 +426,10 @@ All security headers are configured in `frontend/next.config.ts` via `headers()`
 - **Local .env placeholders:** The local `backend/.env` has placeholder values for SUPABASE_SERVICE_KEY. Production keys are only on Railway. For local DB queries, use anon key against Supabase REST API with appropriate RLS policies.
 - **Git CRLF warnings:** Repo has `.gitattributes` with `* text=auto` (LF normalization). Set `git config core.autocrlf input` at repo level to suppress "LF will be replaced by CRLF" warnings on Windows.
 - **PM_KEYWORDS false negatives:** VC firms and non-traditional companies use different job titles (e.g., a16z uses "Product Growth" not "Product Manager"). When a company's check returns 0 PM roles but has total jobs, check if their titles use PM-adjacent terms not in the keyword list. Added `"product growth"` on 2026-02-21.
+- **Cron endpoint must await completion:** The `/api/cron/trigger` endpoint must `await runDailyCheck()` before responding. If it fires-and-forgets (returns immediately), Railway's auto-sleep can kill the backend process before scraping/emailing finishes — causing missed alerts on weekends when no other traffic keeps the service warm. Fixed 2026-02-24.
+- **NEXT_PUBLIC_ADMIN_EMAIL required:** Security hardening (2026-02-23) removed the hardcoded admin email fallback from `NavBar.tsx`. The admin button only appears if `NEXT_PUBLIC_ADMIN_EMAIL` is set in Vercel env vars. Without it, `ADMIN_EMAIL` resolves to `""` and the check always fails.
+- **Vercel project name:** The production Vercel project is `new-job-alert-tool` (not `frontend`). When using `vercel link`, always link to this project. The CLI `vercel link --yes` auto-creates a new project — always verify with `vercel project ls` first.
+- **Salesforce careers redirect trap:** `careers.salesforce.com` redirects to a marketing page (`salesforce.com/company/careers/`) with zero job listings. The actual job board is Workday at `salesforce.wd12.myworkdayjobs.com/External_Career_Site`. Platform detection can't bridge the redirect → must use the Workday URL directly. This pattern applies to other large enterprises that separate their marketing careers page from their ATS.
 
 ## Security Hardening (2026-02-23)
 
@@ -441,7 +447,7 @@ Pre-public-launch audit. All fixes deployed in 2 commits:
 - **Sentry error capture:** `Sentry.captureException(err)` added to all 18 backend route catch blocks
 - **PostHog privacy:** User identity hashed with SHA-256 before `posthog.identify()` (no raw emails)
 - **Sentry replay:** `replaysOnErrorSampleRate` reduced from 1.0 to 0.1 (10%)
-- **Cleanup:** Removed unused `node-cron` dependency, removed hardcoded admin email fallback from `NavBar.tsx`
+- **Cleanup:** Removed unused `node-cron` dependency, removed hardcoded admin email fallback from `NavBar.tsx` (requires `NEXT_PUBLIC_ADMIN_EMAIL` env var in Vercel)
 
 ### DB indexes added (manual SQL in Supabase)
 ```sql
