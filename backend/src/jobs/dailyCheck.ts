@@ -1,6 +1,7 @@
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
+import { broadATSDiscovery } from "../scraper/detectPlatform";
 import { sendBatchAlerts, buildAlertEmailPayload, notifyAdminOfFailures, NewJobAlert, EmailPayload } from "../email/sendAlert";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
@@ -50,11 +51,40 @@ async function runDailyCheckInner(): Promise<void> {
   for (const company of companies) {
     try {
       console.log(`Scraping: ${company.name} (${company.careers_url})`);
-      const rawJobs = await scrapeCompanyCareers(
+      let rawJobs = await scrapeCompanyCareers(
         company.careers_url,
         company.platform_type || null,
         company.platform_config || null
       );
+
+      // Zero-result fallback: if generic scraper returned 0 jobs, try broad ATS discovery
+      const isGeneric = !company.platform_type || company.platform_type === "generic";
+      if (rawJobs.length === 0 && isGeneric) {
+        console.log(`${company.name}: 0 jobs with generic detection, trying broad ATS discovery...`);
+        try {
+          const discovery = await broadATSDiscovery(company.careers_url, company.name);
+          if (discovery) {
+            console.log(`${company.name}: Broad discovery found ${discovery.platformType} (${JSON.stringify(discovery.platformConfig)})`);
+            // Re-scrape with discovered platform
+            rawJobs = await scrapeCompanyCareers(company.careers_url, discovery.platformType, discovery.platformConfig);
+            console.log(`${company.name}: Re-scrape found ${rawJobs.length} raw jobs`);
+
+            // Auto-update platform_type + platform_config so future scrapes work directly
+            if (rawJobs.length > 0) {
+              await supabase
+                .from("companies")
+                .update({
+                  platform_type: discovery.platformType,
+                  platform_config: discovery.platformConfig,
+                })
+                .eq("id", company.id);
+              console.log(`${company.name}: Updated platform to ${discovery.platformType}`);
+            }
+          }
+        } catch (err) {
+          console.error(`${company.name}: Broad ATS discovery failed:`, err);
+        }
+      }
 
       // Run quality validation to filter non-PM jobs
       const validation = validateScrapeResults(rawJobs, company.name);

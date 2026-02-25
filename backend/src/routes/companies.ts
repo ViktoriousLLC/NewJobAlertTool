@@ -3,7 +3,7 @@ import rateLimit from "express-rate-limit";
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
-import { detectPlatform } from "../scraper/detectPlatform";
+import { detectPlatform, broadATSDiscovery } from "../scraper/detectPlatform";
 import { detectCompanyName } from "../scraper/detectCompanyName";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { classifyJobLevel } from "../lib/classifyLevel";
@@ -335,14 +335,40 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
       return;
     }
 
-    // If scraper returned 0 jobs total, this is a scrape failure — not a filter issue
+    // If scraper returned 0 jobs and detection was generic/low-confidence,
+    // try broad ATS discovery before giving up
     if (rawJobs.length === 0) {
-      res.json({
-        status: "error",
-        company_name: companyName,
-        error: "No job listings found on this page. The URL might be wrong, or the page format isn't supported yet. You can report this using the help button (bottom-right) so we can add support.",
-      });
-      return;
+      if (platformType === "generic" || !platformType) {
+        console.log(`Check: 0 jobs with generic detection, trying broad ATS discovery for ${companyName}`);
+        try {
+          const discovery = await broadATSDiscovery(careers_url, companyName);
+          if (discovery) {
+            console.log(`Check: Broad discovery found ${discovery.platformType} (${JSON.stringify(discovery.platformConfig)})`);
+            platformType = discovery.platformType;
+            platformConfig = discovery.platformConfig;
+
+            // Re-scrape with the discovered platform
+            try {
+              rawJobs = await scrapeCompanyCareers(careers_url, platformType, platformConfig);
+              console.log(`Check: Re-scrape found ${rawJobs.length} raw jobs`);
+            } catch (err) {
+              console.error("Re-scrape after broad discovery failed:", err);
+            }
+          }
+        } catch (err) {
+          console.error("Broad ATS discovery failed:", err);
+        }
+      }
+
+      // If still 0 jobs after fallback, return error
+      if (rawJobs.length === 0) {
+        res.json({
+          status: "error",
+          company_name: companyName,
+          error: "No job listings found on this page. The URL might be wrong, or the page format isn't supported yet. You can report this using the help button (bottom-right) so we can add support.",
+        });
+        return;
+      }
     }
 
     // Validate + filter PM roles (include custom keywords if provided)

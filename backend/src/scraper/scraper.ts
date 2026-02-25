@@ -1,4 +1,5 @@
 import puppeteer, { Page } from "puppeteer";
+import { lookupATSRegistry } from "./atsRegistry";
 
 export interface ScrapedJob {
   title: string;
@@ -1765,110 +1766,57 @@ export async function scrapeCompanyCareers(
 
   const hostname = new URL(careersUrl).hostname;
 
-  // EA-specific: use Avature HTML scraper with pagination
+  // Custom scrapers — bespoke logic, not ATS-backed (must stay as hostname checks)
   if (hostname.includes("ea.com") || hostname.includes("jobs.ea.com")) {
     console.log("Detected EA careers page, using Avature HTML scraper");
     await browser.close();
     return scrapeEACareers();
   }
-
-  // Atlassian-specific: use their JSON API directly
   if (hostname.includes("atlassian.com")) {
     console.log("Detected Atlassian careers page, using API scraper");
     await browser.close();
     return scrapeAtlassianCareers();
   }
-
-  // DoorDash-specific: use Greenhouse API (board: doordashusa)
-  if (hostname.includes("doordash.com") || hostname.includes("careersatdoordash.com")) {
-    console.log("Detected DoorDash careers page, using Greenhouse API scraper");
-    await browser.close();
-    return scrapeGreenhouseCareers("doordashusa", "DoorDash");
-  }
-
-  // Netflix-specific: use their API
   if (hostname.includes("netflix.net") || hostname.includes("netflix.com")) {
     console.log("Detected Netflix careers page, using API scraper");
     await browser.close();
     return scrapeNetflixCareers(careersUrl);
   }
-
-  // Discord-specific: use Greenhouse API
-  if (hostname.includes("discord.com")) {
-    console.log("Detected Discord careers page, using Greenhouse API scraper");
-    await browser.close();
-    return scrapeGreenhouseCareers("discord", "Discord");
-  }
-
-  // Reddit-specific: use Greenhouse API with departments filter
-  if (hostname.includes("reddit.com") || hostname.includes("redditinc.com") ||
-      careersUrl.includes("greenhouse.io/reddit")) {
-    console.log("Detected Reddit careers page, using Greenhouse API scraper");
-    await browser.close();
-    return scrapeRedditCareers();
-  }
-
-  // Roblox-specific: use Greenhouse departments API (board: roblox)
-  if (hostname.includes("roblox.com")) {
-    console.log("Detected Roblox careers page, using Greenhouse departments scraper");
-    await browser.close();
-    return scrapeGreenhouseDepartments("roblox", "Roblox");
-  }
-
-  // Instacart-specific: use Greenhouse API
-  if (hostname.includes("instacart.careers") || hostname.includes("instacart.com")) {
-    console.log("Detected Instacart careers page, using Greenhouse API scraper");
-    await browser.close();
-    return scrapeGreenhouseCareers("instacart", "Instacart");
-  }
-
-  // Figma-specific: use Greenhouse API
-  if (hostname.includes("figma.com")) {
-    console.log("Detected Figma careers page, using Greenhouse API scraper");
-    await browser.close();
-    return scrapeGreenhouseCareers("figma", "Figma");
-  }
-
-  // Airbnb-specific: use Greenhouse API
-  if (hostname.includes("airbnb.com")) {
-    console.log("Detected Airbnb careers page, using Greenhouse API scraper");
-    await browser.close();
-    return scrapeGreenhouseCareers("airbnb", "Airbnb");
-  }
-
-  // OpenAI-specific: use Ashby GraphQL API
-  if (hostname.includes("openai.com") || careersUrl.includes("ashbyhq.com/openai")) {
-    console.log("Detected OpenAI careers page, using Ashby API scraper");
-    await browser.close();
-    return scrapeAshbyCareers("openai", "OpenAI");
-  }
-
-  // Slack-specific: use Salesforce Workday API and filter for PM roles
-  if (hostname.includes("slack.com") || careersUrl.includes("myworkdayjobs.com/Slack")) {
-    console.log("Detected Slack careers page, using Workday API scraper");
-    await browser.close();
-    return scrapeWorkdayCareers("salesforce", "wd12", "Slack", "Slack");
-  }
-
-  // Stripe-specific: paginate through all pages and filter for PM roles
   if (hostname.includes("stripe.com")) {
     console.log("Detected Stripe careers page, using custom scraper");
     await browser.close();
     return scrapeStripeCareers();
   }
-
-  // Uber-specific: use their JSON API directly (no browser needed)
   if (hostname.includes("uber.com")) {
     console.log("Detected Uber careers page, using API scraper");
     await browser.close();
     return scrapeUberCareers(careersUrl);
   }
-
-  // Google-specific: use page-based pagination
   if (hostname.includes("google.com") && careersUrl.includes("/careers/")) {
     console.log("Detected Google careers page, using custom scraper");
     await browser.close();
     return scrapeGoogleCareers(careersUrl);
+  }
+
+  // ATS registry lookup — replaces per-company hostname checks for standard ATS platforms
+  const registryEntry = lookupATSRegistry(hostname);
+  if (registryEntry) {
+    const { platformType: regType, platformConfig: regConfig, label } = registryEntry;
+    console.log(`Registry match: ${label} → ${regType} (${JSON.stringify(regConfig)})`);
+    await browser.close();
+
+    switch (regType) {
+      case "greenhouse":
+        return scrapeGreenhouseCareers(regConfig.boardName, label);
+      case "greenhouse_departments":
+        return scrapeGreenhouseDepartments(regConfig.boardName, label);
+      case "lever":
+        return scrapeLeverCareers(regConfig.handle, label);
+      case "ashby":
+        return scrapeAshbyCareers(regConfig.orgName, label);
+      case "workday":
+        return scrapeWorkdayCareers(regConfig.tenant, regConfig.subdomain, regConfig.boardPath, label);
+    }
   }
 
   // Lever: jobs.lever.co/{handle}

@@ -1,4 +1,5 @@
 import puppeteer from "puppeteer";
+import { lookupATSRegistry } from "./atsRegistry";
 
 export interface PlatformDetectionResult {
   platformType: string;
@@ -17,7 +18,7 @@ export interface PlatformDetectionResult {
  * 5. Speculative API probes (try slug against Greenhouse/Lever APIs)
  * 6. Return "generic" if nothing detected
  */
-export async function detectPlatform(url: string): Promise<PlatformDetectionResult> {
+export async function detectPlatform(url: string, companyName?: string): Promise<PlatformDetectionResult> {
   const parsed = new URL(url);
   const hostname = parsed.hostname;
 
@@ -42,20 +43,18 @@ export async function detectPlatform(url: string): Promise<PlatformDetectionResu
     }
   }
 
-  // 1b. Known Greenhouse boards behind custom domains (no fetch needed)
-  const knownGreenhouseHosts: Record<string, string> = {
-    "jobs.a16z.com": "a16z",
-    "careers.twitch.com": "twitch",
-  };
-
-  for (const [host, boardName] of Object.entries(knownGreenhouseHosts)) {
-    if (hostname === host) {
-      return {
-        platformType: "greenhouse",
-        platformConfig: { boardName },
-        confidence: "high",
-      };
-    }
+  // 1b. ATS registry lookup — shared source of truth for known hostname → ATS mappings
+  const registryEntry = lookupATSRegistry(hostname);
+  if (registryEntry) {
+    // Normalize greenhouse_departments → greenhouse for external consumers
+    const platformType = registryEntry.platformType === "greenhouse_departments"
+      ? "greenhouse"
+      : registryEntry.platformType;
+    return {
+      platformType,
+      platformConfig: { ...registryEntry.platformConfig },
+      confidence: "high",
+    };
   }
 
   // 2. Direct ATS URLs (no fetch needed)
@@ -140,7 +139,7 @@ export async function detectPlatform(url: string): Promise<PlatformDetectionResu
   // 6. Speculative API probes — try the company slug against Greenhouse/Lever APIs.
   // Catches custom-domain companies backed by these ATS (e.g., careers.twitch.com → Greenhouse "twitch")
   try {
-    const result = await probeATSApis(hostname);
+    const result = await probeATSApis(hostname, companyName);
     if (result) return result;
   } catch (err) {
     console.log(`Platform detection: API probe failed for ${url}:`, err);
@@ -325,7 +324,24 @@ async function detectWithPuppeteer(url: string): Promise<PlatformDetectionResult
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     );
 
+    // Network request interception: catch client-side API calls to ATS backends
+    const networkDetections: PlatformDetectionResult[] = [];
+    page.on("request", (request) => {
+      if (networkDetections.length > 0) return; // Already found one
+      const reqUrl = request.url();
+      matchATSNetworkRequest(reqUrl, (result) => {
+        networkDetections.push(result);
+      });
+    });
+
     await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+
+    // Check network interception results first (highest signal — actual API calls)
+    if (networkDetections.length > 0) {
+      const detected = networkDetections[0];
+      console.log(`Platform detection: Network interception detected ${detected.platformType}`);
+      return detected;
+    }
 
     const html = await page.content();
     const result = parseHTMLForATS(html);
@@ -381,46 +397,136 @@ async function detectWithPuppeteer(url: string): Promise<PlatformDetectionResult
 }
 
 /**
- * Extracts candidate ATS slugs from a hostname.
- * e.g., "careers.twitch.com" → ["twitch"]
- *       "jobs.notion.so" → ["notion"]
- *       "acme.com" → ["acme"]
+ * Matches a network request URL against known ATS API patterns.
+ * Calls `onMatch` with the detection result if a match is found.
  */
-function extractCandidateSlugs(hostname: string): string[] {
+function matchATSNetworkRequest(
+  reqUrl: string,
+  onMatch: (result: PlatformDetectionResult) => void
+): void {
+  // Greenhouse API: api.greenhouse.io/v1/boards/{slug}/*
+  const ghApiMatch = reqUrl.match(/api\.greenhouse\.io\/v1\/boards\/([a-zA-Z0-9_-]+)/);
+  if (ghApiMatch) {
+    onMatch({
+      platformType: "greenhouse",
+      platformConfig: { boardName: ghApiMatch[1] },
+      confidence: "high",
+    });
+    return;
+  }
+
+  // Greenhouse embed: boards.greenhouse.io/embed/job_board/js?for={slug}
+  const ghEmbedMatch = reqUrl.match(/boards\.greenhouse\.io\/embed\/job_board\/js\?for=([a-zA-Z0-9_-]+)/);
+  if (ghEmbedMatch) {
+    onMatch({
+      platformType: "greenhouse",
+      platformConfig: { boardName: ghEmbedMatch[1] },
+      confidence: "high",
+    });
+    return;
+  }
+
+  // Lever API: api.lever.co/v0/postings/{handle}/*
+  const leverMatch = reqUrl.match(/api\.lever\.co\/v0\/postings\/([a-zA-Z0-9_-]+)/);
+  if (leverMatch) {
+    onMatch({
+      platformType: "lever",
+      platformConfig: { handle: leverMatch[1] },
+      confidence: "high",
+    });
+    return;
+  }
+
+  // Ashby API: jobs.ashbyhq.com/api/*
+  const ashbyMatch = reqUrl.match(/jobs\.ashbyhq\.com\/api\/.*organizationHostedJobsPageName.*?[=:]"?([a-zA-Z0-9_-]+)/);
+  if (ashbyMatch) {
+    onMatch({
+      platformType: "ashby",
+      platformConfig: { orgName: ashbyMatch[1] },
+      confidence: "high",
+    });
+    return;
+  }
+
+  // Workday API: *.myworkdayjobs.com/wday/cxs/*
+  const workdayMatch = reqUrl.match(/([a-zA-Z0-9_-]+)\.(wd\d+)\.myworkdayjobs\.com\/wday\/cxs\/[^/]+\/([a-zA-Z0-9_-]+)/);
+  if (workdayMatch) {
+    onMatch({
+      platformType: "workday",
+      platformConfig: {
+        tenant: workdayMatch[1],
+        subdomain: workdayMatch[2],
+        boardPath: workdayMatch[3],
+      },
+      confidence: "high",
+    });
+    return;
+  }
+}
+
+/**
+ * Extracts candidate ATS slugs from a hostname and optional company name.
+ * Generates multiple slug variants for speculative API probes.
+ *
+ * e.g., hostname "careers.twitch.com" → ["twitch"]
+ *       hostname "razorpay.com", name "Razorpay" → ["razorpay", "razorpay-inc", "razorpayinc", ...]
+ */
+function extractCandidateSlugs(hostname: string, companyName?: string): string[] {
   const CAREER_PREFIXES = ["careers", "jobs", "www", "work", "hiring", "join", "apply", "hire"];
   const slugs: string[] = [];
 
-  // Strip common career-site subdomain prefixes to get the company domain
+  // From hostname: strip common career-site subdomain prefixes
   const parts = hostname.split(".");
   const prefix = parts[0];
 
   if (parts.length >= 3 && CAREER_PREFIXES.includes(prefix)) {
-    // e.g., "careers.twitch.com" → SLD is "twitch"
     slugs.push(parts[1]);
   } else if (parts.length >= 2) {
-    // e.g., "twitch.com" → SLD is "twitch"
     slugs.push(parts[parts.length - 2]);
   }
 
-  return [...new Set(slugs)];
+  // From company name: generate additional slug variants
+  if (companyName) {
+    const base = companyName.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim();
+    const noSpaces = base.replace(/\s+/g, "");
+    const hyphenated = base.replace(/\s+/g, "-");
+
+    slugs.push(noSpaces);
+    if (noSpaces !== hyphenated) slugs.push(hyphenated);
+
+    // Common corporate suffixes
+    const SUFFIXES = ["inc", "co", "hq", "software", "tech", "labs", "io", "app"];
+    for (const suffix of SUFFIXES) {
+      slugs.push(`${noSpaces}${suffix}`);
+      slugs.push(`${noSpaces}-${suffix}`);
+    }
+  }
+
+  return [...new Set(slugs.filter(Boolean))];
 }
 
 /**
  * Probes Greenhouse and Lever public APIs with candidate slugs derived from the hostname.
  * If either API responds, the company uses that ATS behind a custom domain.
  */
-async function probeATSApis(hostname: string): Promise<PlatformDetectionResult | null> {
-  const slugs = extractCandidateSlugs(hostname);
+async function probeATSApis(hostname: string, companyName?: string): Promise<PlatformDetectionResult | null> {
+  const slugs = extractCandidateSlugs(hostname, companyName);
   if (slugs.length === 0) return null;
 
   console.log(`Platform detection: Probing ATS APIs with slugs: ${slugs.join(", ")}`);
 
-  for (const slug of slugs) {
-    const [ghValid, leverValid] = await Promise.all([
-      validateGreenhouseBoard(slug),
-      validateLeverHandle(slug),
-    ]);
+  // Probe all slugs in parallel (both Greenhouse + Lever for each)
+  const probeResults = await Promise.all(
+    slugs.map(async (slug) => {
+      const [ghValid, leverValid] = await Promise.all([
+        validateGreenhouseBoard(slug),
+        validateLeverHandle(slug),
+      ]);
+      return { slug, ghValid, leverValid };
+    })
+  );
 
+  for (const { slug, ghValid, leverValid } of probeResults) {
     if (ghValid) {
       console.log(`Platform detection: Greenhouse API probe hit for "${slug}"`);
       return {
@@ -429,7 +535,6 @@ async function probeATSApis(hostname: string): Promise<PlatformDetectionResult |
         confidence: "medium",
       };
     }
-
     if (leverValid) {
       console.log(`Platform detection: Lever API probe hit for "${slug}"`);
       return {
@@ -469,4 +574,100 @@ export async function validateLeverHandle(handle: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Broad ATS discovery — used as a fallback when generic scraper returns 0 jobs.
+ * Tries legal entity suffixes (pvtltd, privatelimited, etc.) to find ATS boards
+ * where the slug is the full legal entity name (e.g., "razorpaysoftwareprivatelimited").
+ *
+ * Only probes Greenhouse and Lever since they have public APIs.
+ */
+export async function broadATSDiscovery(
+  url: string,
+  companyName?: string
+): Promise<PlatformDetectionResult | null> {
+  const parsed = new URL(url);
+  const hostname = parsed.hostname;
+
+  // Derive company name from URL if not provided
+  const { detectCompanyName } = await import("./detectCompanyName");
+  const name = companyName || detectCompanyName(url, null, null);
+
+  const base = name.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim();
+  const noSpaces = base.replace(/\s+/g, "");
+
+  // Also extract hostname-based slug
+  const CAREER_PREFIXES = ["careers", "jobs", "www", "work", "hiring", "join", "apply", "hire"];
+  const parts = hostname.split(".");
+  let hostSlug = parts[parts.length - 2] || "";
+  if (parts.length >= 3 && CAREER_PREFIXES.includes(parts[0])) {
+    hostSlug = parts[1];
+  }
+
+  // Legal entity suffixes commonly used in ATS board names
+  const LEGAL_SUFFIXES = [
+    "pvtltd", "privatelimited", "softwareprivatelimited",
+    "technologiesprivatelimited", "technologyprivatelimited",
+    "llc", "corp", "corporation", "limited", "ltd",
+    "gmbh", "bv", "srl", "sarl", "ag",
+    "global", "international", "worldwide",
+    "careers", "jobs", "hiring",
+  ];
+
+  const slugs = new Set<string>();
+
+  // Generate slug candidates from company name + legal suffixes
+  for (const suffix of LEGAL_SUFFIXES) {
+    slugs.add(`${noSpaces}${suffix}`);
+    slugs.add(`${noSpaces}-${suffix}`);
+    if (hostSlug && hostSlug !== noSpaces) {
+      slugs.add(`${hostSlug}${suffix}`);
+      slugs.add(`${hostSlug}-${suffix}`);
+    }
+  }
+
+  // Also try base slugs without suffixes (in case standard probing missed them)
+  slugs.add(noSpaces);
+  if (hostSlug) slugs.add(hostSlug);
+
+  const slugArray = [...slugs].filter(Boolean);
+  console.log(`Broad ATS discovery: Probing ${slugArray.length} slug candidates for "${name}"`);
+
+  // Probe in batches of 10 to avoid overwhelming APIs
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < slugArray.length; i += BATCH_SIZE) {
+    const batch = slugArray.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (slug) => {
+        const [ghValid, leverValid] = await Promise.all([
+          validateGreenhouseBoard(slug),
+          validateLeverHandle(slug),
+        ]);
+        return { slug, ghValid, leverValid };
+      })
+    );
+
+    for (const { slug, ghValid, leverValid } of results) {
+      if (ghValid) {
+        console.log(`Broad ATS discovery: Greenhouse hit for "${slug}"`);
+        return {
+          platformType: "greenhouse",
+          platformConfig: { boardName: slug },
+          confidence: "medium" as const,
+        };
+      }
+      if (leverValid) {
+        console.log(`Broad ATS discovery: Lever hit for "${slug}"`);
+        return {
+          platformType: "lever",
+          platformConfig: { handle: slug },
+          confidence: "medium" as const,
+        };
+      }
+    }
+  }
+
+  console.log(`Broad ATS discovery: No ATS found for "${name}"`);
+  return null;
 }
