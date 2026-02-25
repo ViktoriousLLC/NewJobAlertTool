@@ -602,8 +602,45 @@ function extractCandidateSlugs(hostname: string, companyName?: string): string[]
 }
 
 /**
- * Probes Greenhouse and Lever public APIs with candidate slugs derived from the hostname.
- * If either API responds, the company uses that ATS behind a custom domain.
+ * Cross-checks an ATS probe hit to prevent false positives.
+ * Compares the company name returned by the ATS API against the slug we probed with.
+ * Returns true if the names plausibly match (i.e., the slug is contained in the ATS name
+ * or vice versa), false if it looks like a different company.
+ *
+ * e.g., slug "aha", ATS name "Animal Health Associates" → false (different company)
+ *       slug "twitch", ATS name "Twitch" → true
+ *       slug "doordashusa", ATS name "DoorDash" → true
+ */
+function isProbeNameMatch(slug: string, atsCompanyName: string): boolean {
+  const normalizedSlug = slug.toLowerCase().replace(/[-_]/g, "");
+  const normalizedAts = atsCompanyName.toLowerCase().replace(/[-_]/g, "");
+
+  // Direct containment: slug in ATS name or ATS name in slug
+  if (normalizedAts.includes(normalizedSlug) || normalizedSlug.includes(normalizedAts)) {
+    return true;
+  }
+
+  // Also check the ATS name with spaces removed (e.g., "Door Dash" → "doordash")
+  const atsNoSpaces = normalizedAts.replace(/\s+/g, "");
+  if (atsNoSpaces.includes(normalizedSlug) || normalizedSlug.includes(atsNoSpaces)) {
+    return true;
+  }
+
+  // Check initials/acronym: "Animal Health Associates" → "aha"
+  // Only trust this for slugs of 4+ chars to avoid false positives on short acronyms
+  if (normalizedSlug.length >= 4) {
+    const words = atsCompanyName.toLowerCase().split(/\s+/).filter(Boolean);
+    const initials = words.map((w) => w[0]).join("");
+    if (initials === normalizedSlug) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Probes Greenhouse, Lever, SmartRecruiters, and Ashby public APIs with candidate slugs
+ * derived from the hostname. If an API responds, cross-checks the returned company name
+ * against the slug to prevent false positives.
  */
 async function probeATSApis(hostname: string, companyName?: string): Promise<PlatformDetectionResult | null> {
   const slugs = extractCandidateSlugs(hostname, companyName);
@@ -614,26 +651,30 @@ async function probeATSApis(hostname: string, companyName?: string): Promise<Pla
   // Probe all slugs in parallel (Greenhouse + Lever + SmartRecruiters + Ashby for each)
   const probeResults = await Promise.all(
     slugs.map(async (slug) => {
-      const [ghValid, leverValid, srValid, ashbyValid] = await Promise.all([
+      const [ghName, leverName, srName, ashbyName] = await Promise.all([
         validateGreenhouseBoard(slug),
         validateLeverHandle(slug),
         validateSmartRecruitersCompany(slug),
         validateAshbyOrg(slug),
       ]);
-      return { slug, ghValid, leverValid, srValid, ashbyValid };
+      return { slug, ghName, leverName, srName, ashbyName };
     })
   );
 
-  for (const { slug, ghValid, leverValid, srValid, ashbyValid } of probeResults) {
-    if (ghValid) {
-      console.log(`Platform detection: Greenhouse API probe hit for "${slug}"`);
-      return {
-        platformType: "greenhouse",
-        platformConfig: { boardName: slug },
-        confidence: "medium",
-      };
+  for (const { slug, ghName, leverName, srName, ashbyName } of probeResults) {
+    if (ghName) {
+      if (isProbeNameMatch(slug, ghName)) {
+        console.log(`Platform detection: Greenhouse API probe hit for "${slug}" (name: "${ghName}")`);
+        return {
+          platformType: "greenhouse",
+          platformConfig: { boardName: slug },
+          confidence: "medium",
+        };
+      } else {
+        console.log(`Platform detection: Greenhouse probe "${slug}" rejected — ATS name "${ghName}" doesn't match`);
+      }
     }
-    if (leverValid) {
+    if (leverName) {
       console.log(`Platform detection: Lever API probe hit for "${slug}"`);
       return {
         platformType: "lever",
@@ -641,15 +682,19 @@ async function probeATSApis(hostname: string, companyName?: string): Promise<Pla
         confidence: "medium",
       };
     }
-    if (srValid) {
-      console.log(`Platform detection: SmartRecruiters API probe hit for "${slug}"`);
-      return {
-        platformType: "smartrecruiters",
-        platformConfig: { company: slug },
-        confidence: "medium",
-      };
+    if (srName) {
+      if (isProbeNameMatch(slug, srName)) {
+        console.log(`Platform detection: SmartRecruiters API probe hit for "${slug}" (name: "${srName}")`);
+        return {
+          platformType: "smartrecruiters",
+          platformConfig: { company: slug },
+          confidence: "medium",
+        };
+      } else {
+        console.log(`Platform detection: SmartRecruiters probe "${slug}" rejected — ATS name "${srName}" doesn't match`);
+      }
     }
-    if (ashbyValid) {
+    if (ashbyName) {
       console.log(`Platform detection: Ashby API probe hit for "${slug}"`);
       return {
         platformType: "ashby",
@@ -664,53 +709,62 @@ async function probeATSApis(hostname: string, companyName?: string): Promise<Pla
 
 /**
  * Validates a detected Greenhouse board by checking the public API.
+ * Returns the board's company name if valid, or null if not.
  */
-export async function validateGreenhouseBoard(boardName: string): Promise<boolean> {
+export async function validateGreenhouseBoard(boardName: string): Promise<string | null> {
   try {
-    const res = await fetch(`https://api.greenhouse.io/v1/boards/${boardName}/jobs`, {
+    const res = await fetch(`https://api.greenhouse.io/v1/boards/${boardName}`, {
       signal: AbortSignal.timeout(10000),
     });
-    return res.ok;
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.name || boardName;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /**
  * Validates a detected Lever handle by checking the public API.
+ * Returns the handle as company name if valid, or null if not.
  */
-export async function validateLeverHandle(handle: string): Promise<boolean> {
+export async function validateLeverHandle(handle: string): Promise<string | null> {
   try {
     const res = await fetch(`https://api.lever.co/v0/postings/${handle}?limit=1&mode=json`, {
       signal: AbortSignal.timeout(10000),
     });
-    return res.ok;
+    if (!res.ok) return null;
+    return handle;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /**
  * Validates a SmartRecruiters company slug by checking the public API.
+ * Returns the company name if valid, or null if not.
  */
-export async function validateSmartRecruitersCompany(company: string): Promise<boolean> {
+export async function validateSmartRecruitersCompany(company: string): Promise<string | null> {
   try {
     const res = await fetch(
       `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(company)}/postings?limit=1`,
       { signal: AbortSignal.timeout(10000) }
     );
-    if (!res.ok) return false;
+    if (!res.ok) return null;
     const data = await res.json();
-    return data.totalFound > 0;
+    if (data.totalFound <= 0) return null;
+    // Try to extract company name from first posting
+    return data.content?.[0]?.company?.name || company;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /**
  * Validates an Ashby org slug by checking the GraphQL API.
+ * Returns the org slug as name if valid, or null if not.
  */
-export async function validateAshbyOrg(orgName: string): Promise<boolean> {
+export async function validateAshbyOrg(orgName: string): Promise<string | null> {
   try {
     const res = await fetch(
       "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams",
@@ -730,11 +784,12 @@ export async function validateAshbyOrg(orgName: string): Promise<boolean> {
         signal: AbortSignal.timeout(10000),
       }
     );
-    if (!res.ok) return false;
+    if (!res.ok) return null;
     const data = await res.json();
-    return !!data?.data?.jobBoard?.teams;
+    if (!data?.data?.jobBoard?.teams) return null;
+    return orgName;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -802,26 +857,26 @@ export async function broadATSDiscovery(
     const batch = slugArray.slice(i, i + BATCH_SIZE);
     const results = await Promise.all(
       batch.map(async (slug) => {
-        const [ghValid, leverValid, srValid, ashbyValid] = await Promise.all([
+        const [ghName, leverName, srName, ashbyName] = await Promise.all([
           validateGreenhouseBoard(slug),
           validateLeverHandle(slug),
           validateSmartRecruitersCompany(slug),
           validateAshbyOrg(slug),
         ]);
-        return { slug, ghValid, leverValid, srValid, ashbyValid };
+        return { slug, ghName, leverName, srName, ashbyName };
       })
     );
 
-    for (const { slug, ghValid, leverValid, srValid, ashbyValid } of results) {
-      if (ghValid) {
-        console.log(`Broad ATS discovery: Greenhouse hit for "${slug}"`);
+    for (const { slug, ghName, leverName, srName, ashbyName } of results) {
+      if (ghName && isProbeNameMatch(slug, ghName)) {
+        console.log(`Broad ATS discovery: Greenhouse hit for "${slug}" (name: "${ghName}")`);
         return {
           platformType: "greenhouse",
           platformConfig: { boardName: slug },
           confidence: "medium" as const,
         };
       }
-      if (leverValid) {
+      if (leverName) {
         console.log(`Broad ATS discovery: Lever hit for "${slug}"`);
         return {
           platformType: "lever",
@@ -829,15 +884,15 @@ export async function broadATSDiscovery(
           confidence: "medium" as const,
         };
       }
-      if (srValid) {
-        console.log(`Broad ATS discovery: SmartRecruiters hit for "${slug}"`);
+      if (srName && isProbeNameMatch(slug, srName)) {
+        console.log(`Broad ATS discovery: SmartRecruiters hit for "${slug}" (name: "${srName}")`);
         return {
           platformType: "smartrecruiters",
           platformConfig: { company: slug },
           confidence: "medium" as const,
         };
       }
-      if (ashbyValid) {
+      if (ashbyName) {
         console.log(`Broad ATS discovery: Ashby hit for "${slug}"`);
         return {
           platformType: "ashby",
