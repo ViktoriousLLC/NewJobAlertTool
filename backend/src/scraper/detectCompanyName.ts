@@ -104,6 +104,16 @@ export function detectCompanyName(
         if (sub && sub !== "www") return capitalize(sub);
         break;
       }
+      case "smartrecruiters": {
+        const srCompany = platformConfig.company;
+        if (srCompany) return capitalize(srCompany);
+        break;
+      }
+      case "icims": {
+        const icimsCompany = platformConfig.company;
+        if (icimsCompany) return capitalize(icimsCompany);
+        break;
+      }
     }
   }
 

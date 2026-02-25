@@ -36,6 +36,8 @@ const ATS_HOSTS = [
   "ashbyhq.com", "jobs.ashbyhq.com",
   "myworkdayjobs.com",
   "eightfold.ai",
+  "icims.com",
+  "smartrecruiters.com", "jobs.smartrecruiters.com",
 ];
 
 /**
@@ -120,6 +122,95 @@ async function findExistingCompany(careersUrl: string): Promise<{ id: string; na
   });
 
   return match ? { id: match.id, name: match.name, total_product_jobs: match.total_product_jobs ?? 0 } : null;
+}
+
+/**
+ * When the user-provided URL returns 0 jobs, auto-try common careers URL paths
+ * on the same domain before giving up. Short-circuits on first success.
+ */
+async function tryCommonCareersUrls(
+  originalUrl: string
+): Promise<{
+  careers_url: string;
+  platformType: string;
+  platformConfig: Record<string, string>;
+  jobs: { title: string; location: string; urlPath: string }[];
+} | null> {
+  const parsed = new URL(originalUrl);
+  const hostname = parsed.hostname.replace(/^www\./, "");
+
+  // Skip if user already provided a deep path (they were specific)
+  const pathSegments = parsed.pathname.split("/").filter(Boolean);
+  if (pathSegments.length > 1) return null;
+
+  // Don't try subdomains if the URL is already a subdomain (e.g., careers.foo.com)
+  const hostParts = hostname.split(".");
+  const isSubdomain = hostParts.length > 2;
+  const rootDomain = isSubdomain
+    ? hostParts.slice(-2).join(".")
+    : hostname;
+
+  const candidateUrls: string[] = [];
+
+  // Path-based candidates on the same hostname
+  const baseDomain = parsed.hostname;
+  candidateUrls.push(
+    `https://${baseDomain}/careers`,
+    `https://${baseDomain}/jobs`,
+    `https://${baseDomain}/careers/`,
+    `https://${baseDomain}/jobs/`,
+    `https://${baseDomain}/about/careers`,
+    `https://${baseDomain}/open-positions`,
+  );
+
+  // Subdomain-based candidates (only if not already a subdomain)
+  if (!isSubdomain) {
+    candidateUrls.push(
+      `https://careers.${rootDomain}`,
+      `https://jobs.${rootDomain}`,
+    );
+  }
+
+  // Limit to 8 attempts max
+  const urls = candidateUrls.slice(0, 8);
+  console.log(`tryCommonCareersUrls: Trying ${urls.length} candidates for ${hostname}`);
+
+  for (const url of urls) {
+    try {
+      // Quick HEAD check first (5s timeout)
+      const headRes = await fetch(url, {
+        method: "HEAD",
+        signal: AbortSignal.timeout(5000),
+        redirect: "follow",
+      });
+
+      if (!headRes.ok) continue;
+
+      // URL is reachable — try platform detection
+      const detection = await detectPlatform(url);
+      if (detection.platformType === "generic") continue;
+
+      console.log(`tryCommonCareersUrls: ${url} → detected ${detection.platformType}`);
+
+      // Platform detected — try scraping
+      const jobs = await scrapeCompanyCareers(url, detection.platformType, detection.platformConfig);
+      if (jobs.length > 0) {
+        console.log(`tryCommonCareersUrls: ${url} → found ${jobs.length} jobs!`);
+        return {
+          careers_url: url,
+          platformType: detection.platformType,
+          platformConfig: detection.platformConfig,
+          jobs,
+        };
+      }
+    } catch {
+      // URL unreachable or scrape failed, try next
+      continue;
+    }
+  }
+
+  console.log(`tryCommonCareersUrls: No successful candidates for ${hostname}`);
+  return null;
 }
 
 // GET /api/companies — list user's subscribed companies
@@ -308,6 +399,7 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
     }
 
     // Detect ATS platform
+    let discoveredCareersUrl: string | undefined;
     let platformType: string | null = null;
     let platformConfig: Record<string, string> = {};
     try {
@@ -360,7 +452,24 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
         }
       }
 
-      // If still 0 jobs after fallback, return error
+      // Try common careers URL paths as a last resort
+      if (rawJobs.length === 0) {
+        console.log(`Check: Still 0 jobs, trying common careers URL paths for ${companyName}`);
+        try {
+          const urlDiscovery = await tryCommonCareersUrls(careers_url);
+          if (urlDiscovery) {
+            console.log(`Check: URL discovery found ${urlDiscovery.jobs.length} jobs at ${urlDiscovery.careers_url}`);
+            rawJobs = urlDiscovery.jobs;
+            platformType = urlDiscovery.platformType;
+            platformConfig = urlDiscovery.platformConfig;
+            discoveredCareersUrl = urlDiscovery.careers_url;
+          }
+        } catch (err) {
+          console.error("Common careers URL discovery failed:", err);
+        }
+      }
+
+      // If still 0 jobs after all fallbacks, return error
       if (rawJobs.length === 0) {
         res.json({
           status: "error",
@@ -392,6 +501,7 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
       quality_score: validation.qualityScore,
       warnings: validation.warnings,
       jobs: filteredJobs,
+      ...(discoveredCareersUrl ? { careers_url: discoveredCareersUrl } : {}),
     });
   } catch (err) {
     Sentry.captureException(err);

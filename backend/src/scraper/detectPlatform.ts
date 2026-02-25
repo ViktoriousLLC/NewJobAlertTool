@@ -111,6 +111,28 @@ export async function detectPlatform(url: string, companyName?: string): Promise
     };
   }
 
+  // SmartRecruiters: jobs.smartrecruiters.com/{company}
+  if (hostname === "jobs.smartrecruiters.com") {
+    const company = parsed.pathname.split("/")[1];
+    if (company) {
+      return {
+        platformType: "smartrecruiters",
+        platformConfig: { company },
+        confidence: "high",
+      };
+    }
+  }
+
+  // iCIMS: *.icims.com
+  if (hostname.endsWith(".icims.com")) {
+    const slug = hostname.replace(/\.icims\.com$/, "").replace(/^careers-/, "");
+    return {
+      platformType: "icims",
+      platformConfig: { company: slug, baseUrl: url },
+      confidence: "high",
+    };
+  }
+
   // Eightfold: *.eightfold.ai
   if (hostname.endsWith(".eightfold.ai")) {
     return {
@@ -286,6 +308,36 @@ function parseHTMLForATS(html: string): PlatformDetectionResult | null {
     };
   }
 
+  // SmartRecruiters embeds
+  const srMatch = html.match(/jobs\.smartrecruiters\.com\/([a-zA-Z0-9._-]+)/);
+  if (srMatch) {
+    return {
+      platformType: "smartrecruiters",
+      platformConfig: { company: srMatch[1] },
+      confidence: "high",
+    };
+  }
+
+  const srApiMatch = html.match(/api\.smartrecruiters\.com\/v1\/companies\/([a-zA-Z0-9._-]+)/);
+  if (srApiMatch) {
+    return {
+      platformType: "smartrecruiters",
+      platformConfig: { company: srApiMatch[1] },
+      confidence: "high",
+    };
+  }
+
+  // iCIMS embeds
+  const icimsMatch = html.match(/([a-zA-Z0-9_-]+)\.icims\.com/);
+  if (icimsMatch) {
+    const slug = icimsMatch[1].replace(/^careers-/, "");
+    return {
+      platformType: "icims",
+      platformConfig: { company: slug, baseUrl: `https://${icimsMatch[0]}` },
+      confidence: "medium",
+    };
+  }
+
   // Eightfold embeds
   const eightfoldMatch = html.match(/([a-zA-Z0-9_-]+)\.eightfold\.ai/);
   if (eightfoldMatch) {
@@ -388,6 +440,27 @@ async function detectWithPuppeteer(url: string): Promise<PlatformDetectionResult
           };
         }
       }
+      if (src.includes("smartrecruiters.com")) {
+        const match = src.match(/jobs\.smartrecruiters\.com\/([a-zA-Z0-9._-]+)/);
+        if (match) {
+          return {
+            platformType: "smartrecruiters",
+            platformConfig: { company: match[1] },
+            confidence: "medium",
+          };
+        }
+      }
+      if (src.includes("icims.com")) {
+        const match = src.match(/([a-zA-Z0-9_-]+)\.icims\.com/);
+        if (match) {
+          const slug = match[1].replace(/^careers-/, "");
+          return {
+            platformType: "icims",
+            platformConfig: { company: slug, baseUrl: `https://${match[0]}` },
+            confidence: "medium",
+          };
+        }
+      }
     }
 
     return null;
@@ -462,6 +535,29 @@ function matchATSNetworkRequest(
     });
     return;
   }
+
+  // SmartRecruiters API: api.smartrecruiters.com/v1/companies/{company}/*
+  const srApiMatch = reqUrl.match(/api\.smartrecruiters\.com\/v1\/companies\/([a-zA-Z0-9._-]+)/);
+  if (srApiMatch) {
+    onMatch({
+      platformType: "smartrecruiters",
+      platformConfig: { company: srApiMatch[1] },
+      confidence: "high",
+    });
+    return;
+  }
+
+  // iCIMS: *.icims.com/jobs/*
+  const icimsMatch = reqUrl.match(/([a-zA-Z0-9_-]+)\.icims\.com\/jobs\//);
+  if (icimsMatch) {
+    const slug = icimsMatch[1].replace(/^careers-/, "");
+    onMatch({
+      platformType: "icims",
+      platformConfig: { company: slug, baseUrl: `https://${icimsMatch[1]}.icims.com` },
+      confidence: "high",
+    });
+    return;
+  }
 }
 
 /**
@@ -515,18 +611,20 @@ async function probeATSApis(hostname: string, companyName?: string): Promise<Pla
 
   console.log(`Platform detection: Probing ATS APIs with slugs: ${slugs.join(", ")}`);
 
-  // Probe all slugs in parallel (both Greenhouse + Lever for each)
+  // Probe all slugs in parallel (Greenhouse + Lever + SmartRecruiters + Ashby for each)
   const probeResults = await Promise.all(
     slugs.map(async (slug) => {
-      const [ghValid, leverValid] = await Promise.all([
+      const [ghValid, leverValid, srValid, ashbyValid] = await Promise.all([
         validateGreenhouseBoard(slug),
         validateLeverHandle(slug),
+        validateSmartRecruitersCompany(slug),
+        validateAshbyOrg(slug),
       ]);
-      return { slug, ghValid, leverValid };
+      return { slug, ghValid, leverValid, srValid, ashbyValid };
     })
   );
 
-  for (const { slug, ghValid, leverValid } of probeResults) {
+  for (const { slug, ghValid, leverValid, srValid, ashbyValid } of probeResults) {
     if (ghValid) {
       console.log(`Platform detection: Greenhouse API probe hit for "${slug}"`);
       return {
@@ -540,6 +638,22 @@ async function probeATSApis(hostname: string, companyName?: string): Promise<Pla
       return {
         platformType: "lever",
         platformConfig: { handle: slug },
+        confidence: "medium",
+      };
+    }
+    if (srValid) {
+      console.log(`Platform detection: SmartRecruiters API probe hit for "${slug}"`);
+      return {
+        platformType: "smartrecruiters",
+        platformConfig: { company: slug },
+        confidence: "medium",
+      };
+    }
+    if (ashbyValid) {
+      console.log(`Platform detection: Ashby API probe hit for "${slug}"`);
+      return {
+        platformType: "ashby",
+        platformConfig: { orgName: slug },
         confidence: "medium",
       };
     }
@@ -571,6 +685,54 @@ export async function validateLeverHandle(handle: string): Promise<boolean> {
       signal: AbortSignal.timeout(10000),
     });
     return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates a SmartRecruiters company slug by checking the public API.
+ */
+export async function validateSmartRecruitersCompany(company: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(company)}/postings?limit=1`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data.totalFound > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates an Ashby org slug by checking the GraphQL API.
+ */
+export async function validateAshbyOrg(orgName: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          operationName: "ApiJobBoardWithTeams",
+          variables: { organizationHostedJobsPageName: orgName },
+          query: `query ApiJobBoardWithTeams($organizationHostedJobsPageName: String!) {
+            jobBoard: jobBoardWithTeams(organizationHostedJobsPageName: $organizationHostedJobsPageName) {
+              teams { id __typename }
+              __typename
+            }
+          }`,
+        }),
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    if (!res.ok) return false;
+    const data = await res.json();
+    return !!data?.data?.jobBoard?.teams;
   } catch {
     return false;
   }
@@ -640,15 +802,17 @@ export async function broadATSDiscovery(
     const batch = slugArray.slice(i, i + BATCH_SIZE);
     const results = await Promise.all(
       batch.map(async (slug) => {
-        const [ghValid, leverValid] = await Promise.all([
+        const [ghValid, leverValid, srValid, ashbyValid] = await Promise.all([
           validateGreenhouseBoard(slug),
           validateLeverHandle(slug),
+          validateSmartRecruitersCompany(slug),
+          validateAshbyOrg(slug),
         ]);
-        return { slug, ghValid, leverValid };
+        return { slug, ghValid, leverValid, srValid, ashbyValid };
       })
     );
 
-    for (const { slug, ghValid, leverValid } of results) {
+    for (const { slug, ghValid, leverValid, srValid, ashbyValid } of results) {
       if (ghValid) {
         console.log(`Broad ATS discovery: Greenhouse hit for "${slug}"`);
         return {
@@ -662,6 +826,22 @@ export async function broadATSDiscovery(
         return {
           platformType: "lever",
           platformConfig: { handle: slug },
+          confidence: "medium" as const,
+        };
+      }
+      if (srValid) {
+        console.log(`Broad ATS discovery: SmartRecruiters hit for "${slug}"`);
+        return {
+          platformType: "smartrecruiters",
+          platformConfig: { company: slug },
+          confidence: "medium" as const,
+        };
+      }
+      if (ashbyValid) {
+        console.log(`Broad ATS discovery: Ashby hit for "${slug}"`);
+        return {
+          platformType: "ashby",
+          platformConfig: { orgName: slug },
           confidence: "medium" as const,
         };
       }

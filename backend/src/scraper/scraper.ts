@@ -1432,6 +1432,206 @@ async function scrapeEightfoldCareers(careersUrl: string): Promise<ScrapedJob[]>
 }
 
 /**
+ * SmartRecruiters public API scraper.
+ * Fetches all postings via paginated GET and filters for PM roles.
+ */
+async function scrapeSmartRecruitersCareers(
+  company: string,
+  companyLabel: string
+): Promise<ScrapedJob[]> {
+  console.log(`${companyLabel}: Fetching jobs from SmartRecruiters API (company: ${company})`);
+
+  const allJobs: ScrapedJob[] = [];
+  let offset = 0;
+  const limit = 100;
+
+  while (true) {
+    const apiUrl = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(company)}/postings?limit=${limit}&offset=${offset}`;
+
+    const response = await fetch(apiUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!response.ok) {
+      if (offset === 0) {
+        throw new Error(`${companyLabel}: SmartRecruiters API returned ${response.status}`);
+      }
+      break;
+    }
+
+    interface SRPosting {
+      id: string;
+      name: string;
+      refNumber?: string;
+      location: {
+        city?: string;
+        region?: string;
+        country?: string;
+        remote?: boolean;
+      };
+      department?: { label?: string };
+      ref: string;
+    }
+
+    interface SRResponse {
+      totalFound: number;
+      content: SRPosting[];
+    }
+
+    const data: SRResponse = await response.json();
+
+    if (offset === 0) {
+      console.log(`${companyLabel}: SmartRecruiters total postings: ${data.totalFound}`);
+    }
+
+    if (!data.content || data.content.length === 0) break;
+
+    for (const posting of data.content) {
+      const lowerTitle = posting.name.toLowerCase();
+      const isPM = PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
+      if (!isPM) continue;
+
+      const locParts: string[] = [];
+      if (posting.location.city) locParts.push(posting.location.city);
+      if (posting.location.region) locParts.push(posting.location.region);
+      if (posting.location.country) locParts.push(posting.location.country);
+      const location = posting.location.remote
+        ? locParts.length > 0 ? `${locParts.join(", ")} (Remote)` : "Remote"
+        : locParts.join(", ");
+
+      allJobs.push({
+        title: posting.name,
+        location,
+        urlPath: `https://jobs.smartrecruiters.com/${encodeURIComponent(company)}/${posting.id}`,
+      });
+    }
+
+    offset += data.content.length;
+    if (offset >= data.totalFound) break;
+
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  console.log(`${companyLabel}: Found ${allJobs.length} PM roles from SmartRecruiters`);
+  return allJobs;
+}
+
+/**
+ * iCIMS ATS scraper (Puppeteer-based).
+ * iCIMS career pages are server-rendered HTML with consistent structure.
+ * Does NOT filter by PM_KEYWORDS — lets validateScrapeResults handle it.
+ */
+async function scrapeICIMSCareers(
+  company: string,
+  baseUrl: string,
+  companyLabel: string
+): Promise<ScrapedJob[]> {
+  console.log(`${companyLabel}: Scraping iCIMS careers page at ${baseUrl}`);
+
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+
+    await page.goto(baseUrl, { waitUntil: "networkidle2", timeout: 60000 });
+
+    // Wait for job listings to load
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // iCIMS has several page structures — try structured extraction first, then generic links
+    const jobs = await page.evaluate((baseUrl: string) => {
+      const results: { title: string; location: string; urlPath: string }[] = [];
+      const seen = new Set<string>();
+
+      // Strategy 1: iCIMS table rows (.iCIMS_JobsTable .row)
+      const tableRows = document.querySelectorAll(".iCIMS_JobsTable .row, .iCIMS_MainWrapper .row");
+      if (tableRows.length > 0) {
+        for (const row of Array.from(tableRows)) {
+          const link = row.querySelector("a[href]");
+          if (!link) continue;
+
+          const href = link.getAttribute("href") || "";
+          if (!href) continue;
+
+          let urlPath: string;
+          try {
+            urlPath = new URL(href, baseUrl).href;
+          } catch {
+            continue;
+          }
+
+          if (seen.has(urlPath)) continue;
+          seen.add(urlPath);
+
+          const title = (link.textContent || "").trim();
+          if (!title || title.length < 3) continue;
+
+          const locEl = row.querySelector(".iCIMS_JobsTable__col--location, [class*='location']");
+          const location = locEl ? (locEl.textContent || "").trim() : "";
+
+          results.push({ title, location, urlPath });
+        }
+      }
+
+      // Strategy 2: Generic job links (href containing /jobs/ on icims.com)
+      if (results.length === 0) {
+        const allLinks = Array.from(document.querySelectorAll("a[href]"));
+        for (const link of allLinks) {
+          const href = link.getAttribute("href") || "";
+          if (!href.includes("/jobs/") && !href.includes("/job/")) continue;
+
+          let urlPath: string;
+          try {
+            urlPath = new URL(href, baseUrl).href;
+          } catch {
+            continue;
+          }
+
+          if (seen.has(urlPath)) continue;
+          seen.add(urlPath);
+
+          const title = (link.textContent || "").trim();
+          if (!title || title.length < 3) continue;
+          if (/^(apply|back|next|previous|search)/i.test(title)) continue;
+
+          // Try to find location from parent container
+          let location = "";
+          const container = link.closest("li, tr, div[class*='job'], div[class*='listing'], article");
+          if (container) {
+            const locEl = container.querySelector("[class*='location'], [class*='loc'], [class*='city']");
+            if (locEl) location = (locEl.textContent || "").trim();
+          }
+
+          results.push({ title, location, urlPath });
+        }
+      }
+
+      return results;
+    }, baseUrl);
+
+    console.log(`${companyLabel}: iCIMS scraper found ${jobs.length} jobs`);
+    return jobs;
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
  * Lever public API scraper (used by Cloudflare, Notion, Databricks, etc.)
  * Fetches all postings via GET and filters for PM roles.
  */
@@ -1744,6 +1944,13 @@ export async function scrapeCompanyCareers(
         break;
       case "eightfold":
         return scrapeEightfoldCareers(platformConfig.careersUrl || careersUrl);
+      case "smartrecruiters":
+        if (platformConfig.company) {
+          return scrapeSmartRecruitersCareers(platformConfig.company, label);
+        }
+        break;
+      case "icims":
+        return scrapeICIMSCareers(platformConfig.company || label, platformConfig.baseUrl || careersUrl, label);
       case "custom_api":
         // Fall through to hostname-based routing below
         break;
@@ -1855,6 +2062,24 @@ export async function scrapeCompanyCareers(
     console.log("Detected Eightfold.ai careers page, using API scraper");
     await browser.close();
     return scrapeEightfoldCareers(careersUrl);
+  }
+
+  // SmartRecruiters: jobs.smartrecruiters.com/{company}
+  if (hostname === "jobs.smartrecruiters.com") {
+    const company = new URL(careersUrl).pathname.split("/")[1];
+    if (company) {
+      console.log(`Detected SmartRecruiters careers page (company: ${company})`);
+      await browser.close();
+      return scrapeSmartRecruitersCareers(company, company);
+    }
+  }
+
+  // iCIMS: *.icims.com
+  if (hostname.endsWith(".icims.com")) {
+    const slug = hostname.replace(/\.icims\.com$/, "").replace(/^careers-/, "");
+    console.log(`Detected iCIMS careers page (company: ${slug})`);
+    await browser.close();
+    return scrapeICIMSCareers(slug, careersUrl, slug);
   }
 
   // Wrap entire generic scraper in 120s timeout to prevent cron hangs

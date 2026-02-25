@@ -9,7 +9,7 @@
  */
 
 export interface ATSRegistryEntry {
-  platformType: "greenhouse" | "greenhouse_departments" | "lever" | "ashby" | "workday";
+  platformType: "greenhouse" | "greenhouse_departments" | "lever" | "ashby" | "workday" | "icims" | "smartrecruiters";
   /** ATS-specific config: boardName for Greenhouse, handle for Lever, etc. */
   platformConfig: Record<string, string>;
   /** Human-readable label for logging */
