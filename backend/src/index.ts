@@ -154,8 +154,9 @@ app.get("/api/cron/trigger", async (req, res) => {
   }
 
   try {
-    await runDailyCheck();
-    res.json({ message: "Daily check completed" });
+    const skipEmails = req.query.skipEmails === "true";
+    await runDailyCheck({ skipEmails });
+    res.json({ message: "Daily check completed", skipEmails });
   } catch (err) {
     Sentry.captureException(err);
     console.error("Daily check failed:", err);

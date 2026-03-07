@@ -324,6 +324,43 @@ export async function notifyAdminOfFailures(result: BatchSendResult): Promise<vo
 }
 
 /**
+ * Send admin a summary of companies that failed during the daily scrape.
+ */
+export async function notifyAdminOfScrapeFailures(
+  totalCompanies: number,
+  failures: { name: string; error: string }[]
+): Promise<void> {
+  if (!process.env.RESEND_API_KEY || failures.length === 0) return;
+
+  const { ADMIN_EMAIL } = await import("../lib/constants");
+  const resend = new Resend(process.env.RESEND_API_KEY);
+
+  const pct = Math.round((failures.length / totalCompanies) * 100);
+  const failureRows = failures
+    .map((f) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(f.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#dc2626;font-size:13px;">${escapeHtml(f.error.slice(0, 200))}</td></tr>`)
+    .join("");
+
+  try {
+    await resend.emails.send({
+      from: "NewPMJobs <alerts@newpmjobs.com>",
+      to: ADMIN_EMAIL,
+      subject: `Scrape Alert: ${failures.length}/${totalCompanies} companies failed (${pct}%)`,
+      html: `
+        <p><strong>${failures.length}</strong> of <strong>${totalCompanies}</strong> companies failed during daily scrape (<strong>${pct}%</strong>).</p>
+        <table style="border-collapse:collapse;width:100%;margin-top:12px;">
+          <tr style="background:#f5f5f4;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">Error</th></tr>
+          ${failureRows}
+        </table>
+        <p style="margin-top:16px;color:#888;font-size:12px;">Check <a href="https://newpmjobs.sentry.io">Sentry</a> for full stack traces.</p>
+      `,
+    });
+    console.log(`Admin scrape failure email sent (${failures.length} failures)`);
+  } catch (err) {
+    console.error("Failed to send admin scrape failure notification:", err);
+  }
+}
+
+/**
  * Send a personalized alert email to a specific user.
  * Use sendBatchAlerts() for bulk sending (daily cron) — this is for one-off sends only.
  */

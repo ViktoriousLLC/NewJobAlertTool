@@ -1,8 +1,9 @@
+import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { broadATSDiscovery } from "../scraper/detectPlatform";
-import { sendBatchAlerts, buildAlertEmailPayload, notifyAdminOfFailures, NewJobAlert, EmailPayload } from "../email/sendAlert";
+import { sendBatchAlerts, buildAlertEmailPayload, notifyAdminOfFailures, notifyAdminOfScrapeFailures, NewJobAlert, EmailPayload } from "../email/sendAlert";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
 
@@ -13,7 +14,7 @@ function delay(ms: number) {
 // Overlap guard: prevent concurrent daily check runs
 let dailyCheckRunning = false;
 
-export async function runDailyCheck(): Promise<void> {
+export async function runDailyCheck(options?: { skipEmails?: boolean }): Promise<void> {
   if (dailyCheckRunning) {
     console.warn("Daily check already running — skipping this trigger to prevent overlap");
     return;
@@ -21,14 +22,14 @@ export async function runDailyCheck(): Promise<void> {
   dailyCheckRunning = true;
 
   try {
-    await runDailyCheckInner();
+    await runDailyCheckInner(options);
   } finally {
     dailyCheckRunning = false;
   }
 }
 
-async function runDailyCheckInner(): Promise<void> {
-  console.log("Starting daily job check...");
+async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<void> {
+  console.log(`Starting daily job check...${options?.skipEmails ? " (skipEmails mode)" : ""}`);
 
   // Scrape all companies so the catalog stays fresh (even with 0 subscribers)
   const { data: companies, error } = await supabase
@@ -48,6 +49,9 @@ async function runDailyCheckInner(): Promise<void> {
     { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }
   > = new Map();
 
+  // Track failures for admin notification + failure threshold
+  const failedCompanies: { name: string; error: string }[] = [];
+
   for (const company of companies) {
     try {
       console.log(`Scraping: ${company.name} (${company.careers_url})`);
@@ -58,8 +62,12 @@ async function runDailyCheckInner(): Promise<void> {
       );
 
       // Zero-result fallback: if generic scraper returned 0 jobs, try broad ATS discovery
+      // Never run broadATSDiscovery on custom scraper companies — their URLs don't map to standard ATS
+      const CUSTOM_SCRAPER_HOSTS = ["ea.com", "atlassian.com", "netflix.net", "netflix.com", "stripe.com", "uber.com", "google.com"];
+      const companyHost = new URL(company.careers_url).hostname;
+      const isCustomScraper = CUSTOM_SCRAPER_HOSTS.some((h) => companyHost.includes(h));
       const isGeneric = !company.platform_type || company.platform_type === "generic";
-      if (rawJobs.length === 0 && isGeneric) {
+      if (rawJobs.length === 0 && isGeneric && !isCustomScraper) {
         console.log(`${company.name}: 0 jobs with generic detection, trying broad ATS discovery...`);
         try {
           const discovery = await broadATSDiscovery(company.careers_url, company.name);
@@ -194,13 +202,20 @@ async function runDailyCheckInner(): Promise<void> {
         newJobs,
       });
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : "unknown";
       console.error(`Error scraping ${company.name}:`, err);
+
+      Sentry.captureException(err, {
+        tags: { company: company.name, phase: "scrape" },
+      });
+
+      failedCompanies.push({ name: company.name, error: errMsg });
 
       await supabase
         .from("companies")
         .update({
           last_checked_at: new Date().toISOString(),
-          last_check_status: `error: ${err instanceof Error ? err.message : "unknown"}`,
+          last_check_status: `error: ${errMsg}`,
         })
         .eq("id", company.id);
 
@@ -216,10 +231,24 @@ async function runDailyCheckInner(): Promise<void> {
   }
 
   // --- Per-user email alerts ---
-  try {
-    await sendPerUserAlerts(companyAlerts);
-  } catch (err) {
-    console.error("Failed to send per-user alerts:", err);
+  if (options?.skipEmails) {
+    console.log("skipEmails=true — skipping per-user email alerts");
+  } else {
+    try {
+      await sendPerUserAlerts(companyAlerts);
+    } catch (err) {
+      console.error("Failed to send per-user alerts:", err);
+    }
+  }
+
+  // Send admin notification if any companies failed
+  if (failedCompanies.length > 0) {
+    console.log(`${failedCompanies.length}/${companies.length} companies failed during scrape`);
+    try {
+      await notifyAdminOfScrapeFailures(companies.length, failedCompanies);
+    } catch (err) {
+      console.error("Failed to send admin scrape failure notification:", err);
+    }
   }
 
   // Refresh compensation data for all active companies
@@ -245,6 +274,15 @@ async function runDailyCheckInner(): Promise<void> {
     .lt("first_seen_at", sixtyDaysAgo.toISOString());
 
   console.log("Daily check complete.");
+
+  // Failure threshold: if >25% of companies failed, throw so cron returns 500
+  if (companies.length > 0 && failedCompanies.length / companies.length > 0.25) {
+    const pct = Math.round((failedCompanies.length / companies.length) * 100);
+    throw new Error(
+      `Daily check failure rate too high: ${failedCompanies.length}/${companies.length} (${pct}%) companies failed. ` +
+      `Failed: ${failedCompanies.map((f) => f.name).join(", ")}`
+    );
+  }
 }
 
 async function sendPerUserAlerts(

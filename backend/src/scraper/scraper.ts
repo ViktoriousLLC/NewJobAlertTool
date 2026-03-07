@@ -1960,48 +1960,32 @@ export async function scrapeCompanyCareers(
     }
   }
 
-  // Hostname-based routing (existing logic, zero regression for existing companies)
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-    ],
-  });
-
+  // --- Hostname-based routing: resolve BEFORE launching Puppeteer ---
   const hostname = new URL(careersUrl).hostname;
 
-  // Custom scrapers — bespoke logic, not ATS-backed (must stay as hostname checks)
+  // Custom scrapers — bespoke logic, not ATS-backed
   if (hostname.includes("ea.com") || hostname.includes("jobs.ea.com")) {
     console.log("Detected EA careers page, using Avature HTML scraper");
-    await browser.close();
     return scrapeEACareers();
   }
   if (hostname.includes("atlassian.com")) {
     console.log("Detected Atlassian careers page, using API scraper");
-    await browser.close();
     return scrapeAtlassianCareers();
   }
   if (hostname.includes("netflix.net") || hostname.includes("netflix.com")) {
     console.log("Detected Netflix careers page, using API scraper");
-    await browser.close();
     return scrapeNetflixCareers(careersUrl);
   }
   if (hostname.includes("stripe.com")) {
     console.log("Detected Stripe careers page, using custom scraper");
-    await browser.close();
     return scrapeStripeCareers();
   }
   if (hostname.includes("uber.com")) {
     console.log("Detected Uber careers page, using API scraper");
-    await browser.close();
     return scrapeUberCareers(careersUrl);
   }
   if (hostname.includes("google.com") && careersUrl.includes("/careers/")) {
     console.log("Detected Google careers page, using custom scraper");
-    await browser.close();
     return scrapeGoogleCareers(careersUrl);
   }
 
@@ -2010,7 +1994,6 @@ export async function scrapeCompanyCareers(
   if (registryEntry) {
     const { platformType: regType, platformConfig: regConfig, label } = registryEntry;
     console.log(`Registry match: ${label} → ${regType} (${JSON.stringify(regConfig)})`);
-    await browser.close();
 
     switch (regType) {
       case "greenhouse":
@@ -2031,7 +2014,6 @@ export async function scrapeCompanyCareers(
     const handle = new URL(careersUrl).pathname.split("/")[1];
     if (handle) {
       console.log(`Detected Lever careers page, using API scraper (handle: ${handle})`);
-      await browser.close();
       return scrapeLeverCareers(handle, handle);
     }
   }
@@ -2041,7 +2023,6 @@ export async function scrapeCompanyCareers(
     const orgName = new URL(careersUrl).pathname.split("/")[1];
     if (orgName && orgName !== "api") {
       console.log(`Detected Ashby careers page, using API scraper (org: ${orgName})`);
-      await browser.close();
       return scrapeAshbyCareers(orgName, orgName);
     }
   }
@@ -2053,14 +2034,12 @@ export async function scrapeCompanyCareers(
     const wdSubdomain = parts[1];
     const wdBoardPath = new URL(careersUrl).pathname.split("/").filter(Boolean)[0] || "";
     console.log(`Detected Workday careers page (${wdTenant}.${wdSubdomain}/${wdBoardPath})`);
-    await browser.close();
     return scrapeWorkdayCareers(wdTenant, wdSubdomain, wdBoardPath, wdTenant);
   }
 
   // Eightfold.ai platform (PayPal, etc.): use their JSON API with pagination
   if (hostname.includes("eightfold.ai")) {
     console.log("Detected Eightfold.ai careers page, using API scraper");
-    await browser.close();
     return scrapeEightfoldCareers(careersUrl);
   }
 
@@ -2069,7 +2048,6 @@ export async function scrapeCompanyCareers(
     const company = new URL(careersUrl).pathname.split("/")[1];
     if (company) {
       console.log(`Detected SmartRecruiters careers page (company: ${company})`);
-      await browser.close();
       return scrapeSmartRecruitersCareers(company, company);
     }
   }
@@ -2078,9 +2056,20 @@ export async function scrapeCompanyCareers(
   if (hostname.endsWith(".icims.com")) {
     const slug = hostname.replace(/\.icims\.com$/, "").replace(/^careers-/, "");
     console.log(`Detected iCIMS careers page (company: ${slug})`);
-    await browser.close();
     return scrapeICIMSCareers(slug, careersUrl, slug);
   }
+
+  // --- Generic Puppeteer fallback: only launch Chrome for truly unknown companies ---
+  console.log(`No ATS match for ${hostname}, falling back to generic Puppeteer scraper`);
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
+  });
 
   // Wrap entire generic scraper in 120s timeout to prevent cron hangs
   const GENERIC_TIMEOUT_MS = 120_000;
