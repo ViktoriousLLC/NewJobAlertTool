@@ -43,7 +43,10 @@ next-env.d.ts
 
 # Internal working docs, tasks, and scripts
 tasks/
-docs/
+docs/*
+!docs/product-development-journey.md
+!docs/project-history.md
+!docs/specs/
 scripts/
 
 # One-off investigation/debug scripts
