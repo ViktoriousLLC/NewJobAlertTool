@@ -1002,7 +1002,7 @@ async function scrapeAshbyCareers(
       jobBoard: {
         teams: AshbyTeam[];
         jobPostings: AshbyJobPosting[];
-      };
+      } | null;
     };
   }
 
@@ -1020,6 +1020,12 @@ async function scrapeAshbyCareers(
   );
 
   const data: AshbyResponse = await response.json();
+
+  if (!data.data?.jobBoard) {
+    console.warn(`${companyLabel}: Ashby API returned null jobBoard (org: ${orgName}) — board may have moved or been renamed`);
+    return [];
+  }
+
   const { teams, jobPostings } = data.data.jobBoard;
 
   console.log(`${companyLabel}: Found ${jobPostings.length} total jobs across ${teams.length} teams`);
