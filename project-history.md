@@ -515,6 +515,20 @@ Three interrelated issues discovered during routine monitoring:
 - Could not trigger manual cron (local CRON_SECRET doesn't match production) — next natural cron at 14:00 UTC will be first run with new code
 - Expected outcome: ~39 companies succeed (vs 22 before), ~6 on generic Puppeteer, admin email if any fail
 
+## Ashby Null JobBoard Fix (2026-03-07)
+
+### Problem
+Sentry alert: `TypeError: Cannot destructure property 'teams' of 'data.data.jobBoard' as it is null` during daily cron. The Ashby GraphQL API returned `jobBoard: null` for Anthropic. Our code destructured `{ teams, jobPostings }` from it without a null check, crashing the Anthropic scrape.
+
+### Root Cause
+Missing defensive null check. The Ashby API returned HTTP 200 with valid JSON, but the `jobBoard` field was null (likely a transient API hiccup). The code blindly assumed the response shape would always contain a populated `jobBoard` object.
+
+### Fix
+Added null guard before destructuring: if `data.data.jobBoard` is null, log a warning and return an empty job array. The cron continues processing all other companies normally.
+
+### Lesson
+External APIs can return null payloads with HTTP 200. Always null-check before destructuring API response objects. Added this as a gotcha in CLAUDE.md to catch similar patterns in other scrapers (Greenhouse, Lever, etc.).
+
 ## Multi-User Overhaul Status
 
 The app was converted from single-user to multi-user in Feb 2026. Key changes:

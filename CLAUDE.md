@@ -240,6 +240,7 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - **Local .env**: Placeholder keys only. Production keys on Railway.
 - **broadATSDiscovery overwrite**: Can silently change a custom scraper company's `platform_type` if a matching ATS board exists (e.g., Greenhouse board "stripe"). Guarded by `CUSTOM_SCRAPER_HOSTS` blocklist in `dailyCheck.ts`. Never remove this guard.
 - **Local CRON_SECRET mismatch**: The local `.env` CRON_SECRET doesn't match Railway production. Can't trigger manual cron from local — use Railway dashboard or wait for scheduled run.
+- **ATS API null responses**: External APIs (Ashby, Greenhouse, etc.) can return null payloads on transient failures even with HTTP 200. Always null-check before destructuring API response objects.
 
 ## Check-Then-Add Flow
 
