@@ -85,6 +85,12 @@ const ATS_REGISTRY: Record<string, ATSRegistryEntry> = {
     label: "Roblox",
   },
 
+  "anthropic.com": {
+    platformType: "greenhouse",
+    platformConfig: { boardName: "anthropic" },
+    label: "Anthropic",
+  },
+
   // Ashby
   "openai.com": {
     platformType: "ashby",
