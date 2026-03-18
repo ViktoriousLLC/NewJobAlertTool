@@ -102,6 +102,19 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
       }
       console.log(`Found ${jobs.length} product jobs for ${company.name} (${rawJobs.length} raw)`);
 
+      // Treat quality 0 as a failure — scraper returned data but nothing usable
+      if (validation.qualityScore === 0) {
+        const reason = rawJobs.length === 0
+          ? "scrape returned 0 jobs (possible platform change or broken scraper)"
+          : `scrape returned ${rawJobs.length} raw jobs but 0 passed PM filter`;
+        console.warn(`QUALITY FAILURE: ${company.name} — ${reason}`);
+        Sentry.captureMessage(`Quality 0/100 for ${company.name}: ${reason}`, {
+          level: "warning",
+          tags: { company: company.name, phase: "quality" },
+        });
+        failedCompanies.push({ name: company.name, error: reason });
+      }
+
       // Get existing active jobs for this company
       const { data: existingJobs } = await supabase
         .from("seen_jobs")
