@@ -1344,8 +1344,13 @@ async function scrapeNetflixCareers(careersUrl: string): Promise<ScrapedJob[]> {
  */
 async function scrapeEightfoldCareers(careersUrl: string): Promise<ScrapedJob[]> {
   const url = new URL(careersUrl);
-  const domain = url.hostname.split(".")[0] + ".com"; // e.g., "paypal.com"
-  const baseOrigin = url.origin; // e.g., "https://paypal.eightfold.ai"
+  // Extract company domain: "paypal.eightfold.ai" → "paypal.com"
+  // For custom domains like "apply.careers.microsoft.com", extract the main domain
+  const hostParts = url.hostname.split(".");
+  const domain = hostParts.includes("eightfold")
+    ? hostParts[0] + ".com"
+    : hostParts.slice(-2).join("."); // e.g., "microsoft.com"
+  const baseOrigin = url.origin;
 
   // Extract filter parameters from the careers URL
   const location = url.searchParams.get("location") || "";
