@@ -61,21 +61,22 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         company.platform_config || null
       );
 
-      // Zero-result fallback: if generic scraper returned 0 jobs, try broad ATS discovery
+      // Zero-result fallback: try broad ATS discovery to auto-remediate
+      // Covers both generic companies AND companies whose known platform broke (e.g., Ashby → Greenhouse)
       // Never run broadATSDiscovery on custom scraper companies — their URLs don't map to standard ATS
       const CUSTOM_SCRAPER_HOSTS = ["ea.com", "atlassian.com", "netflix.net", "netflix.com", "stripe.com", "uber.com", "google.com"];
       const companyHost = new URL(company.careers_url).hostname;
       const isCustomScraper = CUSTOM_SCRAPER_HOSTS.some((h) => companyHost.includes(h));
-      const isGeneric = !company.platform_type || company.platform_type === "generic";
-      if (rawJobs.length === 0 && isGeneric && !isCustomScraper) {
-        console.log(`${company.name}: 0 jobs with generic detection, trying broad ATS discovery...`);
+      if (rawJobs.length === 0 && !isCustomScraper) {
+        const prevPlatform = company.platform_type || "generic";
+        console.log(`${company.name}: 0 jobs with ${prevPlatform} scraper, trying broad ATS discovery...`);
         try {
           const discovery = await broadATSDiscovery(company.careers_url, company.name);
-          if (discovery) {
-            console.log(`${company.name}: Broad discovery found ${discovery.platformType} (${JSON.stringify(discovery.platformConfig)})`);
+          if (discovery && discovery.platformType !== company.platform_type) {
+            console.log(`${company.name}: Broad discovery found NEW platform ${discovery.platformType} (was: ${prevPlatform})`);
             // Re-scrape with discovered platform
             rawJobs = await scrapeCompanyCareers(company.careers_url, discovery.platformType, discovery.platformConfig);
-            console.log(`${company.name}: Re-scrape found ${rawJobs.length} raw jobs`);
+            console.log(`${company.name}: Re-scrape with ${discovery.platformType} found ${rawJobs.length} raw jobs`);
 
             // Auto-update platform_type + platform_config so future scrapes work directly
             if (rawJobs.length > 0) {
@@ -86,7 +87,11 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
                   platform_config: discovery.platformConfig,
                 })
                 .eq("id", company.id);
-              console.log(`${company.name}: Updated platform to ${discovery.platformType}`);
+              console.log(`${company.name}: AUTO-REMEDIATED platform ${prevPlatform} → ${discovery.platformType}`);
+              Sentry.captureMessage(`Auto-remediated ${company.name}: ${prevPlatform} → ${discovery.platformType}`, {
+                level: "info",
+                tags: { company: company.name, phase: "auto-remediation" },
+              });
             }
           }
         } catch (err) {
@@ -102,15 +107,13 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
       }
       console.log(`Found ${jobs.length} product jobs for ${company.name} (${rawJobs.length} raw)`);
 
-      // Treat quality 0 as a failure — scraper returned data but nothing usable
-      if (validation.qualityScore === 0) {
-        const reason = rawJobs.length === 0
-          ? "scrape returned 0 jobs (possible platform change or broken scraper)"
-          : `scrape returned ${rawJobs.length} raw jobs but 0 passed PM filter`;
-        console.warn(`QUALITY FAILURE: ${company.name} — ${reason}`);
-        Sentry.captureMessage(`Quality 0/100 for ${company.name}: ${reason}`, {
+      // Alert on scraper failures (0 raw jobs), but not on legit "no PM roles" (jobs exist, none match PM filter)
+      if (rawJobs.length === 0) {
+        const reason = "scrape returned 0 raw jobs (possible platform change or API down)";
+        console.warn(`SCRAPE FAILURE: ${company.name} — ${reason}`);
+        Sentry.captureMessage(`Scrape failure for ${company.name}: ${reason}`, {
           level: "warning",
-          tags: { company: company.name, phase: "quality" },
+          tags: { company: company.name, phase: "scrape-zero" },
         });
         failedCompanies.push({ name: company.name, error: reason });
       }
