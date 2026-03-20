@@ -328,33 +328,64 @@ export async function notifyAdminOfFailures(result: BatchSendResult): Promise<vo
  */
 export async function notifyAdminOfScrapeFailures(
   totalCompanies: number,
-  failures: { name: string; error: string }[]
+  failures: { name: string; error: string }[],
+  remediations?: { name: string; from: string; to: string }[]
 ): Promise<void> {
-  if (!process.env.RESEND_API_KEY || failures.length === 0) return;
+  if (!process.env.RESEND_API_KEY || (failures.length === 0 && (!remediations || remediations.length === 0))) return;
 
   const { ADMIN_EMAIL } = await import("../lib/constants");
   const resend = new Resend(process.env.RESEND_API_KEY);
 
-  const pct = Math.round((failures.length / totalCompanies) * 100);
+  const fixedCount = remediations?.length || 0;
+  const stillBroken = failures.length;
+
+  // Build remediation rows (green, auto-fixed)
+  const remediationRows = (remediations || [])
+    .map((r) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(r.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#16a34a;font-size:13px;">Auto-fixed: ${escapeHtml(r.from)} → ${escapeHtml(r.to)}</td></tr>`)
+    .join("");
+
+  // Build failure rows (red, still broken)
   const failureRows = failures
     .map((f) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(f.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#dc2626;font-size:13px;">${escapeHtml(f.error.slice(0, 200))}</td></tr>`)
     .join("");
+
+  // Build subject line
+  const parts: string[] = [];
+  if (fixedCount > 0) parts.push(`${fixedCount} auto-fixed`);
+  if (stillBroken > 0) parts.push(`${stillBroken} still broken`);
+  const subject = fixedCount > 0 && stillBroken === 0
+    ? `Scrape Report: ${fixedCount} issues auto-fixed ✓`
+    : `Scrape Alert: ${parts.join(", ")}`;
+
+  // Build HTML sections
+  let html = "";
+  if (fixedCount > 0) {
+    html += `
+      <p style="color:#16a34a;font-weight:bold;">✓ Auto-fixed (${fixedCount})</p>
+      <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
+        <tr style="background:#f0fdf4;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">What happened</th></tr>
+        ${remediationRows}
+      </table>`;
+  }
+  if (stillBroken > 0) {
+    const pct = Math.round((stillBroken / totalCompanies) * 100);
+    html += `
+      <p style="color:#dc2626;font-weight:bold;">✗ Still needs attention (${stillBroken} — ${pct}%)</p>
+      <table style="border-collapse:collapse;width:100%;margin-top:4px;">
+        <tr style="background:#fef2f2;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">Error</th></tr>
+        ${failureRows}
+      </table>`;
+  }
+  html += `<p style="margin-top:16px;color:#888;font-size:12px;">Check <a href="https://newpmjobs.sentry.io">Sentry</a> for full stack traces.</p>`;
 
   try {
     await resend.emails.send({
       from: "NewPMJobs <alerts@newpmjobs.com>",
       to: ADMIN_EMAIL,
-      subject: `Scrape Alert: ${failures.length}/${totalCompanies} companies failed (${pct}%)`,
-      html: `
-        <p><strong>${failures.length}</strong> of <strong>${totalCompanies}</strong> companies failed during daily scrape (<strong>${pct}%</strong>).</p>
-        <table style="border-collapse:collapse;width:100%;margin-top:12px;">
-          <tr style="background:#f5f5f4;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">Error</th></tr>
-          ${failureRows}
-        </table>
-        <p style="margin-top:16px;color:#888;font-size:12px;">Check <a href="https://newpmjobs.sentry.io">Sentry</a> for full stack traces.</p>
-      `,
+      subject,
+      html,
     });
-    console.log(`Admin scrape failure email sent (${failures.length} failures)`);
+    console.log(`Admin scrape email sent (${fixedCount} fixed, ${stillBroken} still broken)`);
   } catch (err) {
     console.error("Failed to send admin scrape failure notification:", err);
   }

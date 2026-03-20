@@ -49,8 +49,9 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
     { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }
   > = new Map();
 
-  // Track failures for admin notification + failure threshold
+  // Track failures and auto-remediations for admin notification
   const failedCompanies: { name: string; error: string }[] = [];
+  const autoRemediated: { name: string; from: string; to: string }[] = [];
 
   for (const company of companies) {
     try {
@@ -88,6 +89,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
                 })
                 .eq("id", company.id);
               console.log(`${company.name}: AUTO-REMEDIATED platform ${prevPlatform} → ${discovery.platformType}`);
+              autoRemediated.push({ name: company.name, from: prevPlatform, to: discovery.platformType });
               Sentry.captureMessage(`Auto-remediated ${company.name}: ${prevPlatform} → ${discovery.platformType}`, {
                 level: "info",
                 tags: { company: company.name, phase: "auto-remediation" },
@@ -257,11 +259,11 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
     }
   }
 
-  // Send admin notification if any companies failed
-  if (failedCompanies.length > 0) {
-    console.log(`${failedCompanies.length}/${companies.length} companies failed during scrape`);
+  // Send admin notification if any companies failed or were auto-fixed
+  if (failedCompanies.length > 0 || autoRemediated.length > 0) {
+    console.log(`${failedCompanies.length} failed, ${autoRemediated.length} auto-remediated out of ${companies.length} companies`);
     try {
-      await notifyAdminOfScrapeFailures(companies.length, failedCompanies);
+      await notifyAdminOfScrapeFailures(companies.length, failedCompanies, autoRemediated);
     } catch (err) {
       console.error("Failed to send admin scrape failure notification:", err);
     }
