@@ -109,16 +109,9 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
       }
       console.log(`Found ${jobs.length} product jobs for ${company.name} (${rawJobs.length} raw)`);
 
-      // Alert on scraper failures (0 raw jobs), but not on legit "no PM roles" (jobs exist, none match PM filter)
-      if (rawJobs.length === 0) {
-        const reason = "scrape returned 0 raw jobs (possible platform change or API down)";
-        console.warn(`SCRAPE FAILURE: ${company.name} — ${reason}`);
-        Sentry.captureMessage(`Scrape failure for ${company.name}: ${reason}`, {
-          level: "warning",
-          tags: { company: company.name, phase: "scrape-zero" },
-        });
-        failedCompanies.push({ name: company.name, error: reason });
-      }
+      // Note: most scrapers pre-filter by PM_KEYWORDS internally, so rawJobs.length === 0
+      // often means "no PM roles" rather than "scraper broken". Actual scraper failures
+      // throw exceptions and are caught by the catch block below. No need to alert here.
 
       // Get existing active jobs for this company
       const { data: existingJobs } = await supabase

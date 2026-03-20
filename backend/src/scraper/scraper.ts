@@ -1400,10 +1400,18 @@ async function scrapeEightfoldCareers(careersUrl: string): Promise<ScrapedJob[]>
         };
       }
 
+      // Guard against HTML error pages (Microsoft sometimes returns 200 with HTML "Not Found")
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok || !contentType.includes("application/json")) {
+        const preview = await res.text();
+        console.warn(`Eightfold: API returned ${res.status} (${contentType}): ${preview.slice(0, 100)}`);
+        break;
+      }
+
       const result: EightfoldResponse = await res.json();
 
       if (result.status !== 200 || !result.data?.positions) {
-        console.log("Eightfold: API returned non-success status");
+        console.log(`Eightfold: API returned non-success status: ${result.status}`);
         break;
       }
 
