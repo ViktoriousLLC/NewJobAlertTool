@@ -3,9 +3,10 @@ import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { broadATSDiscovery } from "../scraper/detectPlatform";
-import { sendBatchAlerts, buildAlertEmailPayload, notifyAdminOfFailures, notifyAdminOfScrapeFailures, NewJobAlert, EmailPayload } from "../email/sendAlert";
+import { sendBatchAlerts, buildAlertEmailPayload, notifyAdminOfFailures, notifyAdminOfScrapeFailures, notifyAdminOfQualityReport, NewJobAlert, EmailPayload } from "../email/sendAlert";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
+import { evaluateDailyQuality, CompanyQualityData } from "../scraper/dailyEval";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -52,6 +53,9 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
   // Track failures and auto-remediations for admin notification
   const failedCompanies: { name: string; error: string }[] = [];
   const autoRemediated: { name: string; from: string; to: string }[] = [];
+
+  // Collect quality data for daily eval
+  const qualityData: Map<string, CompanyQualityData> = new Map();
 
   for (const company of companies) {
     try {
@@ -212,6 +216,17 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         careersUrl: company.careers_url,
         newJobs,
       });
+
+      // Collect quality data for daily eval
+      qualityData.set(company.id, {
+        companyName: company.name,
+        prevJobCount: company.total_product_jobs ?? 0,
+        currentJobCount: activeJobCount ?? 0,
+        nonUsFiltered: validation.nonUsFilteredCount,
+        totalPmJobs: validation.totalPmJobs,
+        qualityScore: validation.qualityScore,
+        subscriberCount: company.subscriber_count ?? 0,
+      });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : "unknown";
       console.error(`Error scraping ${company.name}:`, err);
@@ -239,6 +254,16 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
 
     // Delay between companies to avoid rate limiting
     await delay(5000);
+  }
+
+  // --- Daily Quality Evaluation ---
+  console.log("Running daily quality evaluation...");
+  const evalResult = evaluateDailyQuality(qualityData);
+  console.log(`Daily eval: ${evalResult.issues.length} issues found (${evalResult.totalUsJobs} US jobs, ${evalResult.totalNonUsFiltered} non-US filtered)`);
+  try {
+    await notifyAdminOfQualityReport(evalResult);
+  } catch (err) {
+    console.error("Failed to send daily eval report:", err);
   }
 
   // --- Per-user email alerts ---

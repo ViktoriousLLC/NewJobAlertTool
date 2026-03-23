@@ -424,3 +424,85 @@ export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
   }
   await sendUserAlert(process.env.ALERT_RECIPIENT_EMAIL, alerts);
 }
+
+/**
+ * Send admin the daily quality evaluation report.
+ * Always sends (even when all clear) so the admin knows the eval ran.
+ */
+export async function notifyAdminOfQualityReport(evalResult: {
+  companiesChecked: number;
+  totalUsJobs: number;
+  totalNonUsFiltered: number;
+  avgQualityScore: number;
+  issues: { company: string; checkType: string; severity: string; message: string }[];
+}): Promise<void> {
+  if (!process.env.RESEND_API_KEY) return;
+
+  const { ADMIN_EMAIL } = await import("../lib/constants");
+  const resend = new Resend(process.env.RESEND_API_KEY);
+
+  const { companiesChecked, totalUsJobs, totalNonUsFiltered, avgQualityScore, issues } = evalResult;
+  const issueCount = issues.length;
+  const criticalCount = issues.filter((i) => i.severity === "critical").length;
+
+  const subject = issueCount === 0
+    ? `Daily Eval: All clear (${companiesChecked} companies, ${totalUsJobs} US jobs)`
+    : `Daily Eval: ${issueCount} issue${issueCount === 1 ? "" : "s"} found${criticalCount > 0 ? ` (${criticalCount} critical)` : ""}`;
+
+  // Summary stats
+  let html = `
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+      <h2 style="margin:0 0 16px 0;color:#1A1A2E;">Daily Quality Evaluation</h2>
+      <table style="border-collapse:collapse;margin-bottom:20px;">
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Companies checked</td><td style="font-weight:bold;">${companiesChecked}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Total US PM jobs</td><td style="font-weight:bold;">${totalUsJobs}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Non-US jobs filtered</td><td style="font-weight:bold;">${totalNonUsFiltered}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Avg quality score</td><td style="font-weight:bold;">${avgQualityScore}/100</td></tr>
+      </table>`;
+
+  if (issueCount === 0) {
+    html += `<p style="color:#16a34a;font-weight:bold;font-size:16px;">All clear. No quality issues detected.</p>`;
+  } else {
+    // Group by severity
+    const severityOrder = ["critical", "warning", "info"];
+    const severityColors: Record<string, string> = { critical: "#dc2626", warning: "#d97706", info: "#6b7280" };
+    const severityBg: Record<string, string> = { critical: "#fef2f2", warning: "#fffbeb", info: "#f9fafb" };
+
+    html += `<table style="border-collapse:collapse;width:100%;">
+      <tr style="background:#f5f5f4;">
+        <th style="padding:8px;text-align:left;border-bottom:2px solid #e7e5e4;">Company</th>
+        <th style="padding:8px;text-align:left;border-bottom:2px solid #e7e5e4;">Check</th>
+        <th style="padding:8px;text-align:left;border-bottom:2px solid #e7e5e4;">Severity</th>
+        <th style="padding:8px;text-align:left;border-bottom:2px solid #e7e5e4;">Details</th>
+      </tr>`;
+
+    const sorted = [...issues].sort(
+      (a, b) => severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity)
+    );
+    for (const issue of sorted) {
+      const color = severityColors[issue.severity] || "#6b7280";
+      const bg = severityBg[issue.severity] || "#f9fafb";
+      html += `<tr style="background:${bg};">
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(issue.company)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(issue.checkType)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:${color};font-weight:bold;text-transform:uppercase;font-size:12px;">${issue.severity}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;font-size:13px;">${escapeHtml(issue.message)}</td>
+      </tr>`;
+    }
+    html += `</table>`;
+  }
+
+  html += `<p style="margin-top:20px;color:#a8a29e;font-size:12px;">This report runs automatically after the daily cron scrape.</p></div>`;
+
+  try {
+    await resend.emails.send({
+      from: "NewPMJobs <alerts@newpmjobs.com>",
+      to: ADMIN_EMAIL,
+      subject,
+      html,
+    });
+    console.log(`Daily eval report sent: ${issueCount} issues`);
+  } catch (err) {
+    console.error("Failed to send daily eval report:", err);
+  }
+}

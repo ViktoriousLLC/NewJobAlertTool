@@ -1,4 +1,5 @@
 import { ScrapedJob, PM_KEYWORDS } from "./scraper";
+import { isUSLocation } from "../lib/locationFilter";
 
 /**
  * If a title contains ANY of these words, it is NOT a PM role — no exceptions.
@@ -47,6 +48,8 @@ export interface ValidationResult {
   warnings: string[];
   qualityScore: number;
   filteredJobs: ScrapedJob[];
+  totalPmJobs: number;         // PM jobs before location filter
+  nonUsFilteredCount: number;  // how many non-US jobs were removed
 }
 
 /**
@@ -76,6 +79,8 @@ export function validateScrapeResults(
       warnings: [`${companyName}: Scrape returned 0 jobs — possible scraper failure`],
       qualityScore: 0,
       filteredJobs: [],
+      totalPmJobs: 0,
+      nonUsFilteredCount: 0,
     };
   }
 
@@ -87,12 +92,20 @@ export function validateScrapeResults(
     warnings.push(
       `${companyName}: Filtered out ${nonPmCount} non-PM jobs (${jobs.length} total → ${pmJobs.length} PM)`
     );
-    // Deduct proportionally, but not too harshly
     score -= Math.min(20, Math.round((nonPmCount / jobs.length) * 30));
   }
 
-  // Location quality check
-  const vagueLocationCount = pmJobs.filter((job) => {
+  // US location filter: only keep jobs in US locations
+  const usJobs = pmJobs.filter((job) => isUSLocation(job.location));
+  const nonUsCount = pmJobs.length - usJobs.length;
+  if (nonUsCount > 0) {
+    warnings.push(
+      `${companyName}: Filtered out ${nonUsCount} non-US jobs (${pmJobs.length} PM total → ${usJobs.length} US)`
+    );
+  }
+
+  // Location quality check (on US jobs only)
+  const vagueLocationCount = usJobs.filter((job) => {
     const loc = (job.location || "").trim();
     return (
       !loc ||
@@ -103,16 +116,16 @@ export function validateScrapeResults(
     );
   }).length;
 
-  if (pmJobs.length > 0 && vagueLocationCount / pmJobs.length > 0.5) {
+  if (usJobs.length > 0 && vagueLocationCount / usJobs.length > 0.5) {
     warnings.push(
-      `${companyName}: ${vagueLocationCount}/${pmJobs.length} jobs have vague or missing locations`
+      `${companyName}: ${vagueLocationCount}/${usJobs.length} jobs have vague or missing locations`
     );
     score -= 15;
   }
 
   // Duplicate detection
   const titleCounts = new Map<string, number>();
-  for (const job of pmJobs) {
+  for (const job of usJobs) {
     const normalizedTitle = job.title.toLowerCase().trim();
     titleCounts.set(normalizedTitle, (titleCounts.get(normalizedTitle) || 0) + 1);
   }
@@ -120,7 +133,7 @@ export function validateScrapeResults(
     (sum, count) => sum + (count > 1 ? count - 1 : 0),
     0
   );
-  if (pmJobs.length > 0 && duplicateCount / pmJobs.length > 0.2) {
+  if (usJobs.length > 0 && duplicateCount / usJobs.length > 0.2) {
     warnings.push(
       `${companyName}: ${duplicateCount} duplicate job titles detected`
     );
@@ -128,7 +141,7 @@ export function validateScrapeResults(
   }
 
   // URL validity check
-  const badUrlCount = pmJobs.filter((job) => {
+  const badUrlCount = usJobs.filter((job) => {
     try {
       const url = new URL(job.urlPath);
       return url.protocol !== "https:" && url.protocol !== "http:";
@@ -150,6 +163,8 @@ export function validateScrapeResults(
     isValid: true,
     warnings,
     qualityScore: score,
-    filteredJobs: pmJobs,
+    filteredJobs: usJobs,
+    totalPmJobs: pmJobs.length,
+    nonUsFilteredCount: nonUsCount,
   };
 }
