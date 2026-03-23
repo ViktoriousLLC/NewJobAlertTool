@@ -10,6 +10,20 @@ const US_PATTERNS = [
 
 export function isUSLocation(location: string | null): boolean {
   if (!location || !location.trim()) return true; // Show jobs with unknown location
+
+  // Check for standardized "City, Region, CountryCode" format (Eightfold, etc.)
+  // US locations end with ", US"; any other 2-letter code is non-US.
+  const segments = location.split("|");
+  for (const seg of segments) {
+    const parts = seg.split(",").map((p) => p.trim());
+    if (parts.length >= 3) {
+      const lastPart = parts[parts.length - 1];
+      if (/^[A-Z]{2}$/.test(lastPart) && lastPart !== "US") {
+        return false;
+      }
+    }
+  }
+
   return US_PATTERNS.some((pattern) => pattern.test(location));
 }
 

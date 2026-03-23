@@ -17,7 +17,7 @@ const US_PATTERNS = [
 
 // Non-US location patterns — if ANY match, the job is definitely not US
 const NON_US_PATTERNS = [
-  /\bIndia\b/i, /\bBangalore\b/i, /\bHyderabad\b/i, /\bMumbai\b/i, /\bDelhi\b/i, /\bPune\b/i, /\bGurgaon\b/i, /\bNoida\b/i, /\bChennai\b/i,
+  /\bIndia\b/i, /\bBangalore\b/i, /\bBengaluru\b/i, /\bHyderabad\b/i, /\bMumbai\b/i, /\bDelhi\b/i, /\bPune\b/i, /\bGurgaon\b/i, /\bGurugram\b/i, /\bNoida\b/i, /\bChennai\b/i, /\bKolkata\b/i, /\bKarnataka\b/i, /\bTelangana\b/i,
   /\bUnited Kingdom\b/i, /\bUK\b/, /\bLondon\b/i, /\bManchester\b/i, /\bEdinburgh\b/i,
   /\bGermany\b/i, /\bBerlin\b/i, /\bMunich\b/i, /\bFrankfurt\b/i,
   /\bFrance\b/i, /\bParis\b/i,
@@ -51,13 +51,27 @@ const NON_US_PATTERNS = [
 export function isUSLocation(location: string | null): boolean {
   if (!location || !location.trim()) return true; // Unknown location — include by default
 
-  // First check: if it explicitly matches a non-US pattern, reject it
+  // Check for standardized "City, Region, CountryCode" format (Eightfold, etc.)
+  // US locations end with ", US"; any other 2-letter code is non-US.
+  // Split on pipe for multi-location strings (e.g., "Bengaluru, KA, IN | Hyderabad, TS, IN")
+  const segments = location.split("|");
+  for (const seg of segments) {
+    const parts = seg.split(",").map((p) => p.trim());
+    if (parts.length >= 3) {
+      const lastPart = parts[parts.length - 1];
+      if (/^[A-Z]{2}$/.test(lastPart) && lastPart !== "US") {
+        return false;
+      }
+    }
+  }
+
+  // Second check: if it explicitly matches a non-US pattern, reject it
   // e.g., "Bangalore, India" or "Remote - London" → non-US
   if (NON_US_PATTERNS.some((pattern) => pattern.test(location))) {
     return false;
   }
 
-  // Second check: matches a known US pattern
+  // Third check: matches a known US pattern
   // e.g., "San Francisco, CA" or "Remote" or "United States"
   if (US_PATTERNS.some((pattern) => pattern.test(location))) {
     return true;
