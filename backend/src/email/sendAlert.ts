@@ -427,6 +427,7 @@ export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
 
 /**
  * Send admin the daily quality evaluation report.
+ * Shows per-company scorecard: companies with issues at top, clean ones at bottom.
  * Always sends (even when all clear) so the admin knows the eval ran.
  */
 export async function notifyAdminOfQualityReport(evalResult: {
@@ -435,64 +436,107 @@ export async function notifyAdminOfQualityReport(evalResult: {
   totalNonUsFiltered: number;
   avgQualityScore: number;
   issues: { company: string; checkType: string; severity: string; message: string }[];
+  companyStatuses: {
+    companyName: string;
+    usJobs: number;
+    nonUsFiltered: number;
+    totalPmJobs: number;
+    prevJobCount: number;
+    qualityScore: number;
+    subscriberCount: number;
+    issues: { company: string; checkType: string; severity: string; message: string }[];
+  }[];
 }): Promise<void> {
   if (!process.env.RESEND_API_KEY) return;
 
   const { ADMIN_EMAIL } = await import("../lib/constants");
   const resend = new Resend(process.env.RESEND_API_KEY);
 
-  const { companiesChecked, totalUsJobs, totalNonUsFiltered, avgQualityScore, issues } = evalResult;
+  const { companiesChecked, totalUsJobs, totalNonUsFiltered, avgQualityScore, issues, companyStatuses } = evalResult;
   const issueCount = issues.length;
   const criticalCount = issues.filter((i) => i.severity === "critical").length;
+  const companiesWithIssues = companyStatuses.filter((c) => c.issues.length > 0).length;
 
   const subject = issueCount === 0
     ? `Daily Eval: All clear (${companiesChecked} companies, ${totalUsJobs} US jobs)`
-    : `Daily Eval: ${issueCount} issue${issueCount === 1 ? "" : "s"} found${criticalCount > 0 ? ` (${criticalCount} critical)` : ""}`;
+    : `Daily Eval: ${issueCount} issue${issueCount === 1 ? "" : "s"} across ${companiesWithIssues} compan${companiesWithIssues === 1 ? "y" : "ies"}${criticalCount > 0 ? ` (${criticalCount} critical)` : ""}`;
+
+  const font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif";
+  const severityColors: Record<string, string> = { critical: "#dc2626", warning: "#d97706", info: "#6b7280" };
 
   // Summary stats
   let html = `
-    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <div style="font-family:${font};max-width:700px;">
       <h2 style="margin:0 0 16px 0;color:#1A1A2E;">Daily Quality Evaluation</h2>
-      <table style="border-collapse:collapse;margin-bottom:20px;">
-        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Companies checked</td><td style="font-weight:bold;">${companiesChecked}</td></tr>
-        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Total US PM jobs</td><td style="font-weight:bold;">${totalUsJobs}</td></tr>
-        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Non-US jobs filtered</td><td style="font-weight:bold;">${totalNonUsFiltered}</td></tr>
-        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Avg quality score</td><td style="font-weight:bold;">${avgQualityScore}/100</td></tr>
+      <table style="border-collapse:collapse;margin-bottom:24px;">
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;font-size:14px;">Companies checked</td><td style="font-weight:bold;font-size:14px;">${companiesChecked}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;font-size:14px;">Total US PM jobs</td><td style="font-weight:bold;font-size:14px;">${totalUsJobs}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;font-size:14px;">Non-US jobs filtered out</td><td style="font-weight:bold;font-size:14px;">${totalNonUsFiltered}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;font-size:14px;">Avg quality score</td><td style="font-weight:bold;font-size:14px;">${avgQualityScore}/100</td></tr>
       </table>`;
 
-  if (issueCount === 0) {
-    html += `<p style="color:#16a34a;font-weight:bold;font-size:16px;">All clear. No quality issues detected.</p>`;
-  } else {
-    // Group by severity
-    const severityOrder = ["critical", "warning", "info"];
-    const severityColors: Record<string, string> = { critical: "#dc2626", warning: "#d97706", info: "#6b7280" };
-    const severityBg: Record<string, string> = { critical: "#fef2f2", warning: "#fffbeb", info: "#f9fafb" };
+  // Per-company scorecard (already sorted: issues first, clean last)
+  html += `
+      <h3 style="margin:0 0 8px 0;color:#1A1A2E;">Company Scorecard</h3>
+      <table style="border-collapse:collapse;width:100%;font-size:13px;">
+        <tr style="background:#f5f5f4;">
+          <th style="padding:8px 6px;text-align:left;border-bottom:2px solid #d6d3d1;">Company</th>
+          <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #d6d3d1;">US Jobs</th>
+          <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #d6d3d1;">Non-US Cut</th>
+          <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #d6d3d1;">Prev</th>
+          <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #d6d3d1;">Quality</th>
+          <th style="padding:8px 6px;text-align:left;border-bottom:2px solid #d6d3d1;">Status</th>
+        </tr>`;
 
-    html += `<table style="border-collapse:collapse;width:100%;">
-      <tr style="background:#f5f5f4;">
-        <th style="padding:8px;text-align:left;border-bottom:2px solid #e7e5e4;">Company</th>
-        <th style="padding:8px;text-align:left;border-bottom:2px solid #e7e5e4;">Check</th>
-        <th style="padding:8px;text-align:left;border-bottom:2px solid #e7e5e4;">Severity</th>
-        <th style="padding:8px;text-align:left;border-bottom:2px solid #e7e5e4;">Details</th>
-      </tr>`;
+  for (const cs of companyStatuses) {
+    const hasIssues = cs.issues.length > 0;
+    const worstSeverity = cs.issues.length > 0
+      ? (cs.issues.some((i) => i.severity === "critical") ? "critical" : cs.issues.some((i) => i.severity === "warning") ? "warning" : "info")
+      : "ok";
 
-    const sorted = [...issues].sort(
-      (a, b) => severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity)
-    );
-    for (const issue of sorted) {
-      const color = severityColors[issue.severity] || "#6b7280";
-      const bg = severityBg[issue.severity] || "#f9fafb";
-      html += `<tr style="background:${bg};">
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(issue.company)}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(issue.checkType)}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:${color};font-weight:bold;text-transform:uppercase;font-size:12px;">${issue.severity}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;font-size:13px;">${escapeHtml(issue.message)}</td>
-      </tr>`;
+    const rowBg = worstSeverity === "critical" ? "#fef2f2"
+      : worstSeverity === "warning" ? "#fffbeb"
+      : worstSeverity === "info" ? "#f0f9ff"
+      : "#ffffff";
+
+    // Change indicator
+    let changeStr = "";
+    if (cs.prevJobCount > 0) {
+      const diff = cs.usJobs - cs.prevJobCount;
+      if (diff > 0) changeStr = ` <span style="color:#16a34a;font-size:11px;">(+${diff})</span>`;
+      else if (diff < 0) changeStr = ` <span style="color:#dc2626;font-size:11px;">(${diff})</span>`;
     }
-    html += `</table>`;
+
+    // Status column: issues or checkmark
+    let statusHtml = "";
+    if (hasIssues) {
+      statusHtml = cs.issues
+        .map((i) => `<span style="color:${severityColors[i.severity] || "#6b7280"};font-size:12px;">${escapeHtml(i.checkType)}: ${escapeHtml(i.message)}</span>`)
+        .join("<br/>");
+    } else {
+      statusHtml = `<span style="color:#16a34a;">All checks passed</span>`;
+    }
+
+    html += `
+        <tr style="background:${rowBg};">
+          <td style="padding:6px;border-bottom:1px solid #e7e5e4;font-weight:${hasIssues ? "bold" : "normal"};">${escapeHtml(cs.companyName)}</td>
+          <td style="padding:6px;border-bottom:1px solid #e7e5e4;text-align:center;">${cs.usJobs}${changeStr}</td>
+          <td style="padding:6px;border-bottom:1px solid #e7e5e4;text-align:center;">${cs.nonUsFiltered > 0 ? cs.nonUsFiltered : "-"}</td>
+          <td style="padding:6px;border-bottom:1px solid #e7e5e4;text-align:center;">${cs.prevJobCount}</td>
+          <td style="padding:6px;border-bottom:1px solid #e7e5e4;text-align:center;">${cs.qualityScore}/100</td>
+          <td style="padding:6px;border-bottom:1px solid #e7e5e4;">${statusHtml}</td>
+        </tr>`;
   }
 
-  html += `<p style="margin-top:20px;color:#a8a29e;font-size:12px;">This report runs automatically after the daily cron scrape.</p></div>`;
+  html += `</table>`;
+
+  // Checks legend
+  html += `
+      <div style="margin-top:20px;padding:12px;background:#f5f5f4;border-radius:6px;font-size:12px;color:#78716c;">
+        <strong>Checks run per company:</strong> Job count (&gt;100 = critical) | Non-US ratio (&gt;50% = warning) | Spike/drop detection (&gt;100%/50% change) | Zero-job subscribers | Quality score (&lt;50 = warning)
+      </div>`;
+
+  html += `<p style="margin-top:16px;color:#a8a29e;font-size:12px;">This report runs automatically after the daily cron scrape.</p></div>`;
 
   try {
     await resend.emails.send({
@@ -501,7 +545,7 @@ export async function notifyAdminOfQualityReport(evalResult: {
       subject,
       html,
     });
-    console.log(`Daily eval report sent: ${issueCount} issues`);
+    console.log(`Daily eval report sent: ${issueCount} issues across ${companiesWithIssues} companies`);
   } catch (err) {
     console.error("Failed to send daily eval report:", err);
   }
