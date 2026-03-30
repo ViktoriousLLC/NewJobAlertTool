@@ -20,22 +20,38 @@ const HARD_EXCLUSIONS = [
   "research",
   "data ",
   "technical program",
+  "product owner",
+  "project manager",
+  "biz ops",
+  "product specialist",
+  "program manager",
 ];
 
-function isPMTitle(title: string, extraKeywords?: string[]): boolean {
+// Company-specific extra keywords: these get added to PM_KEYWORDS for matching
+// AND bypass hard exclusions (via the extraKeywords escape hatch).
+// Microsoft uses "Program Manager" as their actual PM title — at every other company it's a different role.
+const COMPANY_EXTRA_KEYWORDS: Record<string, string[]> = {
+  Microsoft: ["program manager"],
+};
+
+function isPMTitle(title: string, extraKeywords?: string[], companyName?: string): boolean {
   const lower = title.toLowerCase();
 
-  // Must match at least one PM keyword (or custom keyword)
-  const allKeywords = extraKeywords?.length
-    ? [...PM_KEYWORDS, ...extraKeywords.map((k) => k.toLowerCase())]
+  // Merge explicit extraKeywords with company-specific ones
+  const companyKeywords = companyName ? (COMPANY_EXTRA_KEYWORDS[companyName] || []) : [];
+  const allExtra = [...(extraKeywords || []), ...companyKeywords];
+
+  // Must match at least one PM keyword (or custom/company keyword)
+  const allKeywords = allExtra.length
+    ? [...PM_KEYWORDS, ...allExtra.map((k) => k.toLowerCase())]
     : PM_KEYWORDS;
   const matchesKeyword = allKeywords.some((kw) => lower.includes(kw));
   if (!matchesKeyword) return false;
 
   // Hard exclusions — if any of these words appear, reject regardless
-  // Skip hard exclusions for custom keyword matches (user explicitly asked for these)
-  if (extraKeywords?.length) {
-    const matchesCustom = extraKeywords.some((kw) => lower.includes(kw.toLowerCase()));
+  // Skip hard exclusions for custom/company keyword matches
+  if (allExtra.length) {
+    const matchesCustom = allExtra.some((kw) => lower.includes(kw.toLowerCase()));
     if (matchesCustom) return true;
   }
 
@@ -84,8 +100,8 @@ export function validateScrapeResults(
     };
   }
 
-  // Filter out non-PM jobs (with exclusion logic for design/marketing roles)
-  const pmJobs = jobs.filter((job) => isPMTitle(job.title, extraKeywords));
+  // Filter out non-PM jobs (with exclusion logic for design/marketing/non-PM roles)
+  const pmJobs = jobs.filter((job) => isPMTitle(job.title, extraKeywords, companyName));
 
   const nonPmCount = jobs.length - pmJobs.length;
   if (nonPmCount > 0) {

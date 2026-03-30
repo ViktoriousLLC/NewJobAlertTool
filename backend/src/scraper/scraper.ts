@@ -507,12 +507,24 @@ async function scrapeGreenhouseCareers(
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Fetching jobs from Greenhouse API (board: ${boardName})`);
 
-  const response = await fetch(
-    `https://api.greenhouse.io/v1/boards/${boardName}/jobs`
-  );
+  // Try primary endpoint, fall back to alternate hostname if it fails
+  const endpoints = [
+    `https://api.greenhouse.io/v1/boards/${boardName}/jobs`,
+    `https://boards-api.greenhouse.io/v1/boards/${boardName}/jobs`,
+  ];
 
-  if (!response.ok) {
-    throw new Error(`${companyLabel}: Greenhouse API returned ${response.status}`);
+  let response: Response | null = null;
+  for (const url of endpoints) {
+    const res = await fetch(url);
+    if (res.ok) {
+      response = res;
+      break;
+    }
+    console.warn(`${companyLabel}: Greenhouse endpoint returned ${res.status}: ${url}`);
+  }
+
+  if (!response) {
+    throw new Error(`${companyLabel}: All Greenhouse endpoints failed for board "${boardName}"`);
   }
 
   const data: GreenhouseResponse = await response.json();
@@ -1995,10 +2007,8 @@ export async function scrapeCompanyCareers(
     console.log("Detected Netflix careers page, using API scraper");
     return scrapeNetflixCareers(careersUrl);
   }
-  if (hostname.includes("stripe.com")) {
-    console.log("Detected Stripe careers page, using custom scraper");
-    return scrapeStripeCareers();
-  }
+  // Stripe migrated to Greenhouse (2026-03-30) — now handled via atsRegistry
+  // if (hostname.includes("stripe.com")) { ... }
   if (hostname.includes("uber.com")) {
     console.log("Detected Uber careers page, using API scraper");
     return scrapeUberCareers(careersUrl);

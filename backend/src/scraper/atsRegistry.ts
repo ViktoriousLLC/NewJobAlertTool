@@ -4,7 +4,7 @@
  * Used by both detectPlatform.ts (to instantly resolve known companies)
  * and scraper.ts (to route to the correct ATS scraper without hostname if/else chains).
  *
- * Custom scrapers (Stripe, Uber, Google, Netflix, EA, Atlassian) are NOT in this registry
+ * Custom scrapers (Uber, Google, Netflix, EA, Atlassian) are NOT in this registry
  * because they use bespoke scraping logic, not standard ATS APIs.
  */
 
@@ -89,6 +89,11 @@ const ATS_REGISTRY: Record<string, ATSRegistryEntry> = {
     platformType: "greenhouse",
     platformConfig: { boardName: "anthropic" },
     label: "Anthropic",
+  },
+  "stripe.com": {
+    platformType: "greenhouse",
+    platformConfig: { boardName: "stripe" },
+    label: "Stripe",
   },
 
   // Ashby

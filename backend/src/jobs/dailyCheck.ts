@@ -69,7 +69,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
       // Zero-result fallback: try broad ATS discovery to auto-remediate
       // Covers both generic companies AND companies whose known platform broke (e.g., Ashby → Greenhouse)
       // Never run broadATSDiscovery on custom scraper companies — their URLs don't map to standard ATS
-      const CUSTOM_SCRAPER_HOSTS = ["ea.com", "atlassian.com", "netflix.net", "netflix.com", "stripe.com", "uber.com", "google.com"];
+      const CUSTOM_SCRAPER_HOSTS = ["ea.com", "atlassian.com", "netflix.net", "netflix.com", "uber.com", "google.com"];
       const companyHost = new URL(company.careers_url).hostname;
       const isCustomScraper = CUSTOM_SCRAPER_HOSTS.some((h) => companyHost.includes(h));
       if (rawJobs.length === 0 && !isCustomScraper) {
