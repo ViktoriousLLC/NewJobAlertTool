@@ -1367,7 +1367,7 @@ async function scrapeEightfoldCareers(careersUrl: string): Promise<ScrapedJob[]>
     // Build API URL with same filters as the careers page
     const apiUrl = new URL(`${baseOrigin}/api/pcsx/search`);
     apiUrl.searchParams.set("domain", domain);
-    apiUrl.searchParams.set("query", "product manager");
+    apiUrl.searchParams.set("query", "");
     apiUrl.searchParams.set("start", start.toString());
     if (location) apiUrl.searchParams.set("location", location);
     if (sortBy) apiUrl.searchParams.set("sort_by", sortBy);
