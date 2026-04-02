@@ -34,6 +34,25 @@ const COMPANY_EXTRA_KEYWORDS: Record<string, string[]> = {
   Microsoft: ["program manager"],
 };
 
+// Company-specific exclusions: even when extra keywords match, reject these.
+// Microsoft has tons of "Technical Program Manager", "Business Program Manager", etc.
+// that are NOT product roles — only pure "Program Manager" / "Product Manager" titles should pass.
+const COMPANY_EXTRA_EXCLUSIONS: Record<string, string[]> = {
+  Microsoft: [
+    "technical program",
+    "business program",
+    "customer experience program",
+    "supply chain program",
+    "content program",
+    "data center program",
+    "datacenter program",
+    "environment program",
+    "silicon program",
+    "strategy & operations program",
+    "platform technical program",
+  ],
+};
+
 function isPMTitle(title: string, extraKeywords?: string[], companyName?: string): boolean {
   const lower = title.toLowerCase();
 
@@ -49,10 +68,15 @@ function isPMTitle(title: string, extraKeywords?: string[], companyName?: string
   if (!matchesKeyword) return false;
 
   // Hard exclusions — if any of these words appear, reject regardless
-  // Skip hard exclusions for custom/company keyword matches
+  // Skip hard exclusions for custom/company keyword matches, UNLESS company-specific exclusions apply
   if (allExtra.length) {
     const matchesCustom = allExtra.some((kw) => lower.includes(kw.toLowerCase()));
-    if (matchesCustom) return true;
+    if (matchesCustom) {
+      // Check company-specific exclusions (e.g., Microsoft: "technical program manager" is NOT a PM)
+      const companyExclusions = companyName ? (COMPANY_EXTRA_EXCLUSIONS[companyName] || []) : [];
+      if (companyExclusions.some((ex) => lower.includes(ex))) return false;
+      return true;
+    }
   }
 
   const excluded = HARD_EXCLUSIONS.some((ex) => lower.includes(ex));

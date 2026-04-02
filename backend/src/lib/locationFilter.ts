@@ -57,8 +57,10 @@ export function isUSLocation(location: string | null): boolean {
   const segments = location.split("|");
   for (const seg of segments) {
     const parts = seg.split(",").map((p) => p.trim());
-    if (parts.length >= 3) {
+    if (parts.length >= 2) {
       const lastPart = parts[parts.length - 1];
+      // "City, State, US" (3 parts) or "State,US" / "Province,CA" (2 parts)
+      // If the last part is a 2-letter country code that isn't US, reject
       if (/^[A-Z]{2}$/.test(lastPart) && lastPart !== "US") {
         return false;
       }
