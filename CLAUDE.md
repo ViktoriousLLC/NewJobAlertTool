@@ -116,9 +116,10 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 |----------|-----------|---------|
 | Greenhouse | API: `api.greenhouse.io/v1/boards/{board}/jobs` | DoorDash, Discord, Reddit, Instacart, Figma, Airbnb, a16z, Twitch |
 | Lever | API: `api.lever.co/v0/postings/{handle}` | Auto-detected from jobs.lever.co |
-| Ashby | GraphQL API | OpenAI, Anthropic, auto-detected from jobs.ashbyhq.com |
+| Ashby | GraphQL API | OpenAI, auto-detected from jobs.ashbyhq.com |
 | Workday | JSON API | Slack, auto-detected from *.myworkdayjobs.com |
-| Eightfold | API | PayPal |
+| Greenhouse | API | Anthropic (migrated from Ashby 2026-03-19) |
+| Eightfold | API | PayPal, Microsoft (custom domain: apply.careers.microsoft.com) |
 | Custom API | Per-company | Atlassian, Uber, Netflix |
 | Puppeteer | HTML scraping (120s timeout) | Stripe, Google, fallback for unknown |
 
@@ -128,11 +129,17 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 
 **broadATSDiscovery guard**: `CUSTOM_SCRAPER_HOSTS` blocklist in `dailyCheck.ts` prevents broadATSDiscovery from overwriting custom scraper companies (Stripe, EA, Atlassian, Netflix, Uber, Google).
 
-**Post-scrape validation** (`validateScrape.ts`): Filters by PM_KEYWORDS (17 keywords), flags zero results/vague locations/dupes, returns quality score.
+**Post-scrape validation** (`validateScrape.ts`): Two-pass filtering: (1) PM_KEYWORDS (17 keywords), (2) US location filter via `isUSLocation()` from `lib/locationFilter.ts`. Non-US jobs never enter the DB. Also flags zero results/vague locations/dupes, returns quality score + `nonUsFilteredCount`. Company-specific extra exclusions (`COMPANY_EXTRA_EXCLUSIONS`) filter out non-PM program manager variants (TPMs, business PMs, etc.) even when company extra keywords match.
+
+**Daily quality eval** (`dailyEval.ts`, added 2026-03-22): Runs after scraping, before emails. Checks every company for: absurd job counts (>100), high non-US ratio (>50%), sudden spikes/drops, zero jobs for subscribed companies, low quality scores (<50). Sends admin email with full per-company scorecard (issues at top, clean at bottom). Critical issues also go to Sentry.
 
 **Company name detection** (`detectCompanyName.ts`): 40+ known hosts, ATS slug fallback, generic hostname fallback.
 
-**Scrape failure alerting** (added 2026-03-07): Sentry captures each failure with company/phase tags. Admin gets email summary of all failures. If >25% of companies fail, cron returns HTTP 500.
+**Scrape failure alerting** (upgraded 2026-03-20): Admin email now shows two sections: green "Auto-fixed" (platform changes the cron self-healed) and red "Still needs attention" (actual failures). Only sends email if there's something to report. Sentry captures each failure with company/phase tags. If >25% of companies fail, cron returns HTTP 500.
+
+**Auto-remediation** (added 2026-03-19): When ANY company (not just generic) returns 0 raw jobs, cron runs `broadATSDiscovery` to detect platform changes. If a new platform is found and produces results, auto-updates the DB and logs to Sentry. Still guarded by `CUSTOM_SCRAPER_HOSTS` blocklist.
+
+**Double-filtering gotcha**: Most scrapers (Greenhouse, Workday, Lever, etc.) filter by PM_KEYWORDS internally before returning results. Then `validateScrapeResults` filters again. This means `rawJobs.length === 0` can mean "no PM jobs" (legit) OR "scraper broken" -- can't distinguish at the `dailyCheck` level. Actual scraper failures throw exceptions caught by the `catch` block.
 
 **Key rules**:
 - After adding/fixing a scraper, always delete + re-add the company to flush stale data
@@ -147,8 +154,10 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - `src/scraper/atsRegistry.ts` — Shared ATS hostname → platform mapping (single source of truth)
 - `src/scraper/detectPlatform.ts` — ATS platform auto-detection
 - `src/scraper/detectCompanyName.ts` — Company name from URL
-- `src/scraper/validateScrape.ts` — Post-scrape quality validation
-- `src/jobs/dailyCheck.ts` — Daily cron: scrape all companies, per-user email alerts, job status tracking
+- `src/scraper/validateScrape.ts` — Post-scrape quality validation + US location filtering
+- `src/scraper/dailyEval.ts` — Daily quality evaluation (per-company scorecard)
+- `src/lib/locationFilter.ts` — US location detection (isUSLocation + NON_US_PATTERNS)
+- `src/jobs/dailyCheck.ts` — Daily cron: scrape all companies, quality eval, per-user email alerts, job status tracking
 - `src/routes/companies.ts` — Companies CRUD (subscription-scoped, check-then-add)
 - `src/routes/admin.ts` — Admin API: stats, issues, companies management, users
 - `src/routes/subscriptions.ts` — Subscribe/unsubscribe
@@ -192,6 +201,7 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - **API key**: Only in Railway env vars. Empty locally.
 - Failure notifications sent to ADMIN_EMAIL after cron if email batches fail.
 - **Scrape failure alerts** (added 2026-03-07): `notifyAdminOfScrapeFailures()` sends admin email with failure count, percentage, and per-company error breakdown after daily cron.
+- **Daily quality eval email** (added 2026-03-22): `notifyAdminOfQualityReport()` sends per-company scorecard showing US jobs, non-US filtered, change vs previous, quality score, and any issues. Companies with issues sort to top.
 
 ## Delete Semantics
 
@@ -242,6 +252,13 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - **broadATSDiscovery overwrite**: Can silently change a custom scraper company's `platform_type` if a matching ATS board exists (e.g., Greenhouse board "stripe"). Guarded by `CUSTOM_SCRAPER_HOSTS` blocklist in `dailyCheck.ts`. Never remove this guard.
 - **Local CRON_SECRET mismatch**: The local `.env` CRON_SECRET doesn't match Railway production. Can't trigger manual cron from local — use Railway dashboard or wait for scheduled run.
 - **ATS API null responses**: External APIs (Ashby, Greenhouse, etc.) can return null payloads on transient failures even with HTTP 200. Always null-check before destructuring API response objects.
+- **Eightfold custom domains**: Microsoft uses `apply.careers.microsoft.com` (not `*.eightfold.ai`). Domain extraction must handle both: eightfold subdomains (`paypal.eightfold.ai` → `paypal.com`) and custom domains (`apply.careers.microsoft.com` → `microsoft.com`). The API also sometimes returns 200 with HTML "Not Found" instead of JSON.
+- **Anthropic moved from Ashby to Greenhouse** (2026-03-19): Ashby GraphQL returns `jobBoard: null`. Greenhouse board token is `anthropic`. Added to `atsRegistry.ts`.
+- **Scrapers pre-filter by PM_KEYWORDS**: Most ATS scrapers return only PM-matching jobs, not all jobs. This means `rawJobs.length === 0` is ambiguous -- could be "no PM roles" or "broken API". Don't use raw job count to detect failures.
+- **Backend US location filtering (added 2026-03-22)**: `validateScrapeResults` now filters non-US jobs via `isUSLocation()` in `lib/locationFilter.ts`. Non-US jobs never enter `seen_jobs` table. Frontend `isUSLocation` toggle in `jobFilters.ts` is now redundant but kept for backward compatibility. If a location doesn't match any US or non-US pattern, it defaults to excluded (safer).
+- **NON_US_PATTERNS coverage**: 60+ patterns for India, UK, Germany, France, Canada, Australia, Singapore, Japan, China, Ireland, Netherlands, Israel, Brazil, Mexico, Sweden, Switzerland, Spain, Italy, Poland, South Korea, Taiwan, Philippines, Vietnam, Thailand, Malaysia, Indonesia, Nigeria, Kenya, plus EMEA/APAC/LATAM region codes. Add new countries as needed to `lib/locationFilter.ts`.
+- **Microsoft TPM inflation (fixed 2026-04-01)**: Microsoft's "program manager" exception was bypassing ALL hard exclusions, letting TPMs, business PMs, customer experience PMs through. `COMPANY_EXTRA_EXCLUSIONS` in `validateScrape.ts` now rejects non-product PM variants while keeping pure Program Manager/Product Manager titles. Cut Microsoft from 123 to ~75 jobs.
+- **Abbreviated Canadian locations (fixed 2026-04-01)**: `ON,CA` (Ontario, Canada) slipped through location filter because structured format check required 3+ comma parts. Fixed to check 2+ parts. Any `XX,CC` where CC is a 2-letter country code != US is now rejected.
 
 ## Check-Then-Add Flow
 
