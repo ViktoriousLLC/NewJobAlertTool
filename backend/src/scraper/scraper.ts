@@ -1552,6 +1552,224 @@ async function scrapeSmartRecruitersCareers(
 }
 
 /**
+ * Amazon Jobs API scraper.
+ * Uses amazon.jobs/en/search.json with category + keyword filtering.
+ * Paginates through all results (max 10 per page).
+ */
+async function scrapeAmazonCareers(): Promise<ScrapedJob[]> {
+  console.log("Fetching Amazon Jobs API...");
+  const allJobs: ScrapedJob[] = [];
+  const pageSize = 100;
+  let offset = 0;
+  let totalHits = 0;
+
+  do {
+    const url = `https://www.amazon.jobs/en/search.json?base_query=product+manager&country=USA&result_limit=${pageSize}&offset=${offset}`;
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+      },
+    });
+    if (!res.ok) throw new Error(`Amazon API returned ${res.status}`);
+
+    const data = await res.json();
+    totalHits = data.hits || 0;
+
+    if (!data.jobs || data.jobs.length === 0) break;
+
+    for (const job of data.jobs) {
+      allJobs.push({
+        title: job.title,
+        location: job.location || `${job.city || ""}, ${job.state || ""}`.replace(/^, |, $/g, ""),
+        urlPath: `https://www.amazon.jobs${job.job_path}`,
+      });
+    }
+
+    offset += data.jobs.length;
+    if (offset >= totalHits) break;
+
+    await new Promise((r) => setTimeout(r, 300));
+  } while (true);
+
+  console.log(`Amazon: Found ${allJobs.length} jobs (total hits: ${totalHits})`);
+  return allJobs;
+}
+
+/**
+ * iCIMS REST API scraper (no Puppeteer).
+ * Uses the /api/jobs endpoint that some iCIMS sites expose.
+ * Supports keyword filtering and pagination.
+ */
+async function scrapeICIMSAPICareers(
+  baseUrl: string,
+  companyLabel: string,
+  keywords?: string,
+): Promise<ScrapedJob[]> {
+  console.log(`${companyLabel}: Scraping iCIMS API at ${baseUrl}`);
+  const allJobs: ScrapedJob[] = [];
+  const pageSize = 100;
+  let offset = 0;
+  let totalCount = 0;
+
+  do {
+    const params = new URLSearchParams();
+    if (keywords) params.append("keywords", keywords);
+    params.append("limit", pageSize.toString());
+    params.append("offset", offset.toString());
+
+    const url = `${baseUrl}/api/jobs?${params.toString()}`;
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+      },
+    });
+    if (!res.ok) throw new Error(`${companyLabel} iCIMS API returned ${res.status}`);
+
+    const data = await res.json();
+    totalCount = data.totalCount || 0;
+
+    if (!data.jobs || data.jobs.length === 0) break;
+
+    for (const job of data.jobs) {
+      const d = job.data || job;
+      const city = d.city || "";
+      const state = d.state || "";
+      const country = d.country_code || d.country || "";
+      const location = [city, state, country].filter(Boolean).join(", ");
+
+      allJobs.push({
+        title: d.title,
+        location,
+        urlPath: `${baseUrl}/${d.slug || d.req_id}`,
+      });
+    }
+
+    offset += data.jobs.length;
+    if (offset >= totalCount) break;
+
+    await new Promise((r) => setTimeout(r, 300));
+  } while (true);
+
+  console.log(`${companyLabel}: Found ${allJobs.length} jobs from iCIMS API (total: ${totalCount})`);
+  return allJobs;
+}
+
+/**
+ * Zerodha careers API scraper.
+ * Simple REST API at careers.zerodha.com/api/jobs.
+ */
+async function scrapeZerodhaCareers(): Promise<ScrapedJob[]> {
+  console.log("Fetching Zerodha careers API...");
+  const res = await fetch("https://careers.zerodha.com/api/jobs", {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "Accept": "application/json",
+    },
+  });
+  if (!res.ok) throw new Error(`Zerodha API returned ${res.status}`);
+
+  const data = await res.json();
+  if (!data.data || data.data.length === 0) {
+    console.log("Zerodha: 0 open positions");
+    return [];
+  }
+
+  const allJobs: ScrapedJob[] = data.data.map((job: any) => ({
+    title: job.title || job.name || "",
+    location: job.location || "Bangalore, India",
+    urlPath: `https://careers.zerodha.com/jobs/${job.slug || job.id}`,
+  }));
+
+  console.log(`Zerodha: Found ${allJobs.length} jobs`);
+  return allJobs;
+}
+
+/**
+ * Intuit TalentBrew scraper.
+ * Fetches HTML-in-JSON from the TalentBrew search API and parses job data from HTML.
+ * Paginates through all pages.
+ */
+async function scrapeIntuitCareers(): Promise<ScrapedJob[]> {
+  console.log("Fetching Intuit TalentBrew API...");
+  const allJobs: ScrapedJob[] = [];
+  const pageSize = 25;
+  let currentPage = 1;
+  let totalPages = 1;
+  const seen = new Set<string>();
+
+  do {
+    const params = new URLSearchParams({
+      ActiveFacetID: "0",
+      CurrentPage: currentPage.toString(),
+      RecordsPerPage: pageSize.toString(),
+      Distance: "50",
+      RadiusUnitType: "0",
+      Keywords: "product manager",
+      Location: "United States",
+      ShowRadius: "False",
+      IsPagination: currentPage > 1 ? "True" : "False",
+      SearchResultsModuleName: "Search Results",
+      SearchFiltersModuleName: "Search Filters",
+      SortCriteria: "0",
+      SortDirection: "0",
+      SearchType: "5",
+    });
+
+    const res = await fetch(`https://jobs.intuit.com/search-jobs/results?${params.toString()}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+      },
+    });
+    if (!res.ok) throw new Error(`Intuit TalentBrew API returned ${res.status}`);
+
+    const data = await res.json();
+    const html: string = data.results || "";
+
+    // Parse total pages from first response
+    if (currentPage === 1) {
+      const totalPagesMatch = html.match(/data-total-pages="(\d+)"/);
+      totalPages = totalPagesMatch ? parseInt(totalPagesMatch[1]) : 1;
+      const totalResultsMatch = html.match(/data-total-results="(\d+)"/);
+      const totalResults = totalResultsMatch ? parseInt(totalResultsMatch[1]) : 0;
+      console.log(`Intuit: ${totalResults} total results, ${totalPages} pages`);
+    }
+
+    // Parse jobs from HTML list items
+    const jobPattern = /<li[^>]*data-intuit-jobid[^>]*>[\s\S]*?<\/li>/g;
+    let match;
+    while ((match = jobPattern.exec(html)) !== null) {
+      const li = match[0];
+      const titleMatch = li.match(/<h2>(.*?)<\/h2>/);
+      const locationMatch = li.match(/class="job-location">(.*?)<\/span>/);
+      const hrefMatch = li.match(/href="([^"]+)"/);
+
+      if (!titleMatch || !hrefMatch) continue;
+
+      const urlPath = `https://jobs.intuit.com${hrefMatch[1]}`;
+      if (seen.has(urlPath)) continue;
+      seen.add(urlPath);
+
+      allJobs.push({
+        title: titleMatch[1].trim(),
+        location: locationMatch ? locationMatch[1].trim() : "",
+        urlPath,
+      });
+    }
+
+    currentPage++;
+    if (currentPage > totalPages) break;
+
+    await new Promise((r) => setTimeout(r, 300));
+  } while (true);
+
+  console.log(`Intuit: Found ${allJobs.length} jobs from TalentBrew`);
+  return allJobs;
+}
+
+/**
  * iCIMS ATS scraper (Puppeteer-based).
  * iCIMS career pages are server-rendered HTML with consistent structure.
  * Does NOT filter by PM_KEYWORDS — lets validateScrapeResults handle it.
@@ -2086,6 +2304,34 @@ export async function scrapeCompanyCareers(
     const slug = hostname.replace(/\.icims\.com$/, "").replace(/^careers-/, "");
     console.log(`Detected iCIMS careers page (company: ${slug})`);
     return scrapeICIMSCareers(slug, careersUrl, slug);
+  }
+
+  // Amazon Jobs API
+  if (hostname.includes("amazon.jobs")) {
+    console.log("Detected Amazon Jobs page, using API scraper");
+    return scrapeAmazonCareers();
+  }
+
+  // iCIMS API-based sites (Rivian, Costco)
+  if (hostname.includes("careers.rivian.com")) {
+    console.log("Detected Rivian careers (iCIMS API), using API scraper");
+    return scrapeICIMSAPICareers("https://careers.rivian.com", "Rivian", "product manager");
+  }
+  if (hostname.includes("careers.costco.com")) {
+    console.log("Detected Costco careers (iCIMS API), using API scraper");
+    return scrapeICIMSAPICareers("https://careers.costco.com", "Costco", "product manager");
+  }
+
+  // Zerodha careers API
+  if (hostname.includes("zerodha.com")) {
+    console.log("Detected Zerodha careers page, using API scraper");
+    return scrapeZerodhaCareers();
+  }
+
+  // Intuit TalentBrew
+  if (hostname.includes("intuit.com")) {
+    console.log("Detected Intuit careers page, using TalentBrew scraper");
+    return scrapeIntuitCareers();
   }
 
   // --- Generic Puppeteer fallback: only launch Chrome for truly unknown companies ---

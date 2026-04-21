@@ -95,6 +95,16 @@ const ATS_REGISTRY: Record<string, ATSRegistryEntry> = {
     platformConfig: { boardName: "stripe" },
     label: "Stripe",
   },
+  "datadoghq.com": {
+    platformType: "greenhouse",
+    platformConfig: { boardName: "datadog" },
+    label: "Datadog",
+  },
+  "linkedin.com": {
+    platformType: "greenhouse",
+    platformConfig: { boardName: "linkedin" },
+    label: "LinkedIn",
+  },
 
   // Ashby
   "openai.com": {
