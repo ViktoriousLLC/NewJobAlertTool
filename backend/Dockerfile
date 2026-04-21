@@ -1,4 +1,4 @@
-FROM ghcr.io/puppeteer/puppeteer:latest
+FROM ghcr.io/puppeteer/puppeteer:24.2.0
 
 WORKDIR /app
 
