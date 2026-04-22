@@ -13,4 +13,5 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
+USER pptruser
 CMD ["node", "dist/index.js"]

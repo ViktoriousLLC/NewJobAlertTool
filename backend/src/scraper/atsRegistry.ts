@@ -100,7 +100,7 @@ const ATS_REGISTRY: Record<string, ATSRegistryEntry> = {
     platformConfig: { boardName: "datadog" },
     label: "Datadog",
   },
-  "linkedin.com": {
+  "www.linkedin.com": {
     platformType: "greenhouse",
     platformConfig: { boardName: "linkedin" },
     label: "LinkedIn",

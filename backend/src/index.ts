@@ -203,7 +203,6 @@ app.post("/api/admin/add-company", async (req, res) => {
       .insert({
         name,
         careers_url,
-        user_id: adminUserId || null,
         platform_type: platformType,
         platform_config: platformConfig,
         is_active: true,

@@ -1643,9 +1643,9 @@ async function scrapeICIMSAPICareers(
       const location = [city, state, country].filter(Boolean).join(", ");
 
       allJobs.push({
-        title: d.title,
+        title: d.title || "",
         location,
-        urlPath: `${baseUrl}/${d.slug || d.req_id}`,
+        urlPath: `${baseUrl}/${d.slug || d.req_id || ""}`,
       });
     }
 
@@ -1753,6 +1753,13 @@ async function scrapeOracleHCMCareers(
   siteNumber: string,
   companyLabel: string,
 ): Promise<ScrapedJob[]> {
+  // Validate inputs (DB-sourced but defense in depth)
+  if (!/^https:\/\/[a-z0-9.-]+\.oraclecloud\.com$/i.test(tenantUrl)) {
+    throw new Error(`${companyLabel}: Invalid Oracle HCM tenant URL: ${tenantUrl}`);
+  }
+  if (!/^[A-Z0-9_]+$/i.test(siteNumber)) {
+    throw new Error(`${companyLabel}: Invalid Oracle HCM site number: ${siteNumber}`);
+  }
   console.log(`${companyLabel}: Scraping Oracle HCM at ${tenantUrl}`);
   const allJobs: ScrapedJob[] = [];
   const pageSize = 25;
