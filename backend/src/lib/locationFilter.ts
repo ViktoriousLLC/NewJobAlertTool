@@ -1,7 +1,7 @@
 // US states, cities, and location patterns — ported from frontend/src/lib/jobFilters.ts
 const US_PATTERNS = [
   /\bCA\b/i, /\bNY\b/i, /\bWA\b/i, /\bTX\b/i, /\bIL\b/i, /\bMA\b/i, /\bCO\b/i, /\bGA\b/i, /\bPA\b/i, /\bAZ\b/i,
-  /\bOR\b/i, /\bVA\b/i, /\bMD\b/i, /\bNC\b/i, /\bNJ\b/i, /\bOH\b/i, /\bMN\b/i, /\bMI\b/i, /\bFL\b/i, /\bUT\b/i,
+  /\bOR\b/, /\bVA\b/i, /\bMD\b/i, /\bNC\b/i, /\bNJ\b/i, /\bOH\b/i, /\bMN\b/i, /\bMI\b/i, /\bFL\b/i, /\bUT\b/i,
   /\bCT\b/i, /\bMO\b/i, /\bTN\b/i, /\bWI\b/i, /\bIN\b/i, /\bDC\b/i,
   /California/i, /New York/i, /Washington/i, /Texas/i, /Illinois/i, /Massachusetts/i,
   /Colorado/i, /Georgia/i, /Pennsylvania/i, /Arizona/i, /Oregon/i, /Virginia/i,
@@ -49,7 +49,7 @@ const NON_US_PATTERNS = [
 ];
 
 export function isUSLocation(location: string | null): boolean {
-  if (!location || !location.trim()) return true; // Unknown location — include by default
+  if (!location || !location.trim()) return false; // Unknown/empty location — exclude by default (safer)
 
   // Check for standardized "City, Region, CountryCode" format (Eightfold, etc.)
   // US locations end with ", US"; any other 2-letter code is non-US.

@@ -1571,6 +1571,7 @@ async function scrapeAmazonCareers(): Promise<ScrapedJob[]> {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
       },
+      signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) throw new Error(`Amazon API returned ${res.status}`);
 
@@ -1625,6 +1626,7 @@ async function scrapeICIMSAPICareers(
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
       },
+      signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) throw new Error(`${companyLabel} iCIMS API returned ${res.status}`);
 
@@ -1654,36 +1656,6 @@ async function scrapeICIMSAPICareers(
   } while (true);
 
   console.log(`${companyLabel}: Found ${allJobs.length} jobs from iCIMS API (total: ${totalCount})`);
-  return allJobs;
-}
-
-/**
- * Zerodha careers API scraper.
- * Simple REST API at careers.zerodha.com/api/jobs.
- */
-async function scrapeZerodhaCareers(): Promise<ScrapedJob[]> {
-  console.log("Fetching Zerodha careers API...");
-  const res = await fetch("https://careers.zerodha.com/api/jobs", {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      "Accept": "application/json",
-    },
-  });
-  if (!res.ok) throw new Error(`Zerodha API returned ${res.status}`);
-
-  const data = await res.json();
-  if (!data.data || data.data.length === 0) {
-    console.log("Zerodha: 0 open positions");
-    return [];
-  }
-
-  const allJobs: ScrapedJob[] = data.data.map((job: any) => ({
-    title: job.title || job.name || "",
-    location: job.location || "Bangalore, India",
-    urlPath: `https://careers.zerodha.com/jobs/${job.slug || job.id}`,
-  }));
-
-  console.log(`Zerodha: Found ${allJobs.length} jobs`);
   return allJobs;
 }
 
@@ -1723,6 +1695,7 @@ async function scrapeIntuitCareers(): Promise<ScrapedJob[]> {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
       },
+      signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) throw new Error(`Intuit TalentBrew API returned ${res.status}`);
 
@@ -1794,6 +1767,7 @@ async function scrapeOracleHCMCareers(
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
       },
+      signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) throw new Error(`${companyLabel} Oracle HCM API returned ${res.status}`);
 
@@ -2233,6 +2207,11 @@ export async function scrapeCompanyCareers(
           return scrapeGreenhouseCareers(platformConfig.boardName, label);
         }
         break;
+      case "greenhouse_departments":
+        if (platformConfig.boardName) {
+          return scrapeGreenhouseDepartments(platformConfig.boardName, label);
+        }
+        break;
       case "lever":
         if (platformConfig.handle) {
           return scrapeLeverCareers(platformConfig.handle, label);
@@ -2382,12 +2361,6 @@ export async function scrapeCompanyCareers(
   if (hostname.includes("careers.costco.com")) {
     console.log("Detected Costco careers (iCIMS API), using API scraper");
     return scrapeICIMSAPICareers("https://careers.costco.com", "Costco", "product manager");
-  }
-
-  // Zerodha careers API
-  if (hostname.includes("zerodha.com")) {
-    console.log("Detected Zerodha careers page, using API scraper");
-    return scrapeZerodhaCareers();
   }
 
   // Intuit TalentBrew
