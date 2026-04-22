@@ -1771,6 +1771,60 @@ async function scrapeIntuitCareers(): Promise<ScrapedJob[]> {
 }
 
 /**
+ * Oracle HCM Cloud scraper.
+ * Used by JPMorgan Chase, Oracle, and other companies on Oracle's ATS.
+ * Uses the recruitingCEJobRequisitions REST API with keyword search.
+ */
+async function scrapeOracleHCMCareers(
+  tenantUrl: string,
+  siteNumber: string,
+  companyLabel: string,
+): Promise<ScrapedJob[]> {
+  console.log(`${companyLabel}: Scraping Oracle HCM at ${tenantUrl}`);
+  const allJobs: ScrapedJob[] = [];
+  const pageSize = 25;
+  let offset = 0;
+  let totalCount = 0;
+
+  do {
+    const apiUrl = `${tenantUrl}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&finder=findReqs;siteNumber=${siteNumber},limit=${pageSize},offset=${offset},keyword=product+manager,sortBy=POSTING_DATES_DESC&expand=requisitionList.secondaryLocations`;
+
+    const res = await fetch(apiUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+      },
+    });
+    if (!res.ok) throw new Error(`${companyLabel} Oracle HCM API returned ${res.status}`);
+
+    const data = await res.json();
+    const items = data.items?.[0];
+    if (!items) break;
+
+    totalCount = items.TotalJobsCount || 0;
+    const requisitions = items.requisitionList || [];
+
+    if (requisitions.length === 0) break;
+
+    for (const job of requisitions) {
+      allJobs.push({
+        title: job.Title || "",
+        location: job.PrimaryLocation || "",
+        urlPath: `${tenantUrl}/hcmUI/CandidateExperience/en/sites/${siteNumber}/job/${job.Id}`,
+      });
+    }
+
+    offset += requisitions.length;
+    if (offset >= totalCount) break;
+
+    await new Promise((r) => setTimeout(r, 300));
+  } while (true);
+
+  console.log(`${companyLabel}: Found ${allJobs.length} jobs from Oracle HCM (total: ${totalCount})`);
+  return allJobs;
+}
+
+/**
  * iCIMS ATS scraper (Puppeteer-based).
  * iCIMS career pages are server-rendered HTML with consistent structure.
  * Does NOT filter by PM_KEYWORDS — lets validateScrapeResults handle it.
@@ -2203,6 +2257,11 @@ export async function scrapeCompanyCareers(
         break;
       case "icims":
         return scrapeICIMSCareers(platformConfig.company || label, platformConfig.baseUrl || careersUrl, label);
+      case "oracle_hcm":
+        if (platformConfig.tenantUrl && platformConfig.siteNumber) {
+          return scrapeOracleHCMCareers(platformConfig.tenantUrl, platformConfig.siteNumber, label);
+        }
+        break;
       case "custom_api":
         // Fall through to hostname-based routing below
         break;
