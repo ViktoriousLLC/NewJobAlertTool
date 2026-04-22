@@ -614,6 +614,7 @@ async function scrapeGreenhouseDepartments(
 async function scrapeStripeCareers(): Promise<ScrapedJob[]> {
   const browser = await puppeteer.launch({
     headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -1783,6 +1784,7 @@ async function scrapeICIMSCareers(
 
   const browser = await puppeteer.launch({
     headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -1952,6 +1954,7 @@ async function scrapeGoogleCareers(careersUrl: string): Promise<ScrapedJob[]> {
 
   const browser = await puppeteer.launch({
     headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -2338,6 +2341,7 @@ export async function scrapeCompanyCareers(
   console.log(`No ATS match for ${hostname}, falling back to generic Puppeteer scraper`);
   const browser = await puppeteer.launch({
     headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
