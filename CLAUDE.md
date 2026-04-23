@@ -114,20 +114,23 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 
 | Platform | Detection | Examples |
 |----------|-----------|---------|
-| Greenhouse | API: `api.greenhouse.io/v1/boards/{board}/jobs` | DoorDash, Discord, Reddit, Instacart, Figma, Airbnb, a16z, Twitch |
+| Greenhouse | API: `api.greenhouse.io/v1/boards/{board}/jobs` | DoorDash, Discord, Reddit, Instacart, Figma, Airbnb, a16z, Twitch, Datadog, LinkedIn |
 | Lever | API: `api.lever.co/v0/postings/{handle}` | Auto-detected from jobs.lever.co |
 | Ashby | GraphQL API | OpenAI, auto-detected from jobs.ashbyhq.com |
 | Workday | JSON API | Slack, auto-detected from *.myworkdayjobs.com |
 | Greenhouse | API | Anthropic (migrated from Ashby 2026-03-19) |
 | Eightfold | API | PayPal, Microsoft (custom domain: apply.careers.microsoft.com) |
-| Custom API | Per-company | Atlassian, Uber, Netflix |
-| Puppeteer | HTML scraping (120s timeout) | Stripe, Google, fallback for unknown |
+| Custom API | Per-company | Atlassian, Uber, Netflix, Amazon |
+| iCIMS REST API | JSON: `{base}/api/jobs?keywords=` | Rivian, Costco (no Puppeteer) |
+| Oracle HCM | REST API: `recruitingCEJobRequisitions` | JPMorgan Chase, Oracle |
+| TalentBrew | HTML-in-JSON parser | Intuit (jobs.intuit.com) |
+| Puppeteer | HTML scraping (120s timeout) | Google, eBay, Ametek, Apple, Meta, Wayfair, Tesla, TikTok, fallback for unknown |
 
 **ATS registry** (`atsRegistry.ts`): Single source of truth mapping hostnames → ATS platform + config. Used by both `detectPlatform.ts` and `scraper.ts`.
 
 **Platform auto-detection** (`detectPlatform.ts`): Known hostnames → direct ATS URLs → HTML embed detection → Puppeteer SPA render → speculative Greenhouse/Lever API probes → generic fallback. Cached in `companies.platform_type` + `platform_config`.
 
-**broadATSDiscovery guard**: `CUSTOM_SCRAPER_HOSTS` blocklist in `dailyCheck.ts` prevents broadATSDiscovery from overwriting custom scraper companies (Stripe, EA, Atlassian, Netflix, Uber, Google).
+**broadATSDiscovery guard**: `CUSTOM_SCRAPER_HOSTS` blocklist in `dailyCheck.ts` prevents broadATSDiscovery from overwriting custom scraper companies (Stripe, EA, Atlassian, Netflix, Uber, Google, Amazon, Intuit, Rivian, Costco).
 
 **Post-scrape validation** (`validateScrape.ts`): Two-pass filtering: (1) PM_KEYWORDS (17 keywords), (2) US location filter via `isUSLocation()` from `lib/locationFilter.ts`. Non-US jobs never enter the DB. Also flags zero results/vague locations/dupes, returns quality score + `nonUsFilteredCount`. Company-specific extra exclusions (`COMPANY_EXTRA_EXCLUSIONS`) filter out non-PM program manager variants (TPMs, business PMs, etc.) even when company extra keywords match.
 
@@ -259,6 +262,14 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - **NON_US_PATTERNS coverage**: 60+ patterns for India, UK, Germany, France, Canada, Australia, Singapore, Japan, China, Ireland, Netherlands, Israel, Brazil, Mexico, Sweden, Switzerland, Spain, Italy, Poland, South Korea, Taiwan, Philippines, Vietnam, Thailand, Malaysia, Indonesia, Nigeria, Kenya, plus EMEA/APAC/LATAM region codes. Add new countries as needed to `lib/locationFilter.ts`.
 - **Microsoft TPM inflation (fixed 2026-04-01)**: Microsoft's "program manager" exception was bypassing ALL hard exclusions, letting TPMs, business PMs, customer experience PMs through. `COMPANY_EXTRA_EXCLUSIONS` in `validateScrape.ts` now rejects non-product PM variants while keeping pure Program Manager/Product Manager titles. Cut Microsoft from 123 to ~75 jobs.
 - **Abbreviated Canadian locations (fixed 2026-04-01)**: `ON,CA` (Ontario, Canada) slipped through location filter because structured format check required 3+ comma parts. Fixed to check 2+ parts. Any `XX,CC` where CC is a 2-letter country code != US is now rejected.
+- **Puppeteer mass failure (fixed 2026-04-21)**: All 10 Puppeteer-dependent companies crashed with `posix_spawn` error (Chrome binary issue in `:latest` Docker image). Migrated 7 to API scrapers: Datadog/LinkedIn (Greenhouse), Amazon (custom JSON API), Rivian/Costco (iCIMS REST API), Intuit (TalentBrew HTML parser), Zerodha (custom REST API). Pinned Docker image to `24.2.0` for remaining 3 (Google, eBay, Ametek).
+- **iCIMS API keyword search inconsistency**: iCIMS `q=` param doesn't filter at Rivian (returns all 668 jobs). Use `keywords=` param instead (works for Costco: 9 results). Different iCIMS instances behave differently.
+- **Docker `:latest` tag drift**: `ghcr.io/puppeteer/puppeteer:latest` pulled a broken Chrome build. Always pin Docker base images to a specific version.
+- **Puppeteer version must match Docker image**: Docker image `24.2.0` bundles Chrome for puppeteer 24.2.0. If package.json has `^24.2.0`, npm installs 24.36.1 which wants Chrome 144 (not in image). Must pin exact: `"puppeteer": "24.2.0"` (no caret).
+- **Oracle HCM API**: Uses `recruitingCEJobRequisitions` REST endpoint. Requires `tenantUrl` (e.g. `https://jpmc.fa.oraclecloud.com`) and `siteNumber` (e.g. `CX_1001`). Returns all keyword matches, not just PM titles.
+- **Phase 6 migration complete (2026-04-22)**: Dropped legacy `favorites` table and `companies.user_id` column. Both replaced months ago by `user_job_favorites` and `user_subscriptions`.
+- **Empty locations default to excluded (fixed 2026-04-22)**: `isUSLocation("")` now returns `false`. Previously returned `true`, which included jobs with no location data.
+- **Oregon pattern case-sensitive (fixed 2026-04-22)**: `/\bOR\b/` (no `i` flag). Was matching the English word "or" in locations like "Bangalore or Remote".
 
 ## Check-Then-Add Flow
 

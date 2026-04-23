@@ -22,6 +22,9 @@ How a personal localhost script became a production multi-user SaaS, built entir
 | 12. Cron Reliability | Daily scrape sometimes didn't finish | Await-based cron endpoint, overlap guard, 120s Puppeteer timeout, single-source scheduling | My hosting provider puts the server to sleep when it's idle. If the daily job says "start scraping" and immediately hangs up, the server falls asleep mid-scrape. It has to stay on the line until the work is done. |
 | 13. DB Performance | Queries slowing as data grew | Targeted indexes based on actual query patterns, parallel query execution, local JWT verification (0ms vs 150ms) | Database indexes are like a book's index: add them for the questions you actually ask, not every possible question. Also, verifying login tokens locally instead of calling an external service cut 150ms off every single request. |
 | 14. AI Tools | Building a full-stack SaaS as a PM, not an engineer | Used Claude Code for implementation, maintained CLAUDE.md as persistent context, steered all product/architecture decisions | AI wrote the code, but I made every product decision. The key skill is keeping a detailed context file so the AI remembers your architecture across sessions. Without it, you re-explain everything constantly. |
+| 15. Self-Healing Scrapers | Companies change job platforms without warning, breaking the scraper silently | Auto-remediation detects platform migrations and re-scrapes, two-tier admin email shows what was fixed vs what needs attention | The hardest bugs to find are the ones that look like "working correctly." Zero PM jobs from a company could mean "they're not hiring PMs" or "the scraper is broken." Distinguishing between those two requires knowing that scrapers pre-filter internally, so an empty result is ambiguous. |
+| 16. Data Quality Pipeline | Microsoft showed 157 jobs including India, daily email had no quality checks | Backend location filtering (US only), daily eval email with per-company scorecard showing what passed and what failed | Filtering in the UI isn't filtering. If the backend stores and emails unfiltered data, the "filter" is just hiding the problem from some users while showing it to others. Always apply data quality rules at the source. |
+| 17. Puppeteer Elimination + Catalog Expansion | 10 companies broke overnight, catalog was only 55 companies | Researched ATS for every company, built 5 new scraper types, expanded catalog to 126 (118 API-based), ran full security audit | When a dependency breaks, the fix isn't to patch the dependency. It's to ask whether you need it at all. Also: npm version ranges (^) in Docker builds are a time bomb. Pin exact versions. |
 
 ---
 
@@ -447,6 +450,98 @@ This entire product was built using AI coding tools, primarily Claude Code (comm
 
 ---
 
+## Phase 15: Self-Healing Scrapers
+
+**Goal:** Stop scraper failures from being invisible until a user complains.
+
+### What I Built
+
+Companies change their job board platforms without warning. Anthropic moved from Ashby to Greenhouse. Microsoft's Eightfold API started returning HTML instead of JSON from a custom domain. When these things happen, the daily scrape silently returns zero results, and nobody knows until someone checks their dashboard days later.
+
+I built an auto-remediation system into the daily cron. When a scraper returns zero jobs for a non-custom company, the system automatically runs platform detection to check if the company switched ATS providers. If it finds a new platform, it updates the database, re-scrapes with the correct scraper, and tracks the fix. The daily admin email now has two sections: a green "auto-fixed" section showing what the system repaired on its own (e.g., "Anthropic: ashby to greenhouse") and a red "still needs attention" section for failures that require manual investigation.
+
+I also fixed a subtle false-alarm problem. Most scrapers pre-filter jobs by PM keywords internally, which means zero results could mean "no PM roles at this company right now" or "the scraper is completely broken." The system was treating both the same way. Now, actual scraper failures throw exceptions (caught by error handling), while zero PM results are treated as valid outcomes. This eliminated phantom alerts for companies like Bitkraft and Slack that simply had no PM openings.
+
+### Key Decisions
+
+**Auto-remediate only for known ATS platforms, not custom scrapers.** Companies like Stripe, Google, and Netflix have bespoke scraping logic that can't be auto-detected. If Stripe changes their careers page, a human needs to look at it. But for the 35+ companies on standard ATS platforms (Greenhouse, Lever, Ashby, Workday), platform switches are detectable and fixable automatically. The tradeoff is that custom scraper companies still require manual intervention, but they're a small minority (6 out of 45+).
+
+**Two-tier email instead of just a failure dump.** The old admin email was a wall of red: "these companies failed." The new one separates auto-fixes (green, informational) from real problems (red, actionable). This means the admin can glance at the email and immediately know: do I need to do anything today, or did the system handle it? The tradeoff is slightly more complex email templating, but the operational benefit is significant.
+
+**Removed the zero-results alert entirely.** My first instinct was to alert on zero PM jobs. But after investigating four "failures," two of them (Bitkraft, Slack) were actually correct: those companies just weren't hiring PMs. Alerting on ambiguous signals creates noise that trains the operator to ignore alerts. Better to only alert on unambiguous failures (exceptions) and let the auto-remediation handle the rest.
+
+### What I Learned
+
+**The hardest bugs look like correct behavior.** Anthropic's scraper was returning zero jobs, which looked exactly like "Anthropic isn't hiring PMs." The actual problem was that they changed platforms entirely. The only way to distinguish "zero results because no PM roles" from "zero results because the scraper is pointed at the wrong platform" is to re-run platform detection. This is why the auto-remediation step exists.
+
+**Pre-filtering creates ambiguity that post-filtering doesn't.** If every scraper returned ALL jobs and filtering happened afterward, I could easily distinguish "company has 200 jobs but none are PM" from "scraper returned nothing." But pre-filtering (which is faster and uses less memory) makes the output ambiguous. I kept pre-filtering for performance but added the auto-remediation layer to handle the ambiguity it creates.
+
+**Alert fatigue is worse than missing alerts.** Four alerts per day for non-issues would train me to stop reading the admin email within a week. Reducing alerts to only genuine, actionable failures keeps the signal-to-noise ratio high. The auto-remediation section in the email gives confidence that the system is working without requiring action.
+
+---
+
+## Phase 16: Data Quality Pipeline
+
+**Goal:** Stop bad data from reaching users, and give me a daily health report so I catch issues before anyone else does.
+
+### What I Built
+
+Microsoft was showing 157 PM jobs in the daily email. When I looked closer, dozens were from India, the UK, and other countries. The root cause was embarrassing in hindsight: location filtering only existed as a frontend toggle. The backend was storing every global PM job in the database and including all of them in email alerts. The "US Only" button on the dashboard was hiding the problem from the UI, but the email had no such filter.
+
+I ported the location detection to the backend and added a second filter pass in the validation pipeline. Every scraped job now goes through two gates: first, does the title match PM keywords? Second, is the location in the US? Non-US jobs get filtered before they ever touch the database. I also added explicit non-US patterns (60+ covering India, UK, Germany, Canada, Singapore, Japan, and many more) instead of just checking for US matches. If a location doesn't match anything either way, it gets excluded by default. Safer to miss an unusual US location string than to email someone jobs from Bangalore.
+
+The second part was the daily quality evaluation. After every cron scrape, the system now runs a quality check across every company and sends me a scorecard email. Each company gets a row showing: how many US jobs it has, how many non-US jobs were filtered out, how the count changed from yesterday, its quality score, and whether any checks flagged issues. Companies with problems sort to the top of the table (critical first, then warnings), so I can glance at the email and immediately see if anything needs attention. The checks cover absurd job counts (more than 100 PM jobs for one company is suspicious), sudden spikes or drops, zero jobs for companies that have subscribers, and low quality scores.
+
+### Key Decisions
+
+**Filter at the validation layer, not in each scraper.** Every scraper (Greenhouse, Lever, Ashby, Workday, Eightfold, and all the rest) flows through `validateScrapeResults()` before anything gets saved. Adding the location filter there means it applies universally with zero changes to individual scrapers. The alternative was adding location filtering to each of the 8+ scrapers, which would have been fragile and easy to forget when adding new ones.
+
+**Default unknown locations to excluded.** The frontend version of `isUSLocation()` treated unknown locations as US (show them by default). The backend version does the opposite: if a location string doesn't match any US or non-US pattern, exclude it. The tradeoff is that a small number of US jobs with unusual location formatting might get filtered out, but the alternative (including unknown international locations) is worse because it's the exact problem that caused the Microsoft incident.
+
+**Always-send eval email.** The quality report sends even when everything is fine. This seems wasteful, but it solves an important problem: if the email stops arriving, I know the cron itself is broken. A report that only sends on failure gives no signal when the monitoring system fails silently.
+
+### What I Learned
+
+**UI filtering is not data filtering.** I had `isUSLocation()` on the frontend and assumed the location problem was handled. But the daily email doesn't go through the frontend. The database counts don't go through the frontend. The admin dashboard doesn't go through the frontend. A filter that only exists in the presentation layer is protecting one view while leaving every other channel exposed. Data quality rules belong at the source, before storage.
+
+**Negative patterns are as important as positive ones.** My first version only checked for US patterns (state names, city names, "Remote"). It would have missed a location like "Hyderabad, Telangana" that doesn't contain any US keywords but also isn't in any US pattern list. Adding explicit non-US patterns (NON_US_PATTERNS) catches these definitively. The two lists work together: non-US check first (reject), then US check (accept), then default (reject).
+
+**A daily health report changes how you operate.** Before this, I found out about data quality issues when I happened to notice something wrong in an email or a user complained. Now I have a structured report that runs every morning, showing me every company's status at a glance. The difference is between reactive firefighting and proactive quality management. Even if nothing is wrong, seeing "all checks passed" across 45 companies is reassuring.
+
+---
+
+## Phase 17: Puppeteer Elimination and Catalog Expansion
+
+**Goal:** Recover 10 broken companies, eliminate Puppeteer dependency wherever possible, and expand the catalog from 55 to 126 companies.
+
+### What I Built
+
+I woke up to an admin email showing 10 companies failing with identical Chrome crash errors. All of them used Puppeteer, the headless browser that loads career pages and extracts job listings from the rendered HTML. The root cause was that the Docker base image (which bundles Chrome) had silently updated to a broken version. Every company that depended on browser-based scraping broke at once.
+
+Instead of just pinning the Docker image and moving on, I treated this as an opportunity to eliminate the Puppeteer dependency wherever possible. For each of the 10 companies, I researched what ATS (applicant tracking system) platform they actually used by probing known API endpoints. Datadog and LinkedIn turned out to be on Greenhouse, which I already had an API scraper for. Amazon has its own public search API at `amazon.jobs`. Rivian and Costco both run on iCIMS, which exposes a REST API I hadn't known about. Intuit uses a platform called TalentBrew that returns HTML fragments inside a JSON wrapper, which I could parse without a browser. Zerodha has a simple REST API for their career listings.
+
+I built four new scraper types: an iCIMS REST API scraper (used by Rivian and Costco), a TalentBrew HTML parser (for Intuit), an Amazon Jobs API scraper, and an Oracle HCM Cloud scraper (for JPMorgan Chase and Oracle). Seven of the original ten companies now use API-based scraping. For the remaining three (Google, eBay, and Ametek), their platforms genuinely require a browser. I pinned the Docker image to a known working version for those.
+
+With the scraper infrastructure proven out, I expanded the catalog from 55 to 126 companies. For every new company, I researched its ATS platform by probing API endpoints before adding it. 118 of 126 companies use pure API scrapers. Only 8 need Puppeteer (Google, eBay, Ametek, Apple, Meta, Wayfair, Tesla, TikTok). I also removed two India-focused companies (Zerodha, Razorpay) that had no US PM presence, ran the long-deferred Phase 6 database migration to drop legacy columns, and completed a full security and correctness audit that caught 16 issues including a critical blocklist gap that could have corrupted scraper configurations.
+
+### Key Decisions
+
+**Research each company's ATS instead of fixing Puppeteer.** The easy fix would have been to pin the Docker image and move on. But Puppeteer is inherently fragile: it launches a full Chrome browser in a container, uses significant memory, times out on slow pages, and breaks when the base image updates. Every company I could move to a direct API call became permanently more reliable. The tradeoff is development time (building 4 new scraper types) versus ongoing maintenance time (debugging Puppeteer failures every few weeks).
+
+**Accept that some companies genuinely need Puppeteer.** eBay uses Phenom People, which requires authentication tokens that can only be extracted from a browser session. Google's career site is a custom SPA with no public API. Ametek uses SAP SuccessFactors. For these three, there's no clean API path, so Puppeteer remains necessary. I pinned the Docker image rather than using `:latest`, which prevents silent breakage.
+
+**Use keyword filtering at the API level where possible.** Costco's iCIMS instance has 26,000+ job listings. Fetching all of them and filtering for PM roles would be wasteful. The iCIMS API supports a `keywords` parameter that narrows it to 9 results. But I discovered that different iCIMS instances handle query parameters differently: Rivian's `q=product+manager` parameter returns all 668 jobs unfiltered. So the scraper uses `keywords` (which works) and falls back gracefully when filtering isn't available.
+
+### What I Learned
+
+**The label "generic" was hiding opportunity.** Ten companies were marked as "generic" platform type in the database, meaning "we don't know what ATS they use, so use Puppeteer." When I actually investigated, seven of them had perfectly usable APIs. The "generic" label wasn't a platform assessment, it was a lack of investigation. I should have probed these earlier instead of accepting Puppeteer as the default.
+
+**Docker `:latest` is a landmine.** The Puppeteer Docker image updated silently, and because I was pulling `:latest`, every deploy got the broken version. This is a well-known anti-pattern but easy to overlook when things have been working. Pinning to a specific version tag means updates are intentional, not accidental. This applies to any Docker base image, not just Puppeteer.
+
+**iCIMS has a hidden REST API.** iCIMS is one of the biggest ATS platforms, but its documentation is aimed at enterprise customers, not scraper developers. The `/api/jobs` endpoint that Rivian and Costco expose isn't widely documented, but it returns clean JSON with job titles, locations, and slugs. Finding it required inspecting network traffic on the career page. This pattern likely works for many other iCIMS-powered career sites.
+
+---
+
 ## Summary of Concepts Learned
 
 | # | Concept | Where I Learned It |
@@ -471,3 +566,12 @@ This entire product was built using AI coding tools, primarily Claude Code (comm
 | 18 | N+1 query detection and parallel execution | Multi-user query refactoring (Phase 13) |
 | 19 | AI context management (CLAUDE.md pattern) | Building the entire project with AI tools (Phase 14) |
 | 20 | DNS security (DMARC, DKIM, SPF) | Email deliverability (Phase 9) |
+| 21 | Auto-remediation for platform migrations | Self-healing scrapers (Phase 15) |
+| 22 | Distinguishing ambiguous zero results from real failures | False alert elimination (Phase 15) |
+| 23 | Two-tier operational alerting (auto-fixed vs needs attention) | Admin email upgrade (Phase 15) |
+| 24 | Backend vs frontend data filtering (filter at the source) | Microsoft location bug (Phase 16) |
+| 25 | Daily quality evaluation with per-company scorecards | Data quality pipeline (Phase 16) |
+| 26 | Negative pattern matching (NON_US_PATTERNS) | Location filtering design (Phase 16) |
+| 27 | Docker image pinning (never use :latest in production) | Puppeteer crash recovery (Phase 17) |
+| 28 | Hidden REST APIs behind enterprise ATS platforms (iCIMS, TalentBrew) | ATS research and migration (Phase 17) |
+| 29 | Dependency elimination over dependency repair | Puppeteer mass migration (Phase 17) |
