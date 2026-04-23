@@ -46,7 +46,19 @@ const NON_US_PATTERNS = [
   /\bNigeria\b/i, /\bLagos\b/i,
   /\bKenya\b/i, /\bNairobi\b/i,
   /\bEMEA\b/i, /\bAPAC\b/i, /\bLATAM\b/i,
+  // Canadian province abbreviations (prevents "ON,CA" from matching California)
+  /\bON,\s*CA\b/, /\bBC,\s*CA\b/, /\bAB,\s*CA\b/, /\bQC,\s*CA\b/, /\bMB,\s*CA\b/,
+  /\bSK,\s*CA\b/, /\bNS,\s*CA\b/, /\bNB,\s*CA\b/, /\bNL,\s*CA\b/, /\bPE,\s*CA\b/,
+  /\bOntario\b/i, /\bBritish Columbia\b/i, /\bAlberta\b/i, /\bQuebec\b/i, /\bOttawa\b/i, /\bCalgary\b/i, /\bEdmonton\b/i, /\bWinnipeg\b/i,
 ];
+
+// US state/territory abbreviations — must NOT be confused with country codes
+const US_STATES = new Set([
+  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS",
+  "KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY",
+  "NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV",
+  "WI","WY","DC","PR","GU","VI","AS","MP",
+]);
 
 export function isUSLocation(location: string | null): boolean {
   if (!location || !location.trim()) return false; // Unknown/empty location — exclude by default (safer)
@@ -59,9 +71,11 @@ export function isUSLocation(location: string | null): boolean {
     const parts = seg.split(",").map((p) => p.trim());
     if (parts.length >= 2) {
       const lastPart = parts[parts.length - 1];
-      // "City, State, US" (3 parts) or "State,US" / "Province,CA" (2 parts)
-      // If the last part is a 2-letter country code that isn't US, reject
-      if (/^[A-Z]{2}$/.test(lastPart) && lastPart !== "US") {
+      // If the last part is a 2-letter code, check if it's a US state or "US"
+      // "San Francisco, CA" → CA is a state → don't reject
+      // "ON, CA" (Ontario, Canada) → CA looks like a state, but handled by NON_US_PATTERNS below
+      // "Bengaluru, KA, IN" → IN is not a US state → reject
+      if (/^[A-Z]{2}$/.test(lastPart) && lastPart !== "US" && !US_STATES.has(lastPart)) {
         return false;
       }
     }
