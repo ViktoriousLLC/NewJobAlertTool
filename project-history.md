@@ -875,3 +875,30 @@ Expanded from 55 to 126 companies by researching ATS platforms for all major US 
 
 ### Key insight
 Puppeteer npm version and Docker image version must match exactly. Docker image `ghcr.io/puppeteer/puppeteer:24.2.0` bundles Chrome for puppeteer 24.2.0. If `package.json` uses `^24.2.0`, npm resolves to the latest 24.x (24.36.1), which needs a different Chrome than what's in the image. The fix is `"puppeteer": "24.2.0"` (no caret). Three separate Dockerfile attempts failed before this root cause was identified.
+
+---
+
+## 2026-04-23 — Location Filter Critical Bug: US State Abbreviations Rejected
+
+### Context
+Daily quality eval showed Lyft, Robinhood, Gusto, Duolingo, Scale AI, Visa, and others with 0 US jobs despite having obvious US PM roles (San Francisco, CA; New York, NY). All jobs were being classified as non-US.
+
+### What was decided
+Root cause: The April 1 fix for "ON,CA" (Ontario, Canada) changed the structured format check from 3+ parts to 2+ parts. This made "San Francisco, CA" trigger the check: "CA" is a 2-letter code != "US", so it was rejected. Every US city/state location was silently filtered out for ~3 weeks.
+
+**Added `US_STATES` set to `locationFilter.ts`.**
+- 50 states + DC + PR/GU/VI/AS/MP
+- 2-letter code check now skips US state abbreviations
+- "San Francisco, CA" → CA is a US state → passes
+- "Bengaluru, KA, IN" → IN is not a US state → rejected
+
+**Added Canadian province patterns to `NON_US_PATTERNS`.**
+- "ON,CA" now caught by explicit `/\bON,\s*CA\b/` pattern
+- Also added BC,CA; AB,CA; QC,CA; etc.
+- Added city names: Ottawa, Calgary, Edmonton, Winnipeg
+
+### Key insight
+Location filter bugs are invisible. The scraper succeeds, jobs are simply excluded silently. The only signal was the daily quality eval's "high non-US ratio" flag. Without that monitoring layer (added in Phase 16), this bug would have silently excluded US jobs for months. The lesson from the original April 1 fix also applies: a fix for one edge case ("ON,CA") can break the common case ("San Francisco, CA") if the abstraction is too broad.
+
+### Results (2026-04-25)
+All 126 companies succeeding with zero errors. Recovered: Lyft 13 jobs, Robinhood 6, Gusto 10, Duolingo 9, Google 42, eBay 3. Puppeteer fix also confirmed working.
