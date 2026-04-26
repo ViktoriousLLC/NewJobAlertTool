@@ -226,6 +226,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         totalPmJobs: validation.totalPmJobs,
         qualityScore: validation.qualityScore,
         subscriberCount: company.subscriber_count ?? 0,
+        isFirstScrape: !company.last_checked_at,
       });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : "unknown";

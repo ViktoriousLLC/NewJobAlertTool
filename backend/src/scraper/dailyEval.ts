@@ -8,6 +8,7 @@ export interface CompanyQualityData {
   totalPmJobs: number;
   qualityScore: number;
   subscriberCount: number;
+  isFirstScrape: boolean;
 }
 
 export type IssueSeverity = "critical" | "warning" | "info";
@@ -55,28 +56,7 @@ export function evaluateDailyQuality(
 
     const companyIssues: QualityIssue[] = [];
 
-    // 1. Absurd job count (>100 US PM jobs for one company)
-    if (data.currentJobCount > 100) {
-      companyIssues.push({
-        company: data.companyName,
-        checkType: "Absurd job count",
-        severity: "critical",
-        message: `${data.currentJobCount} active US PM jobs`,
-      });
-    }
-
-    // 2. High non-US filtering (>50% of PM jobs were non-US)
-    if (data.totalPmJobs > 5 && data.nonUsFiltered / data.totalPmJobs > 0.5) {
-      const pct = Math.round((data.nonUsFiltered / data.totalPmJobs) * 100);
-      companyIssues.push({
-        company: data.companyName,
-        checkType: "High non-US ratio",
-        severity: "warning",
-        message: `${pct}% non-US (${data.nonUsFiltered}/${data.totalPmJobs} filtered)`,
-      });
-    }
-
-    // 3. Sudden spike (>100% increase AND >10 absolute)
+    // 1. Sudden spike (>100% increase AND >10 absolute)
     if (
       data.prevJobCount > 0 &&
       data.currentJobCount > data.prevJobCount * 2 &&
@@ -90,7 +70,7 @@ export function evaluateDailyQuality(
       });
     }
 
-    // 4. Sudden drop (>50% decrease AND >10 absolute)
+    // 2. Sudden drop (>50% decrease AND >10 absolute)
     if (
       data.prevJobCount > 0 &&
       data.currentJobCount < data.prevJobCount * 0.5 &&
@@ -104,7 +84,7 @@ export function evaluateDailyQuality(
       });
     }
 
-    // 5. Zero jobs for subscribed companies
+    // 3. Zero jobs for subscribed companies
     if (data.currentJobCount === 0 && data.subscriberCount > 0) {
       companyIssues.push({
         company: data.companyName,
@@ -114,13 +94,13 @@ export function evaluateDailyQuality(
       });
     }
 
-    // 6. Low quality score
-    if (data.qualityScore < 50 && data.qualityScore > 0) {
+    // 4. First scrape results (show once so admin can eyeball)
+    if (data.isFirstScrape && data.currentJobCount > 0) {
       companyIssues.push({
         company: data.companyName,
-        checkType: "Low quality score",
-        severity: "warning",
-        message: `Score: ${data.qualityScore}/100`,
+        checkType: "First scrape",
+        severity: "info",
+        message: `${data.currentJobCount} US PM jobs (${data.nonUsFiltered} non-US filtered)`,
       });
     }
 
