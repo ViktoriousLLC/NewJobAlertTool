@@ -134,7 +134,7 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 
 **Post-scrape validation** (`validateScrape.ts`): Two-pass filtering: (1) PM_KEYWORDS (17 keywords), (2) US location filter via `isUSLocation()` from `lib/locationFilter.ts`. Non-US jobs never enter the DB. Also flags zero results/vague locations/dupes, returns quality score + `nonUsFilteredCount`. Company-specific extra exclusions (`COMPANY_EXTRA_EXCLUSIONS`) filter out non-PM program manager variants (TPMs, business PMs, etc.) even when company extra keywords match.
 
-**Daily quality eval** (`dailyEval.ts`, added 2026-03-22): Runs after scraping, before emails. Checks every company for: absurd job counts (>100), high non-US ratio (>50%), sudden spikes/drops, zero jobs for subscribed companies, low quality scores (<50). Sends admin email with full per-company scorecard (issues at top, clean at bottom). Critical issues also go to Sentry.
+**Daily quality eval** (`dailyEval.ts`, simplified 2026-04-26): Runs after scraping, before emails. Only flags actionable issues: sudden spikes/drops (>100%/50% change AND >10 absolute), zero jobs for subscribed companies, first-scrape results. Removed noisy checks: absurd job counts, high non-US ratio, low quality scores. Sends admin email with per-company scorecard (issues at top, clean at bottom). Critical issues also go to Sentry.
 
 **Company name detection** (`detectCompanyName.ts`): 40+ known hosts, ATS slug fallback, generic hostname fallback.
 

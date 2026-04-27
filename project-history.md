@@ -902,3 +902,26 @@ Location filter bugs are invisible. The scraper succeeds, jobs are simply exclud
 
 ### Results (2026-04-25)
 All 126 companies succeeding with zero errors. Recovered: Lyft 13 jobs, Robinhood 6, Gusto 10, Duolingo 9, Google 42, eBay 3. Puppeteer fix also confirmed working.
+
+---
+
+## 2026-04-26 — Simplified Daily Quality Eval
+
+### Context
+The daily quality email was flagging 20+ companies every day with warnings that were correct but not actionable: "Amazon has 252 PM jobs" (yes, they're a huge company), "Visa has 100% non-US ratio" (yes, their PM roles are in Poland), "Contentful has 100% non-US" (yes, they're European). The email was noise, not signal. The user's goal was catching broken scrapers, not monitoring steady-state counts.
+
+### What was decided
+Removed three checks that generated repeat noise:
+- "Absurd job count" (>100) — spike detection catches anomalies, steady high counts aren't problems
+- "High non-US ratio" (>50%) — the filter is working correctly, not worth reporting daily
+- "Low quality score" (<50) — derivative of other checks, not independently useful
+
+Kept two checks that catch real problems:
+- Spike/drop detection (>100%/50% change AND >10 absolute change)
+- Zero jobs for subscribed companies (direct user impact)
+
+Added one new check:
+- First-scrape results (shows a company's first scrape results once, so admin can eyeball new additions)
+
+### Key insight
+Monitoring that alerts on known-good states trains you to ignore the alerts. The email goes from "daily health report" to "daily annoyance." The right threshold for automated monitoring isn't "anything unusual" — it's "anything that changed unexpectedly." Steady states, even unusual ones, should be silent.
