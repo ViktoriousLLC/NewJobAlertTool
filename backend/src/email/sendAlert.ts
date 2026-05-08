@@ -331,14 +331,16 @@ export async function notifyAdminOfScrapeFailures(
   failures: { name: string; error: string }[],
   remediations?: { name: string; from: string; to: string }[],
   stealthRecovered?: { name: string; jobCount: number }[],
-  autoDisabled?: { name: string; reason: string }[]
+  autoDisabled?: { name: string; reason: string }[],
+  reEnabled?: { name: string; jobCount: number }[]
 ): Promise<void> {
   const stealthCount = stealthRecovered?.length || 0;
   const disabledCount = autoDisabled?.length || 0;
   const remediationCount = remediations?.length || 0;
+  const reEnabledCount = reEnabled?.length || 0;
   if (
     !process.env.RESEND_API_KEY ||
-    (failures.length === 0 && remediationCount === 0 && stealthCount === 0 && disabledCount === 0)
+    (failures.length === 0 && remediationCount === 0 && stealthCount === 0 && disabledCount === 0 && reEnabledCount === 0)
   ) return;
 
   const { ADMIN_EMAIL } = await import("../lib/constants");
@@ -362,6 +364,11 @@ export async function notifyAdminOfScrapeFailures(
     .map((d) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(d.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#ea580c;font-size:13px;">${escapeHtml(d.reason.slice(0, 200))}</td></tr>`)
     .join("");
 
+  // Build re-enabled rows (green, watch-list probe found jobs)
+  const reEnabledRows = (reEnabled || [])
+    .map((r) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(r.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#16a34a;font-size:13px;">Watch-list probe re-enabled — ${r.jobCount} jobs</td></tr>`)
+    .join("");
+
   // Build failure rows (red, still broken)
   const failureRows = failures
     .map((f) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(f.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#dc2626;font-size:13px;">${escapeHtml(f.error.slice(0, 200))}</td></tr>`)
@@ -370,14 +377,24 @@ export async function notifyAdminOfScrapeFailures(
   // Build subject line
   const parts: string[] = [];
   if (fixedCount > 0) parts.push(`${fixedCount} auto-fixed`);
+  if (reEnabledCount > 0) parts.push(`${reEnabledCount} re-enabled`);
   if (disabledCount > 0) parts.push(`${disabledCount} auto-disabled`);
   if (stillBroken > 0) parts.push(`${stillBroken} still broken`);
-  const subject = fixedCount > 0 && stillBroken === 0 && disabledCount === 0
-    ? `Scrape Report: ${fixedCount} issues auto-fixed ✓`
+  const subject = (fixedCount > 0 || reEnabledCount > 0) && stillBroken === 0 && disabledCount === 0
+    ? `Scrape Report: ${fixedCount + reEnabledCount} issues handled ✓`
     : `Scrape Alert: ${parts.join(", ")}`;
 
   // Build HTML sections
   let html = "";
+  if (reEnabledCount > 0) {
+    html += `
+      <p style="color:#16a34a;font-weight:bold;">✓ Watch-list re-enabled (${reEnabledCount})</p>
+      <p style="font-size:13px;color:#666;">Companies that auto-disabled previously but came back online during today's Monday probe.</p>
+      <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
+        <tr style="background:#f0fdf4;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">What happened</th></tr>
+        ${reEnabledRows}
+      </table>`;
+  }
   if (remediationCount > 0) {
     html += `
       <p style="color:#16a34a;font-weight:bold;">✓ Auto-fixed (${remediationCount})</p>
@@ -421,7 +438,7 @@ export async function notifyAdminOfScrapeFailures(
       subject,
       html,
     });
-    console.log(`Admin scrape email sent (${remediationCount} remediated, ${stealthCount} stealth-recovered, ${disabledCount} auto-disabled, ${stillBroken} still broken)`);
+    console.log(`Admin scrape email sent (${remediationCount} remediated, ${stealthCount} stealth-recovered, ${reEnabledCount} re-enabled, ${disabledCount} auto-disabled, ${stillBroken} still broken)`);
   } catch (err) {
     console.error("Failed to send admin scrape failure notification:", err);
   }

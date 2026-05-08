@@ -55,18 +55,27 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
   const autoRemediated: { name: string; from: string; to: string }[] = [];
   const stealthRecovered: { name: string; jobCount: number }[] = [];
   const autoDisabled: { name: string; reason: string }[] = [];
+  const reEnabled: { name: string; jobCount: number }[] = [];
 
   // Collect quality data for daily eval
   const qualityData: Map<string, CompanyQualityData> = new Map();
 
   // Self-healing: companies auto-disabled after AUTO_DISABLE_THRESHOLD consecutive
-  // failures. Skipped from scraping until manually re-enabled (admin clears the flag).
+  // failures. Skipped from scraping until probe day (Monday) gives them another chance.
   const AUTO_DISABLE_THRESHOLD = 7;
+  // Watch list: every Monday (UTC), probe all auto-disabled companies once. Successful
+  // probes auto-re-enable; still-broken probes don't increment the counter further.
+  const PROBE_DAY_OF_WEEK = 1; // 0=Sunday, 1=Monday
+  const isProbeDay = new Date().getUTCDay() === PROBE_DAY_OF_WEEK;
 
   for (const company of companies) {
-    if (company.auto_disabled) {
-      console.log(`Skipping ${company.name} (auto-disabled after sustained failures)`);
+    const isProbing = company.auto_disabled && isProbeDay;
+    if (company.auto_disabled && !isProbing) {
+      console.log(`Skipping ${company.name} (auto-disabled, next probe Monday UTC)`);
       continue;
+    }
+    if (isProbing) {
+      console.log(`PROBING auto-disabled ${company.name} (Monday watch-list check)`);
     }
 
     try {
@@ -242,10 +251,19 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         .eq("status", "active");
 
       // Update company status. Successful scrape (any jobs found, even 0) resets
-      // the consecutive_failure_count so the auto-disable counter starts fresh.
+      // the consecutive_failure_count and clears auto_disabled — a probe-day success
+      // re-enables the company automatically.
       const checkStatus = validation.warnings.length > 0
         ? `success (quality: ${validation.qualityScore}/100)`
         : "success";
+      if (isProbing && jobs.length > 0) {
+        reEnabled.push({ name: company.name, jobCount: jobs.length });
+        Sentry.captureMessage(`Auto-re-enabled ${company.name} via Monday probe (${jobs.length} jobs)`, {
+          level: "info",
+          tags: { company: company.name, phase: "auto-re-enable" },
+        });
+        console.log(`${company.name}: AUTO-RE-ENABLED via Monday probe (${jobs.length} jobs)`);
+      }
       await supabase
         .from("companies")
         .update({
@@ -253,6 +271,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
           last_check_status: checkStatus,
           total_product_jobs: activeJobCount ?? 0,
           consecutive_failure_count: 0,
+          auto_disabled: false,
         })
         .eq("id", company.id);
 
@@ -283,17 +302,26 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
 
       failedCompanies.push({ name: company.name, error: errMsg });
 
-      // Increment failure counter; auto-disable at threshold so the system stops
-      // wasting cron time on permanently broken scrapers.
-      const newFailureCount = (company.consecutive_failure_count ?? 0) + 1;
-      const shouldAutoDisable = newFailureCount >= AUTO_DISABLE_THRESHOLD;
-      if (shouldAutoDisable) {
-        autoDisabled.push({ name: company.name, reason: errMsg });
-        Sentry.captureMessage(`Auto-disabled ${company.name} after ${newFailureCount} consecutive failures`, {
-          level: "warning",
-          tags: { company: company.name, phase: "auto-disable" },
-        });
-        console.warn(`${company.name}: AUTO-DISABLED after ${newFailureCount} consecutive failures`);
+      // If this was a probe-day re-attempt, the company stays disabled but we don't
+      // ratchet the counter higher (it's already past the threshold).
+      // Otherwise, increment and auto-disable at the threshold.
+      let newFailureCount: number;
+      let shouldAutoDisable: boolean;
+      if (isProbing) {
+        newFailureCount = company.consecutive_failure_count ?? AUTO_DISABLE_THRESHOLD;
+        shouldAutoDisable = true;
+        console.log(`${company.name}: probe failed — staying auto-disabled`);
+      } else {
+        newFailureCount = (company.consecutive_failure_count ?? 0) + 1;
+        shouldAutoDisable = newFailureCount >= AUTO_DISABLE_THRESHOLD;
+        if (shouldAutoDisable) {
+          autoDisabled.push({ name: company.name, reason: errMsg });
+          Sentry.captureMessage(`Auto-disabled ${company.name} after ${newFailureCount} consecutive failures`, {
+            level: "warning",
+            tags: { company: company.name, phase: "auto-disable" },
+          });
+          console.warn(`${company.name}: AUTO-DISABLED after ${newFailureCount} consecutive failures`);
+        }
       }
 
       await supabase
@@ -338,15 +366,16 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
     }
   }
 
-  // Send admin notification if any companies failed, were auto-fixed, or auto-disabled
+  // Send admin notification if anything noteworthy happened
   if (
     failedCompanies.length > 0 ||
     autoRemediated.length > 0 ||
     stealthRecovered.length > 0 ||
-    autoDisabled.length > 0
+    autoDisabled.length > 0 ||
+    reEnabled.length > 0
   ) {
     console.log(
-      `${failedCompanies.length} failed, ${autoRemediated.length} auto-remediated, ${stealthRecovered.length} stealth-recovered, ${autoDisabled.length} auto-disabled out of ${companies.length} companies`
+      `${failedCompanies.length} failed, ${autoRemediated.length} auto-remediated, ${stealthRecovered.length} stealth-recovered, ${autoDisabled.length} auto-disabled, ${reEnabled.length} re-enabled out of ${companies.length} companies`
     );
     try {
       await notifyAdminOfScrapeFailures(
@@ -354,7 +383,8 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         failedCompanies,
         autoRemediated,
         stealthRecovered,
-        autoDisabled
+        autoDisabled,
+        reEnabled
       );
     } catch (err) {
       console.error("Failed to send admin scrape failure notification:", err);
