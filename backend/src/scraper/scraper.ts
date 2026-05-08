@@ -2145,13 +2145,23 @@ async function scrapeGoogleCareers(careersUrl: string): Promise<ScrapedJob[]> {
 
 /**
  * Coinbase migrated off public Greenhouse (board "coinbase" returns 404).
- * Their careers SPA fetches /api/v2/careers via authenticated/cookied requests.
- * We use Puppeteer to render the page and intercept the API response.
+ * Their careers SPA at /careers/positions fetches /api/v2/careers via cookied requests
+ * but is fronted by Cloudflare bot protection that rejects vanilla Puppeteer.
+ *
+ * Strategy: launch puppeteer-extra with stealth plugin so navigator.webdriver,
+ * window.chrome, permissions API, and a few other tells look like real Chrome.
+ * Land on /careers first to clear Cloudflare and warm up cookies, then client-side
+ * route to /careers/positions so the SPA fires /v2/careers with proper headers.
+ * Intercept the response and parse departments[].jobs[].
  */
 async function scrapeCoinbaseCareers(): Promise<ScrapedJob[]> {
-  console.log("Coinbase: Starting careers scraper (Puppeteer + network intercept)");
+  console.log("Coinbase: Starting careers scraper (stealth Puppeteer + intercept)");
 
-  const browser = await puppeteer.launch({
+  const puppeteerExtra = (await import("puppeteer-extra")).default;
+  const StealthPlugin = (await import("puppeteer-extra-plugin-stealth")).default;
+  puppeteerExtra.use(StealthPlugin());
+
+  const browser = await puppeteerExtra.launch({
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
@@ -2167,14 +2177,18 @@ async function scrapeCoinbaseCareers(): Promise<ScrapedJob[]> {
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     );
+    await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
 
     type CoinbaseJob = { id: number | string; title: string; location?: { name?: string }; absolute_url?: string };
     type CoinbaseData = { departments?: Array<{ name: string; jobs: CoinbaseJob[] }> };
     let careersPayload: CoinbaseData | null = null;
+    let lastApiStatus: number | null = null;
 
     page.on("response", async (res) => {
       const url = res.url();
       if (!/\/v2\/careers(\?|$)/.test(url)) return;
+      lastApiStatus = res.status();
+      if (res.status() !== 200) return;
       try {
         const json = await res.json();
         if (json && json.data) careersPayload = json.data as CoinbaseData;
@@ -2183,19 +2197,29 @@ async function scrapeCoinbaseCareers(): Promise<ScrapedJob[]> {
       }
     });
 
-    await page.goto("https://www.coinbase.com/careers/positions", {
+    // Land on /careers first to clear Cloudflare and pick up cookies
+    await page.goto("https://www.coinbase.com/careers", {
       waitUntil: "networkidle2",
       timeout: 60000,
     });
+    await new Promise((r) => setTimeout(r, 2000));
 
-    // Give the SPA time to fire the careers API call
-    for (let i = 0; i < 10 && !careersPayload; i++) {
+    // Client-side route to /careers/positions so the SPA hits /v2/careers
+    await page.evaluate(() => {
+      window.history.pushState({}, "", "/careers/positions");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+
+    // Wait up to 15s for the API response (or a non-200 we should bail on)
+    for (let i = 0; i < 15 && !careersPayload; i++) {
       await new Promise((r) => setTimeout(r, 1000));
     }
 
     const payload = careersPayload as CoinbaseData | null;
     if (!payload || !payload.departments) {
-      throw new Error("Coinbase: /v2/careers response never captured");
+      // Return [] instead of throwing so dailyCheck's stealth fallback tier gets a turn.
+      console.warn(`Coinbase: /v2/careers ${lastApiStatus ?? "never fired"} — returning [] for stealth fallback`);
+      return [];
     }
 
     const allJobs: ScrapedJob[] = [];
@@ -2213,6 +2237,198 @@ async function scrapeCoinbaseCareers(): Promise<ScrapedJob[]> {
   } finally {
     await browser.close();
   }
+}
+
+/**
+ * Generic last-resort scraper using stealth Puppeteer + network sniffing.
+ * Used by dailyCheck.ts when the configured platform scraper AND broadATSDiscovery
+ * both return 0 jobs. Tries to extract jobs from any JSON XHR response that has
+ * the right shape, then falls back to DOM-based extraction.
+ *
+ * Returns ScrapedJob[] (possibly empty). Does NOT throw on failure — returns []
+ * so the caller can decide how to handle.
+ */
+export async function stealthFallbackScrape(careersUrl: string, companyName: string): Promise<ScrapedJob[]> {
+  console.log(`StealthFallback[${companyName}]: starting on ${careersUrl}`);
+
+  const puppeteerExtra = (await import("puppeteer-extra")).default;
+  const StealthPlugin = (await import("puppeteer-extra-plugin-stealth")).default;
+  puppeteerExtra.use(StealthPlugin());
+
+  const browser = await puppeteerExtra.launch({
+    headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+    await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+
+    type Bucket = { url: string; jobs: ScrapedJob[] };
+    const jsonBuckets: Bucket[] = [];
+
+    page.on("response", async (res) => {
+      const url = res.url();
+      if (res.status() !== 200) return;
+      // Only inspect URLs that look careers-related
+      if (!/career|position|job|opening|posting|department|recruit|board/i.test(url)) return;
+      const ct = (res.headers()["content-type"] || "").toLowerCase();
+      if (!ct.includes("json")) return;
+      try {
+        const json = await res.json();
+        const extracted = extractJobsFromUnknownJson(json, careersUrl);
+        if (extracted.length >= 3) jsonBuckets.push({ url, jobs: extracted });
+      } catch {
+        // ignore parse failures
+      }
+    });
+
+    try {
+      await page.goto(careersUrl, { waitUntil: "networkidle2", timeout: 60000 });
+    } catch (err) {
+      console.warn(`StealthFallback[${companyName}]: goto warning:`, err instanceof Error ? err.message : err);
+    }
+    await new Promise((r) => setTimeout(r, 4000));
+
+    // Best JSON bucket wins (largest extracted set from a single response)
+    if (jsonBuckets.length > 0) {
+      jsonBuckets.sort((a, b) => b.jobs.length - a.jobs.length);
+      const winner = jsonBuckets[0];
+      console.log(`StealthFallback[${companyName}]: JSON sniff → ${winner.jobs.length} jobs from ${winner.url}`);
+      return dedupeJobs(winner.jobs);
+    }
+
+    // Fallback: scroll to load lazy content, then DOM-extract job links
+    let prevHeight = 0;
+    for (let i = 0; i < 8; i++) {
+      const h = await page.evaluate(() => document.body.scrollHeight);
+      if (h === prevHeight) break;
+      prevHeight = h;
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+
+    const baseUrl = new URL(careersUrl).origin;
+    const domJobs = await page.evaluate((base) => {
+      const jobRe = /\/(jobs|job|positions|position|careers|openings|roles|postings)\/[a-z0-9][\w-]/i;
+      const skipRe = /\/(search|departments|locations|teams|categories|benefits|culture|about|faq|sitemap)(\/|$|\?)/i;
+      const links = Array.from(document.querySelectorAll("a[href]"));
+      const out: { title: string; location: string; urlPath: string }[] = [];
+      const seen = new Set<string>();
+      for (const link of links) {
+        const href = link.getAttribute("href") || "";
+        if (!jobRe.test(href) || skipRe.test(href)) continue;
+        let urlPath: string;
+        try {
+          urlPath = new URL(href, base).href;
+        } catch {
+          continue;
+        }
+        if (seen.has(urlPath)) continue;
+        seen.add(urlPath);
+        const title = (link.textContent || "").trim().split("\n")[0].slice(0, 200);
+        if (title.length < 4) continue;
+        out.push({ title, location: "", urlPath });
+      }
+      return out;
+    }, baseUrl);
+
+    console.log(`StealthFallback[${companyName}]: DOM extract → ${domJobs.length} jobs`);
+    return dedupeJobs(domJobs);
+  } finally {
+    await browser.close();
+  }
+}
+
+function dedupeJobs(jobs: ScrapedJob[]): ScrapedJob[] {
+  const seen = new Map<string, ScrapedJob>();
+  for (const j of jobs) {
+    if (!seen.has(j.urlPath)) seen.set(j.urlPath, j);
+  }
+  return Array.from(seen.values());
+}
+
+/**
+ * Walks an unknown JSON object and pulls out anything that looks like a job listing.
+ * Looks for arrays of objects where each item has a title-like field plus any
+ * id/location/url hints. Used by stealthFallbackScrape to recover jobs without
+ * knowing the API's schema.
+ */
+function extractJobsFromUnknownJson(root: unknown, baseUrl: string): ScrapedJob[] {
+  const found: ScrapedJob[] = [];
+  const baseOrigin = (() => {
+    try {
+      return new URL(baseUrl).origin;
+    } catch {
+      return "";
+    }
+  })();
+
+  function visit(node: unknown): void {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      // Is this an array of job-like objects?
+      if (node.length >= 1 && typeof node[0] === "object") {
+        const sample = node[0] as Record<string, unknown>;
+        const titleKey = ["title", "name", "jobTitle", "position", "displayName"].find((k) => typeof sample[k] === "string");
+        const idKey = ["id", "jobId", "_id", "identifier", "slug", "absolute_url", "url", "applyUrl"].find((k) => sample[k] !== undefined);
+        if (titleKey && idKey) {
+          for (const item of node) {
+            if (!item || typeof item !== "object") continue;
+            const it = item as Record<string, unknown>;
+            const title = typeof it[titleKey] === "string" ? (it[titleKey] as string) : "";
+            if (!title || title.length < 3) continue;
+            const location = extractLocation(it);
+            const urlPath = extractUrl(it, baseOrigin);
+            if (!urlPath) continue;
+            found.push({ title, location, urlPath });
+          }
+          return; // don't recurse deeper into this array
+        }
+      }
+      for (const child of node) visit(child);
+      return;
+    }
+    if (typeof node === "object") {
+      for (const v of Object.values(node as Record<string, unknown>)) visit(v);
+    }
+  }
+
+  visit(root);
+  return found;
+}
+
+function extractLocation(obj: Record<string, unknown>): string {
+  const candidates = ["location", "locations", "office", "city", "region"];
+  for (const k of candidates) {
+    const v = obj[k];
+    if (typeof v === "string") return v;
+    if (v && typeof v === "object") {
+      const nested = (v as Record<string, unknown>).name || (v as Record<string, unknown>).city;
+      if (typeof nested === "string") return nested;
+    }
+    if (Array.isArray(v) && v.length > 0) {
+      const first = v[0];
+      if (typeof first === "string") return first;
+      if (first && typeof first === "object") {
+        const nested = (first as Record<string, unknown>).name || (first as Record<string, unknown>).city;
+        if (typeof nested === "string") return nested;
+      }
+    }
+  }
+  return "";
+}
+
+function extractUrl(obj: Record<string, unknown>, baseOrigin: string): string {
+  const direct = obj.absolute_url || obj.url || obj.applyUrl || obj.apply_url;
+  if (typeof direct === "string" && direct.startsWith("http")) return direct;
+  const id = obj.id || obj.jobId || obj._id || obj.identifier || obj.slug;
+  if (id !== undefined && baseOrigin) return `${baseOrigin}/jobs/${id}`;
+  return typeof direct === "string" ? direct : "";
 }
 
 

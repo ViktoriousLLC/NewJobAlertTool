@@ -329,19 +329,37 @@ export async function notifyAdminOfFailures(result: BatchSendResult): Promise<vo
 export async function notifyAdminOfScrapeFailures(
   totalCompanies: number,
   failures: { name: string; error: string }[],
-  remediations?: { name: string; from: string; to: string }[]
+  remediations?: { name: string; from: string; to: string }[],
+  stealthRecovered?: { name: string; jobCount: number }[],
+  autoDisabled?: { name: string; reason: string }[]
 ): Promise<void> {
-  if (!process.env.RESEND_API_KEY || (failures.length === 0 && (!remediations || remediations.length === 0))) return;
+  const stealthCount = stealthRecovered?.length || 0;
+  const disabledCount = autoDisabled?.length || 0;
+  const remediationCount = remediations?.length || 0;
+  if (
+    !process.env.RESEND_API_KEY ||
+    (failures.length === 0 && remediationCount === 0 && stealthCount === 0 && disabledCount === 0)
+  ) return;
 
   const { ADMIN_EMAIL } = await import("../lib/constants");
   const resend = new Resend(process.env.RESEND_API_KEY);
 
-  const fixedCount = remediations?.length || 0;
+  const fixedCount = remediationCount + stealthCount;
   const stillBroken = failures.length;
 
   // Build remediation rows (green, auto-fixed)
   const remediationRows = (remediations || [])
     .map((r) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(r.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#16a34a;font-size:13px;">Auto-fixed: ${escapeHtml(r.from)} → ${escapeHtml(r.to)}</td></tr>`)
+    .join("");
+
+  // Build stealth-recovered rows (green, recovered via stealth fallback)
+  const stealthRows = (stealthRecovered || [])
+    .map((s) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(s.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#16a34a;font-size:13px;">Stealth fallback recovered ${s.jobCount} jobs</td></tr>`)
+    .join("");
+
+  // Build auto-disabled rows (orange, sustained failure → disabled)
+  const disabledRows = (autoDisabled || [])
+    .map((d) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(d.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#ea580c;font-size:13px;">${escapeHtml(d.reason.slice(0, 200))}</td></tr>`)
     .join("");
 
   // Build failure rows (red, still broken)
@@ -352,19 +370,37 @@ export async function notifyAdminOfScrapeFailures(
   // Build subject line
   const parts: string[] = [];
   if (fixedCount > 0) parts.push(`${fixedCount} auto-fixed`);
+  if (disabledCount > 0) parts.push(`${disabledCount} auto-disabled`);
   if (stillBroken > 0) parts.push(`${stillBroken} still broken`);
-  const subject = fixedCount > 0 && stillBroken === 0
+  const subject = fixedCount > 0 && stillBroken === 0 && disabledCount === 0
     ? `Scrape Report: ${fixedCount} issues auto-fixed ✓`
     : `Scrape Alert: ${parts.join(", ")}`;
 
   // Build HTML sections
   let html = "";
-  if (fixedCount > 0) {
+  if (remediationCount > 0) {
     html += `
-      <p style="color:#16a34a;font-weight:bold;">✓ Auto-fixed (${fixedCount})</p>
+      <p style="color:#16a34a;font-weight:bold;">✓ Auto-fixed (${remediationCount})</p>
       <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
         <tr style="background:#f0fdf4;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">What happened</th></tr>
         ${remediationRows}
+      </table>`;
+  }
+  if (stealthCount > 0) {
+    html += `
+      <p style="color:#16a34a;font-weight:bold;">✓ Stealth fallback recovered (${stealthCount})</p>
+      <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
+        <tr style="background:#f0fdf4;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">What happened</th></tr>
+        ${stealthRows}
+      </table>`;
+  }
+  if (disabledCount > 0) {
+    html += `
+      <p style="color:#ea580c;font-weight:bold;">⚠ Auto-disabled (${disabledCount})</p>
+      <p style="font-size:13px;color:#666;">These companies failed for 7+ consecutive days and have been removed from the cron loop. Clear <code>auto_disabled=false</code> in the companies table to re-enable.</p>
+      <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
+        <tr style="background:#fff7ed;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">Last error</th></tr>
+        ${disabledRows}
       </table>`;
   }
   if (stillBroken > 0) {
@@ -385,7 +421,7 @@ export async function notifyAdminOfScrapeFailures(
       subject,
       html,
     });
-    console.log(`Admin scrape email sent (${fixedCount} fixed, ${stillBroken} still broken)`);
+    console.log(`Admin scrape email sent (${remediationCount} remediated, ${stealthCount} stealth-recovered, ${disabledCount} auto-disabled, ${stillBroken} still broken)`);
   } catch (err) {
     console.error("Failed to send admin scrape failure notification:", err);
   }

@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
-import { scrapeCompanyCareers } from "../scraper/scraper";
+import { scrapeCompanyCareers, stealthFallbackScrape } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { broadATSDiscovery } from "../scraper/detectPlatform";
 import { sendBatchAlerts, buildAlertEmailPayload, notifyAdminOfFailures, notifyAdminOfScrapeFailures, notifyAdminOfQualityReport, NewJobAlert, EmailPayload } from "../email/sendAlert";
@@ -53,11 +53,22 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
   // Track failures and auto-remediations for admin notification
   const failedCompanies: { name: string; error: string }[] = [];
   const autoRemediated: { name: string; from: string; to: string }[] = [];
+  const stealthRecovered: { name: string; jobCount: number }[] = [];
+  const autoDisabled: { name: string; reason: string }[] = [];
 
   // Collect quality data for daily eval
   const qualityData: Map<string, CompanyQualityData> = new Map();
 
+  // Self-healing: companies auto-disabled after AUTO_DISABLE_THRESHOLD consecutive
+  // failures. Skipped from scraping until manually re-enabled (admin clears the flag).
+  const AUTO_DISABLE_THRESHOLD = 7;
+
   for (const company of companies) {
+    if (company.auto_disabled) {
+      console.log(`Skipping ${company.name} (auto-disabled after sustained failures)`);
+      continue;
+    }
+
     try {
       console.log(`Scraping: ${company.name} (${company.careers_url})`);
       let rawJobs = await scrapeCompanyCareers(
@@ -102,6 +113,38 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
           }
         } catch (err) {
           console.error(`${company.name}: Broad ATS discovery failed:`, err);
+        }
+      }
+
+      // Final tier: stealth Puppeteer fallback when everything else returns 0.
+      // Runs for ALL companies (including custom scrapers) since their primary
+      // scraper has already had its chance. Stealth + JSON sniff + DOM extract
+      // catches sites that have moved off public APIs (e.g. Coinbase) or added
+      // bot protection. Skips if last_check_status was a transient timeout.
+      if (rawJobs.length === 0) {
+        const lastStatus = company.last_check_status || "";
+        const isTransientFailure = /timeout|ETIMEDOUT|ECONNRESET|ENOTFOUND/i.test(lastStatus);
+        if (!isTransientFailure) {
+          console.log(`${company.name}: 0 jobs after primary + discovery, trying stealth fallback...`);
+          try {
+            const stealthJobs = await stealthFallbackScrape(company.careers_url, company.name);
+            if (stealthJobs.length > 0) {
+              rawJobs = stealthJobs;
+              stealthRecovered.push({ name: company.name, jobCount: stealthJobs.length });
+              Sentry.captureMessage(`Stealth fallback recovered ${company.name}: ${stealthJobs.length} jobs`, {
+                level: "info",
+                tags: { company: company.name, phase: "stealth-fallback" },
+              });
+              console.log(`${company.name}: STEALTH RECOVERED ${stealthJobs.length} jobs`);
+            } else {
+              console.log(`${company.name}: stealth fallback also returned 0`);
+            }
+          } catch (err) {
+            console.error(`${company.name}: Stealth fallback failed:`, err);
+            Sentry.captureException(err, {
+              tags: { company: company.name, phase: "stealth-fallback" },
+            });
+          }
         }
       }
 
@@ -198,7 +241,8 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         .eq("company_id", company.id)
         .eq("status", "active");
 
-      // Update company status
+      // Update company status. Successful scrape (any jobs found, even 0) resets
+      // the consecutive_failure_count so the auto-disable counter starts fresh.
       const checkStatus = validation.warnings.length > 0
         ? `success (quality: ${validation.qualityScore}/100)`
         : "success";
@@ -208,6 +252,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
           last_checked_at: new Date().toISOString(),
           last_check_status: checkStatus,
           total_product_jobs: activeJobCount ?? 0,
+          consecutive_failure_count: 0,
         })
         .eq("id", company.id);
 
@@ -238,11 +283,26 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
 
       failedCompanies.push({ name: company.name, error: errMsg });
 
+      // Increment failure counter; auto-disable at threshold so the system stops
+      // wasting cron time on permanently broken scrapers.
+      const newFailureCount = (company.consecutive_failure_count ?? 0) + 1;
+      const shouldAutoDisable = newFailureCount >= AUTO_DISABLE_THRESHOLD;
+      if (shouldAutoDisable) {
+        autoDisabled.push({ name: company.name, reason: errMsg });
+        Sentry.captureMessage(`Auto-disabled ${company.name} after ${newFailureCount} consecutive failures`, {
+          level: "warning",
+          tags: { company: company.name, phase: "auto-disable" },
+        });
+        console.warn(`${company.name}: AUTO-DISABLED after ${newFailureCount} consecutive failures`);
+      }
+
       await supabase
         .from("companies")
         .update({
           last_checked_at: new Date().toISOString(),
           last_check_status: `error: ${errMsg}`,
+          consecutive_failure_count: newFailureCount,
+          auto_disabled: shouldAutoDisable,
         })
         .eq("id", company.id);
 
@@ -278,11 +338,24 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
     }
   }
 
-  // Send admin notification if any companies failed or were auto-fixed
-  if (failedCompanies.length > 0 || autoRemediated.length > 0) {
-    console.log(`${failedCompanies.length} failed, ${autoRemediated.length} auto-remediated out of ${companies.length} companies`);
+  // Send admin notification if any companies failed, were auto-fixed, or auto-disabled
+  if (
+    failedCompanies.length > 0 ||
+    autoRemediated.length > 0 ||
+    stealthRecovered.length > 0 ||
+    autoDisabled.length > 0
+  ) {
+    console.log(
+      `${failedCompanies.length} failed, ${autoRemediated.length} auto-remediated, ${stealthRecovered.length} stealth-recovered, ${autoDisabled.length} auto-disabled out of ${companies.length} companies`
+    );
     try {
-      await notifyAdminOfScrapeFailures(companies.length, failedCompanies, autoRemediated);
+      await notifyAdminOfScrapeFailures(
+        companies.length,
+        failedCompanies,
+        autoRemediated,
+        stealthRecovered,
+        autoDisabled
+      );
     } catch (err) {
       console.error("Failed to send admin scrape failure notification:", err);
     }
