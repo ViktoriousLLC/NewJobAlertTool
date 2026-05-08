@@ -2144,6 +2144,79 @@ async function scrapeGoogleCareers(careersUrl: string): Promise<ScrapedJob[]> {
 }
 
 /**
+ * Coinbase migrated off public Greenhouse (board "coinbase" returns 404).
+ * Their careers SPA fetches /api/v2/careers via authenticated/cookied requests.
+ * We use Puppeteer to render the page and intercept the API response.
+ */
+async function scrapeCoinbaseCareers(): Promise<ScrapedJob[]> {
+  console.log("Coinbase: Starting careers scraper (Puppeteer + network intercept)");
+
+  const browser = await puppeteer.launch({
+    headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+
+    type CoinbaseJob = { id: number | string; title: string; location?: { name?: string }; absolute_url?: string };
+    type CoinbaseData = { departments?: Array<{ name: string; jobs: CoinbaseJob[] }> };
+    let careersPayload: CoinbaseData | null = null;
+
+    page.on("response", async (res) => {
+      const url = res.url();
+      if (!/\/v2\/careers(\?|$)/.test(url)) return;
+      try {
+        const json = await res.json();
+        if (json && json.data) careersPayload = json.data as CoinbaseData;
+      } catch {
+        // Non-JSON response or parse failure — ignore
+      }
+    });
+
+    await page.goto("https://www.coinbase.com/careers/positions", {
+      waitUntil: "networkidle2",
+      timeout: 60000,
+    });
+
+    // Give the SPA time to fire the careers API call
+    for (let i = 0; i < 10 && !careersPayload; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    const payload = careersPayload as CoinbaseData | null;
+    if (!payload || !payload.departments) {
+      throw new Error("Coinbase: /v2/careers response never captured");
+    }
+
+    const allJobs: ScrapedJob[] = [];
+    for (const dept of payload.departments) {
+      for (const job of dept.jobs || []) {
+        const title = job.title || "";
+        const location = job.location?.name || "";
+        const urlPath = job.absolute_url || `https://www.coinbase.com/careers/positions/${job.id}`;
+        if (title) allJobs.push({ title, location, urlPath });
+      }
+    }
+
+    console.log(`Coinbase: Scraped ${allJobs.length} jobs across ${payload.departments.length} departments`);
+    return allJobs;
+  } finally {
+    await browser.close();
+  }
+}
+
+
+/**
  * Uber uses a JSON API instead of HTML job links.
  * Fetches jobs directly via POST to their API (no browser needed).
  */
@@ -2282,6 +2355,10 @@ export async function scrapeCompanyCareers(
   if (hostname.includes("google.com") && careersUrl.includes("/careers/")) {
     console.log("Detected Google careers page, using custom scraper");
     return scrapeGoogleCareers(careersUrl);
+  }
+  if (hostname.includes("coinbase.com")) {
+    console.log("Detected Coinbase careers page, using Puppeteer + intercept");
+    return scrapeCoinbaseCareers();
   }
 
   // ATS registry lookup — replaces per-company hostname checks for standard ATS platforms
