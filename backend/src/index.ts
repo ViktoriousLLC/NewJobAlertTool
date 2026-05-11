@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
+import { timingSafeEqual } from "crypto";
 import companiesRouter from "./routes/companies";
 import favoritesRouter from "./routes/favorites";
 import issuesRouter from "./routes/issues";
@@ -45,7 +46,21 @@ app.use(
     origin: allowedOrigins,
   })
 );
-app.use(express.json());
+// 100kb cap on JSON bodies. The check-then-add path can send a preCheckedJobs
+// array which is the largest legitimate payload; bumped to 256kb to cover
+// companies with many jobs. Per-route input length caps still apply.
+app.use(express.json({ limit: "256kb" }));
+
+// Constant-time comparison of a request-supplied secret against an env var.
+// Use this for any shared-secret bearer token (cron, future Stripe/Twilio
+// webhooks). Plain === leaks the secret byte-by-byte over time.
+function safeCompareSecret(provided: string | null | undefined, expected: string | undefined): boolean {
+  if (!provided || !expected) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 // Security headers
 app.use((_req, res, next) => {
@@ -148,7 +163,7 @@ app.get("/api/cron/trigger", async (req, res) => {
     ? authHeader.slice(7)
     : null;
 
-  if (!secret || secret !== process.env.CRON_SECRET) {
+  if (!safeCompareSecret(secret, process.env.CRON_SECRET)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -168,7 +183,7 @@ app.get("/api/cron/trigger", async (req, res) => {
 app.post("/api/admin/add-company", async (req, res) => {
   const authHeader = req.headers.authorization;
   const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (secret !== process.env.CRON_SECRET) {
+  if (!safeCompareSecret(secret, process.env.CRON_SECRET)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }

@@ -34,7 +34,9 @@ export async function GET(request: NextRequest) {
           },
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
-              cookieStore.set(name, value, { ...options, httpOnly: false });
+              // Keep Supabase's defaults: HttpOnly + Secure + SameSite=Lax.
+              // Browser JS reads the token via /api/auth/token instead.
+              cookieStore.set(name, value, options);
             });
           },
         },

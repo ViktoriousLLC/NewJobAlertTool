@@ -308,13 +308,20 @@ router.get("/:id", async (req: Request, res: Response) => {
       return;
     }
 
-    // Get user's subscribed company IDs for next-company nav
+    // Get user's subscribed company IDs for next-company nav AND subscription check
     const { data: subs } = await supabase
       .from("user_subscriptions")
       .select("company_id")
       .eq("user_id", req.userId!);
 
     const subscribedIds = (subs || []).map((s) => s.company_id);
+
+    // Data isolation: only return company detail to subscribers. Without this,
+    // anyone who learned a UUID could read any company's full job list.
+    if (!subscribedIds.includes(id)) {
+      res.status(403).json({ error: "Not subscribed to this company" });
+      return;
+    }
 
     // Parallel: fetch company (shared, no user filter), its jobs, and sibling companies
     const [companyResult, jobsResult, siblingsResult] = await Promise.all([

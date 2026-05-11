@@ -20,15 +20,23 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
-    // Verify company exists (shared catalog — any user can report)
-    const { data: company } = await supabase
-      .from("companies")
-      .select("id")
-      .eq("id", company_id)
-      .single();
+    // Length cap so a single user can't dump huge payloads into the admin queue.
+    if (typeof description === "string" && description.length > 5000) {
+      res.status(400).json({ error: "Description too long (max 5000 characters)" });
+      return;
+    }
 
-    if (!company) {
-      res.status(404).json({ error: "Company not found" });
+    // Verify the user is subscribed to the company they're reporting on.
+    // Stops drive-by spam against arbitrary companies in the admin queue.
+    const { data: sub } = await supabase
+      .from("user_subscriptions")
+      .select("id")
+      .eq("user_id", req.userId!)
+      .eq("company_id", company_id)
+      .maybeSingle();
+
+    if (!sub) {
+      res.status(403).json({ error: "Not subscribed to this company" });
       return;
     }
 
@@ -38,7 +46,7 @@ router.post("/", async (req: Request, res: Response) => {
         company_id,
         user_id: req.userId!,
         issue_type,
-        description: description || null,
+        description: typeof description === "string" ? description.slice(0, 5000) : null,
       })
       .select()
       .single();
