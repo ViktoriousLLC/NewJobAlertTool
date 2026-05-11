@@ -2263,16 +2263,25 @@ async function scrapeCoinbaseCareers(): Promise<ScrapedJob[]> {
   }
 }
 
+export interface StealthScrapeResult {
+  jobs: ScrapedJob[];
+  /** URL of the JSON XHR that produced the jobs (if found via network sniff). */
+  sniffedUrl?: string;
+  /** How the jobs were extracted, for diagnostics. */
+  via: "json_sniff" | "dom_extract" | "none";
+}
+
 /**
  * Generic last-resort scraper using stealth Puppeteer + network sniffing.
  * Used by dailyCheck.ts when the configured platform scraper AND broadATSDiscovery
  * both return 0 jobs. Tries to extract jobs from any JSON XHR response that has
  * the right shape, then falls back to DOM-based extraction.
  *
- * Returns ScrapedJob[] (possibly empty). Does NOT throw on failure — returns []
- * so the caller can decide how to handle.
+ * Returns the jobs plus the sniffed URL so dailyCheck can try to auto-derive
+ * a corrected platform config (Layer 1 auto-fix). Does NOT throw on failure —
+ * returns an empty result so the caller can decide how to handle.
  */
-export async function stealthFallbackScrape(careersUrl: string, companyName: string): Promise<ScrapedJob[]> {
+export async function stealthFallbackScrape(careersUrl: string, companyName: string): Promise<StealthScrapeResult> {
   console.log(`StealthFallback[${companyName}]: starting on ${careersUrl}`);
 
   const puppeteerExtra = (await import("puppeteer-extra")).default;
@@ -2323,7 +2332,7 @@ export async function stealthFallbackScrape(careersUrl: string, companyName: str
       jsonBuckets.sort((a, b) => b.jobs.length - a.jobs.length);
       const winner = jsonBuckets[0];
       console.log(`StealthFallback[${companyName}]: JSON sniff → ${winner.jobs.length} jobs from ${winner.url}`);
-      return dedupeJobs(winner.jobs);
+      return { jobs: dedupeJobs(winner.jobs), sniffedUrl: winner.url, via: "json_sniff" };
     }
 
     // Fallback: scroll to load lazy content, then DOM-extract job links
@@ -2362,9 +2371,56 @@ export async function stealthFallbackScrape(careersUrl: string, companyName: str
     }, baseUrl);
 
     console.log(`StealthFallback[${companyName}]: DOM extract → ${domJobs.length} jobs`);
-    return dedupeJobs(domJobs);
+    return { jobs: dedupeJobs(domJobs), via: domJobs.length > 0 ? "dom_extract" : "none" };
   } finally {
     await browser.close();
+  }
+}
+
+/**
+ * Layer 1 auto-fix: given a URL that stealth fallback successfully sniffed
+ * jobs from, try to derive a known platform_type + platform_config. If it
+ * matches a recognizable ATS pattern, the cron can update the company's DB
+ * row so future scrapes skip stealth and hit the API directly.
+ *
+ * Returns null for unknown URL patterns — those still get logged to
+ * scraper_events for visibility in the Monday digest.
+ */
+export function inferPlatformFromSniffedUrl(
+  url: string
+): { platformType: string; platformConfig: Record<string, string> } | null {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname;
+    const path = parsed.pathname;
+
+    // Greenhouse: (api|boards-api).greenhouse.io/v1/boards/{slug}/...
+    if (host === "api.greenhouse.io" || host === "boards-api.greenhouse.io") {
+      const m = path.match(/^\/v1\/boards\/([^/]+)/);
+      if (m && m[1]) return { platformType: "greenhouse", platformConfig: { boardName: m[1] } };
+    }
+
+    // Lever: api.lever.co/v0/postings/{handle}
+    if (host === "api.lever.co") {
+      const m = path.match(/^\/v0\/postings\/([^/]+)/);
+      if (m && m[1]) return { platformType: "lever", platformConfig: { handle: m[1] } };
+    }
+
+    // Ashby: api.ashbyhq.com/posting-api/job-board/{org}
+    if (host === "api.ashbyhq.com") {
+      const m = path.match(/^\/posting-api\/job-board\/([^/]+)/);
+      if (m && m[1]) return { platformType: "ashby", platformConfig: { orgName: m[1] } };
+    }
+
+    // SmartRecruiters: api.smartrecruiters.com/v1/companies/{slug}/postings
+    if (host === "api.smartrecruiters.com") {
+      const m = path.match(/^\/v1\/companies\/([^/]+)/);
+      if (m && m[1]) return { platformType: "smartrecruiters", platformConfig: { company: m[1] } };
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }
 

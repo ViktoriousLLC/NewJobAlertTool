@@ -145,10 +145,10 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 
 **Auto-remediation** (added 2026-03-19): When ANY company (not just generic) returns 0 raw jobs, cron runs `broadATSDiscovery` to detect platform changes. If a new platform is found and produces results, auto-updates the DB and logs to Sentry. Still guarded by `CUSTOM_SCRAPER_HOSTS` blocklist.
 
-**Three-tier self-healing recovery** (added 2026-05-08): When any company returns 0 jobs, the cron now runs three recovery tiers in order:
-1. **Configured platform scraper** (existing) — uses `platform_type` from DB
+**Three-tier self-healing recovery** (added 2026-05-08, refined 2026-05-11): When any company's source returns 0 raw jobs (NOT just 0 PMs), the cron runs three recovery tiers in order:
+1. **Configured platform scraper** (existing) — uses `platform_type` from DB. Filter-heavy scrapers (Greenhouse/Workday/Ashby) write their pre-PM-filter count to a `ScrapeStats` out-param so we distinguish "source returned 0" (try recovery) from "source returned 50 but 0 PMs" (no recovery needed).
 2. **broadATSDiscovery** (existing) — auto-detects new ATS, updates DB. Skipped for `CUSTOM_SCRAPER_HOSTS`
-3. **`stealthFallbackScrape`** (new, in `scraper.ts`) — generic last-resort using `puppeteer-extra` + `puppeteer-extra-plugin-stealth`. Sniffs all JSON XHR responses for arrays of objects with title+id-like fields via `extractJobsFromUnknownJson`, falls back to DOM extraction. Runs for ALL companies including custom-scraper hosts. Reported in admin email under green "Stealth fallback recovered" section.
+3. **`stealthFallbackScrape`** (in `scraper.ts`) — generic last-resort using `puppeteer-extra` + `puppeteer-extra-plugin-stealth`. Sniffs all JSON XHR responses for arrays of objects with title+id-like fields, falls back to DOM extraction. Returns the sniffed URL plus the jobs. **Layer 1 auto-fix** (added 2026-05-11): `inferPlatformFromSniffedUrl()` tries to map the sniffed URL to a known ATS pattern (Greenhouse, Lever, Ashby, SmartRecruiters). If matched, auto-updates `platform_type` + `platform_config` so the next run hits the API directly and skips stealth entirely.
 
 **Auto-disable** (added 2026-05-08): Companies that fail 7 consecutive days are auto-disabled — `auto_disabled=true` and skipped from cron. Threshold = `AUTO_DISABLE_THRESHOLD` constant in `dailyCheck.ts`. Successful scrape resets `consecutive_failure_count=0` and `auto_disabled=false`. To manually re-enable: `UPDATE companies SET auto_disabled = false, consecutive_failure_count = 0 WHERE name = '...';`
 

@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
-import { scrapeCompanyCareers, stealthFallbackScrape, ScrapeStats } from "../scraper/scraper";
+import { scrapeCompanyCareers, stealthFallbackScrape, inferPlatformFromSniffedUrl, ScrapeStats } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { broadATSDiscovery } from "../scraper/detectPlatform";
 import { sendBatchAlerts, buildAlertEmailPayload, sendAdminDigest, NewJobAlert, EmailPayload, BatchSendResult } from "../email/sendAlert";
@@ -175,18 +175,59 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         if (!isTransientFailure) {
           console.log(`${company.name}: 0 jobs after primary + discovery, trying stealth fallback...`);
           try {
-            const stealthJobs = await stealthFallbackScrape(company.careers_url, company.name);
-            if (stealthJobs.length > 0) {
-              rawJobs = stealthJobs;
-              stealthRecovered.push({ name: company.name, jobCount: stealthJobs.length });
+            const stealthResult = await stealthFallbackScrape(company.careers_url, company.name);
+            if (stealthResult.jobs.length > 0) {
+              rawJobs = stealthResult.jobs;
+              stealthRecovered.push({ name: company.name, jobCount: stealthResult.jobs.length });
+
+              // Layer 1 auto-fix: if the sniffed URL maps to a known ATS,
+              // update the company's platform config so next run skips stealth.
+              let autoFixApplied: { from: string; to: string } | null = null;
+              if (stealthResult.sniffedUrl) {
+                const inferred = inferPlatformFromSniffedUrl(stealthResult.sniffedUrl);
+                const currentPlatform = company.platform_type || "generic";
+                const currentConfig = JSON.stringify(company.platform_config || {});
+                const inferredConfig = inferred ? JSON.stringify(inferred.platformConfig) : "";
+                if (
+                  inferred &&
+                  (inferred.platformType !== company.platform_type ||
+                    inferredConfig !== currentConfig)
+                ) {
+                  await supabase
+                    .from("companies")
+                    .update({
+                      platform_type: inferred.platformType,
+                      platform_config: inferred.platformConfig,
+                    })
+                    .eq("id", company.id);
+                  autoFixApplied = { from: currentPlatform, to: `${inferred.platformType}/${inferred.platformConfig.boardName || inferred.platformConfig.handle || inferred.platformConfig.orgName || inferred.platformConfig.company}` };
+                  console.log(`${company.name}: STEALTH AUTO-FIX → ${autoFixApplied.to} (from sniffed URL ${stealthResult.sniffedUrl})`);
+                }
+              }
+
               await logScraperEvent(company.id, company.name, "stealth_recovery", {
-                jobCount: stealthJobs.length,
+                jobCount: stealthResult.jobs.length,
+                sniffedUrl: stealthResult.sniffedUrl,
+                via: stealthResult.via,
+                autoFixApplied,
               });
-              Sentry.captureMessage(`Stealth fallback recovered ${company.name}: ${stealthJobs.length} jobs`, {
+
+              // If we managed to auto-fix the platform, also surface it as an
+              // auto-remediation so it shows up in the green section.
+              if (autoFixApplied) {
+                autoRemediated.push({ name: company.name, from: autoFixApplied.from, to: autoFixApplied.to });
+                await logScraperEvent(company.id, company.name, "auto_remediation", {
+                  from: autoFixApplied.from,
+                  to: autoFixApplied.to,
+                  source: "stealth_sniffed_url",
+                });
+              }
+
+              Sentry.captureMessage(`Stealth fallback recovered ${company.name}: ${stealthResult.jobs.length} jobs${autoFixApplied ? ` (auto-fixed to ${autoFixApplied.to})` : ""}`, {
                 level: "info",
                 tags: { company: company.name, phase: "stealth-fallback" },
               });
-              console.log(`${company.name}: STEALTH RECOVERED ${stealthJobs.length} jobs`);
+              console.log(`${company.name}: STEALTH RECOVERED ${stealthResult.jobs.length} jobs${stealthResult.sniffedUrl ? ` via ${stealthResult.sniffedUrl}` : ""}`);
             } else {
               console.log(`${company.name}: stealth fallback also returned 0`);
             }
