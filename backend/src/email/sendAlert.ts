@@ -295,156 +295,6 @@ export async function sendBatchAlerts(payloads: EmailPayload[]): Promise<BatchSe
 }
 
 /**
- * Send admin a notification when email delivery has failures.
- * Best-effort: if Resend is completely down, this won't send either.
- */
-export async function notifyAdminOfFailures(result: BatchSendResult): Promise<void> {
-  if (!process.env.RESEND_API_KEY || result.failed === 0) return;
-
-  const { ADMIN_EMAIL } = await import("../lib/constants");
-  const resend = new Resend(process.env.RESEND_API_KEY);
-
-  const errorList = result.errors.map((e) => `<li>${e}</li>`).join("");
-
-  try {
-    await resend.emails.send({
-      from: "NewPMJobs <alerts@newpmjobs.com>",
-      to: ADMIN_EMAIL,
-      subject: `Alert: ${result.failed} email${result.failed === 1 ? "" : "s"} failed to send`,
-      html: `
-        <p><strong>${result.sent}</strong> emails sent successfully, <strong style="color:red">${result.failed}</strong> failed.</p>
-        <p>Errors:</p>
-        <ul>${errorList}</ul>
-        <p style="color:#888;font-size:12px;">Check <a href="https://resend.com/emails">Resend dashboard</a> for details.</p>
-      `,
-    });
-  } catch (err) {
-    console.error("Failed to send admin failure notification:", err);
-  }
-}
-
-/**
- * Send admin a summary of companies that failed during the daily scrape.
- */
-export async function notifyAdminOfScrapeFailures(
-  totalCompanies: number,
-  failures: { name: string; error: string }[],
-  remediations?: { name: string; from: string; to: string }[],
-  stealthRecovered?: { name: string; jobCount: number }[],
-  autoDisabled?: { name: string; reason: string }[],
-  reEnabled?: { name: string; jobCount: number }[]
-): Promise<void> {
-  const stealthCount = stealthRecovered?.length || 0;
-  const disabledCount = autoDisabled?.length || 0;
-  const remediationCount = remediations?.length || 0;
-  const reEnabledCount = reEnabled?.length || 0;
-  if (
-    !process.env.RESEND_API_KEY ||
-    (failures.length === 0 && remediationCount === 0 && stealthCount === 0 && disabledCount === 0 && reEnabledCount === 0)
-  ) return;
-
-  const { ADMIN_EMAIL } = await import("../lib/constants");
-  const resend = new Resend(process.env.RESEND_API_KEY);
-
-  const fixedCount = remediationCount + stealthCount;
-  const stillBroken = failures.length;
-
-  // Build remediation rows (green, auto-fixed)
-  const remediationRows = (remediations || [])
-    .map((r) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(r.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#16a34a;font-size:13px;">Auto-fixed: ${escapeHtml(r.from)} → ${escapeHtml(r.to)}</td></tr>`)
-    .join("");
-
-  // Build stealth-recovered rows (green, recovered via stealth fallback)
-  const stealthRows = (stealthRecovered || [])
-    .map((s) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(s.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#16a34a;font-size:13px;">Stealth fallback recovered ${s.jobCount} jobs</td></tr>`)
-    .join("");
-
-  // Build auto-disabled rows (orange, sustained failure → disabled)
-  const disabledRows = (autoDisabled || [])
-    .map((d) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(d.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#ea580c;font-size:13px;">${escapeHtml(d.reason.slice(0, 200))}</td></tr>`)
-    .join("");
-
-  // Build re-enabled rows (green, watch-list probe found jobs)
-  const reEnabledRows = (reEnabled || [])
-    .map((r) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(r.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#16a34a;font-size:13px;">Watch-list probe re-enabled — ${r.jobCount} jobs</td></tr>`)
-    .join("");
-
-  // Build failure rows (red, still broken)
-  const failureRows = failures
-    .map((f) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(f.name)}</td><td style="padding:4px 8px;border-bottom:1px solid #e7e5e4;color:#dc2626;font-size:13px;">${escapeHtml(f.error.slice(0, 200))}</td></tr>`)
-    .join("");
-
-  // Build subject line
-  const parts: string[] = [];
-  if (fixedCount > 0) parts.push(`${fixedCount} auto-fixed`);
-  if (reEnabledCount > 0) parts.push(`${reEnabledCount} re-enabled`);
-  if (disabledCount > 0) parts.push(`${disabledCount} auto-disabled`);
-  if (stillBroken > 0) parts.push(`${stillBroken} still broken`);
-  const subject = (fixedCount > 0 || reEnabledCount > 0) && stillBroken === 0 && disabledCount === 0
-    ? `Scrape Report: ${fixedCount + reEnabledCount} issues handled ✓`
-    : `Scrape Alert: ${parts.join(", ")}`;
-
-  // Build HTML sections
-  let html = "";
-  if (reEnabledCount > 0) {
-    html += `
-      <p style="color:#16a34a;font-weight:bold;">✓ Watch-list re-enabled (${reEnabledCount})</p>
-      <p style="font-size:13px;color:#666;">Companies that auto-disabled previously but came back online during today's Monday probe.</p>
-      <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
-        <tr style="background:#f0fdf4;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">What happened</th></tr>
-        ${reEnabledRows}
-      </table>`;
-  }
-  if (remediationCount > 0) {
-    html += `
-      <p style="color:#16a34a;font-weight:bold;">✓ Auto-fixed (${remediationCount})</p>
-      <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
-        <tr style="background:#f0fdf4;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">What happened</th></tr>
-        ${remediationRows}
-      </table>`;
-  }
-  if (stealthCount > 0) {
-    html += `
-      <p style="color:#16a34a;font-weight:bold;">✓ Stealth fallback recovered (${stealthCount})</p>
-      <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
-        <tr style="background:#f0fdf4;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">What happened</th></tr>
-        ${stealthRows}
-      </table>`;
-  }
-  if (disabledCount > 0) {
-    html += `
-      <p style="color:#ea580c;font-weight:bold;">⚠ Auto-disabled (${disabledCount})</p>
-      <p style="font-size:13px;color:#666;">These companies failed for 7+ consecutive days and have been removed from the cron loop. Clear <code>auto_disabled=false</code> in the companies table to re-enable.</p>
-      <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
-        <tr style="background:#fff7ed;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">Last error</th></tr>
-        ${disabledRows}
-      </table>`;
-  }
-  if (stillBroken > 0) {
-    const pct = Math.round((stillBroken / totalCompanies) * 100);
-    html += `
-      <p style="color:#dc2626;font-weight:bold;">✗ Still needs attention (${stillBroken} — ${pct}%)</p>
-      <table style="border-collapse:collapse;width:100%;margin-top:4px;">
-        <tr style="background:#fef2f2;"><th style="padding:6px 8px;text-align:left;">Company</th><th style="padding:6px 8px;text-align:left;">Error</th></tr>
-        ${failureRows}
-      </table>`;
-  }
-  html += `<p style="margin-top:16px;color:#888;font-size:12px;">Check <a href="https://newpmjobs.sentry.io">Sentry</a> for full stack traces.</p>`;
-
-  try {
-    await resend.emails.send({
-      from: "NewPMJobs <alerts@newpmjobs.com>",
-      to: ADMIN_EMAIL,
-      subject,
-      html,
-    });
-    console.log(`Admin scrape email sent (${remediationCount} remediated, ${stealthCount} stealth-recovered, ${reEnabledCount} re-enabled, ${disabledCount} auto-disabled, ${stillBroken} still broken)`);
-  } catch (err) {
-    console.error("Failed to send admin scrape failure notification:", err);
-  }
-}
-
-/**
  * Send a personalized alert email to a specific user.
  * Use sendBatchAlerts() for bulk sending (daily cron) — this is for one-off sends only.
  */
@@ -478,118 +328,214 @@ export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {
   await sendUserAlert(process.env.ALERT_RECIPIENT_EMAIL, alerts);
 }
 
-/**
- * Send admin the daily quality evaluation report.
- * Shows per-company scorecard: companies with issues at top, clean ones at bottom.
- * Always sends (even when all clear) so the admin knows the eval ran.
- */
-export async function notifyAdminOfQualityReport(evalResult: {
-  companiesChecked: number;
-  totalUsJobs: number;
-  totalNonUsFiltered: number;
-  avgQualityScore: number;
-  issues: { company: string; checkType: string; severity: string; message: string }[];
-  companyStatuses: {
-    companyName: string;
-    usJobs: number;
-    nonUsFiltered: number;
-    totalPmJobs: number;
-    prevJobCount: number;
-    qualityScore: number;
-    subscriberCount: number;
-    issues: { company: string; checkType: string; severity: string; message: string }[];
-  }[];
-}): Promise<void> {
+// =============================================================================
+// Admin digest: one consolidated email replacing the previous three
+// (notifyAdminOfFailures, notifyAdminOfScrapeFailures, notifyAdminOfQualityReport).
+//
+// Design:
+// - Daily: send ONLY if there's an action item (failures, watch list, auto-disabled,
+//   subscribed company dropped to 0, email delivery failures). Otherwise silent.
+// - Monday: always send a digest with system health + past-7-days self-heal log,
+//   even if no action items. Folds in the daily action items if any.
+// =============================================================================
+
+export interface AdminDigestInput {
+  totalCompanies: number;
+  failedCompanies: { name: string; error: string; consecutiveFailures: number }[];
+  watchList: { name: string; consecutiveFailures: number }[];
+  autoDisabled: { name: string; reason: string }[];
+  subscribedZeroDrops: { name: string; prevCount: number; subscribers: number }[];
+  autoRemediated: { name: string; from: string; to: string }[];
+  stealthRecovered: { name: string; jobCount: number }[];
+  reEnabled: { name: string; jobCount: number }[];
+  emailBatchResult: BatchSendResult;
+  isMondayDigest: boolean;
+  weeklyHealth?: { healthy: number; disabled: number; watchListCount: number };
+  weeklyEvents?: { event_type: string; company_name: string; created_at: string; details: Record<string, unknown> | null }[];
+}
+
+export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
   if (!process.env.RESEND_API_KEY) return;
+
+  const hasActionItems =
+    input.failedCompanies.length > 0 ||
+    input.watchList.length > 0 ||
+    input.autoDisabled.length > 0 ||
+    input.subscribedZeroDrops.length > 0 ||
+    input.emailBatchResult.failed > 0;
+
+  // Daily silence: no email when nothing needs attention.
+  if (!input.isMondayDigest && !hasActionItems) {
+    console.log("Admin digest: silent success day — no email sent");
+    return;
+  }
 
   const { ADMIN_EMAIL } = await import("../lib/constants");
   const resend = new Resend(process.env.RESEND_API_KEY);
-
-  const { companiesChecked, totalUsJobs, totalNonUsFiltered, avgQualityScore, issues, companyStatuses } = evalResult;
-  const issueCount = issues.length;
-  const criticalCount = issues.filter((i) => i.severity === "critical").length;
-  const companiesWithIssues = companyStatuses.filter((c) => c.issues.length > 0).length;
-
-  const subject = issueCount === 0
-    ? `Daily Eval: All clear (${companiesChecked} companies, ${totalUsJobs} US jobs)`
-    : `Daily Eval: ${issueCount} issue${issueCount === 1 ? "" : "s"} across ${companiesWithIssues} compan${companiesWithIssues === 1 ? "y" : "ies"}${criticalCount > 0 ? ` (${criticalCount} critical)` : ""}`;
-
   const font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif";
-  const severityColors: Record<string, string> = { critical: "#dc2626", warning: "#d97706", info: "#6b7280" };
 
-  // Summary stats
-  let html = `
-    <div style="font-family:${font};max-width:700px;">
-      <h2 style="margin:0 0 16px 0;color:#1A1A2E;">Daily Quality Evaluation</h2>
-      <table style="border-collapse:collapse;margin-bottom:24px;">
-        <tr><td style="padding:4px 16px 4px 0;color:#78716c;font-size:14px;">Companies checked</td><td style="font-weight:bold;font-size:14px;">${companiesChecked}</td></tr>
-        <tr><td style="padding:4px 16px 4px 0;color:#78716c;font-size:14px;">Total US PM jobs</td><td style="font-weight:bold;font-size:14px;">${totalUsJobs}</td></tr>
-        <tr><td style="padding:4px 16px 4px 0;color:#78716c;font-size:14px;">Non-US jobs filtered out</td><td style="font-weight:bold;font-size:14px;">${totalNonUsFiltered}</td></tr>
-        <tr><td style="padding:4px 16px 4px 0;color:#78716c;font-size:14px;">Avg quality score</td><td style="font-weight:bold;font-size:14px;">${avgQualityScore}/100</td></tr>
-      </table>`;
+  // Build subject: prioritize action items, fall back to Monday digest framing
+  const subjectParts: string[] = [];
+  if (input.failedCompanies.length > 0) subjectParts.push(`${input.failedCompanies.length} failed`);
+  if (input.autoDisabled.length > 0) subjectParts.push(`${input.autoDisabled.length} auto-disabled`);
+  if (input.watchList.length > 0) subjectParts.push(`${input.watchList.length} on watch`);
+  if (input.subscribedZeroDrops.length > 0) subjectParts.push(`${input.subscribedZeroDrops.length} dropped to 0`);
+  if (input.emailBatchResult.failed > 0) subjectParts.push(`${input.emailBatchResult.failed} email send failures`);
 
-  // Per-company scorecard (already sorted: issues first, clean last)
-  html += `
-      <h3 style="margin:0 0 8px 0;color:#1A1A2E;">Company Scorecard</h3>
-      <table style="border-collapse:collapse;width:100%;font-size:13px;">
-        <tr style="background:#f5f5f4;">
-          <th style="padding:8px 6px;text-align:left;border-bottom:2px solid #d6d3d1;">Company</th>
-          <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #d6d3d1;">US Jobs</th>
-          <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #d6d3d1;">Non-US Cut</th>
-          <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #d6d3d1;">Prev</th>
-          <th style="padding:8px 6px;text-align:center;border-bottom:2px solid #d6d3d1;">Quality</th>
-          <th style="padding:8px 6px;text-align:left;border-bottom:2px solid #d6d3d1;">Status</th>
-        </tr>`;
-
-  for (const cs of companyStatuses) {
-    const hasIssues = cs.issues.length > 0;
-    const worstSeverity = cs.issues.length > 0
-      ? (cs.issues.some((i) => i.severity === "critical") ? "critical" : cs.issues.some((i) => i.severity === "warning") ? "warning" : "info")
-      : "ok";
-
-    const rowBg = worstSeverity === "critical" ? "#fef2f2"
-      : worstSeverity === "warning" ? "#fffbeb"
-      : worstSeverity === "info" ? "#f0f9ff"
-      : "#ffffff";
-
-    // Change indicator
-    let changeStr = "";
-    if (cs.prevJobCount > 0) {
-      const diff = cs.usJobs - cs.prevJobCount;
-      if (diff > 0) changeStr = ` <span style="color:#16a34a;font-size:11px;">(+${diff})</span>`;
-      else if (diff < 0) changeStr = ` <span style="color:#dc2626;font-size:11px;">(${diff})</span>`;
-    }
-
-    // Status column: issues or checkmark
-    let statusHtml = "";
-    if (hasIssues) {
-      statusHtml = cs.issues
-        .map((i) => `<span style="color:${severityColors[i.severity] || "#6b7280"};font-size:12px;">${escapeHtml(i.checkType)}: ${escapeHtml(i.message)}</span>`)
-        .join("<br/>");
-    } else {
-      statusHtml = `<span style="color:#16a34a;">All checks passed</span>`;
-    }
-
-    html += `
-        <tr style="background:${rowBg};">
-          <td style="padding:6px;border-bottom:1px solid #e7e5e4;font-weight:${hasIssues ? "bold" : "normal"};">${escapeHtml(cs.companyName)}</td>
-          <td style="padding:6px;border-bottom:1px solid #e7e5e4;text-align:center;">${cs.usJobs}${changeStr}</td>
-          <td style="padding:6px;border-bottom:1px solid #e7e5e4;text-align:center;">${cs.nonUsFiltered > 0 ? cs.nonUsFiltered : "-"}</td>
-          <td style="padding:6px;border-bottom:1px solid #e7e5e4;text-align:center;">${cs.prevJobCount}</td>
-          <td style="padding:6px;border-bottom:1px solid #e7e5e4;text-align:center;">${cs.qualityScore}/100</td>
-          <td style="padding:6px;border-bottom:1px solid #e7e5e4;">${statusHtml}</td>
-        </tr>`;
+  let subject: string;
+  if (subjectParts.length > 0) {
+    subject = `NewPMJobs admin: ${subjectParts.join(", ")}`;
+  } else {
+    // Monday-only with no action items — pure weekly digest
+    const date = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric" });
+    subject = `NewPMJobs weekly digest — ${date}`;
   }
 
-  html += `</table>`;
+  let html = `<div style="font-family:${font};max-width:700px;color:#1A1A2E;">`;
 
-  // Checks legend
-  html += `
-      <div style="margin-top:20px;padding:12px;background:#f5f5f4;border-radius:6px;font-size:12px;color:#78716c;">
-        <strong>Checks run per company:</strong> Job count (&gt;100 = critical) | Non-US ratio (&gt;50% = warning) | Spike/drop detection (&gt;100%/50% change) | Zero-job subscribers | Quality score (&lt;50 = warning)
-      </div>`;
+  // -------- Action-required sections (red) --------
+  if (hasActionItems) {
+    html += `<h2 style="margin:0 0 12px 0;color:#dc2626;">Needs your attention</h2>`;
+  }
 
-  html += `<p style="margin-top:16px;color:#a8a29e;font-size:12px;">This report runs automatically after the daily cron scrape.</p></div>`;
+  if (input.failedCompanies.length > 0) {
+    html += `<h3 style="margin:16px 0 6px 0;color:#dc2626;">Failed scrapes today (${input.failedCompanies.length})</h3>`;
+    html += `<table style="border-collapse:collapse;width:100%;font-size:13px;">
+      <tr style="background:#fef2f2;">
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Company</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Streak</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Error</th>
+      </tr>`;
+    for (const f of input.failedCompanies) {
+      const streak = `${f.consecutiveFailures} of 7`;
+      const streakColor = f.consecutiveFailures >= 5 ? "#dc2626" : f.consecutiveFailures >= 3 ? "#ea580c" : "#78716c";
+      html += `<tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(f.name)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:${streakColor};font-weight:bold;">${streak}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#6b7280;font-size:12px;">${escapeHtml(f.error.slice(0, 180))}</td>
+      </tr>`;
+    }
+    html += `</table>`;
+  }
+
+  if (input.watchList.length > 0) {
+    html += `<h3 style="margin:16px 0 6px 0;color:#ea580c;">Watch list — heading toward auto-disable (${input.watchList.length})</h3>`;
+    html += `<p style="font-size:13px;color:#6b7280;margin:4px 0 8px 0;">These companies have failed multiple days in a row. Auto-disables at 7 strikes.</p>`;
+    html += `<table style="border-collapse:collapse;width:100%;font-size:13px;">
+      <tr style="background:#fff7ed;">
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fed7aa;">Company</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fed7aa;">Streak</th>
+      </tr>`;
+    for (const w of input.watchList) {
+      html += `<tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(w.name)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#ea580c;font-weight:bold;">${w.consecutiveFailures} of 7</td>
+      </tr>`;
+    }
+    html += `</table>`;
+  }
+
+  if (input.autoDisabled.length > 0) {
+    html += `<h3 style="margin:16px 0 6px 0;color:#ea580c;">Auto-disabled today (${input.autoDisabled.length})</h3>`;
+    html += `<p style="font-size:13px;color:#6b7280;margin:4px 0 8px 0;">Hit 7 consecutive failures. Skipped from cron until Monday probe checks again.</p>`;
+    html += `<table style="border-collapse:collapse;width:100%;font-size:13px;">
+      <tr style="background:#fff7ed;">
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fed7aa;">Company</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fed7aa;">Last error</th>
+      </tr>`;
+    for (const d of input.autoDisabled) {
+      html += `<tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(d.name)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#6b7280;font-size:12px;">${escapeHtml(d.reason.slice(0, 180))}</td>
+      </tr>`;
+    }
+    html += `</table>`;
+  }
+
+  if (input.subscribedZeroDrops.length > 0) {
+    html += `<h3 style="margin:16px 0 6px 0;color:#dc2626;">Subscribed company dropped to 0 jobs (${input.subscribedZeroDrops.length})</h3>`;
+    html += `<p style="font-size:13px;color:#6b7280;margin:4px 0 8px 0;">These companies had jobs yesterday but show 0 today. Check if scraper broke.</p>`;
+    html += `<table style="border-collapse:collapse;width:100%;font-size:13px;">
+      <tr style="background:#fef2f2;">
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Company</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Previous</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Subscribers</th>
+      </tr>`;
+    for (const z of input.subscribedZeroDrops) {
+      html += `<tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(z.name)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#dc2626;font-weight:bold;">${z.prevCount} → 0</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${z.subscribers}</td>
+      </tr>`;
+    }
+    html += `</table>`;
+  }
+
+  if (input.emailBatchResult.failed > 0) {
+    html += `<h3 style="margin:16px 0 6px 0;color:#dc2626;">Email delivery failures (${input.emailBatchResult.failed})</h3>`;
+    html += `<p style="font-size:13px;">${input.emailBatchResult.sent} sent, <strong style="color:#dc2626;">${input.emailBatchResult.failed} failed</strong>.</p>`;
+    const errors = input.emailBatchResult.errors.map((e) => `<li>${escapeHtml(e)}</li>`).join("");
+    html += `<ul style="font-size:12px;color:#6b7280;">${errors}</ul>`;
+    html += `<p style="font-size:12px;color:#6b7280;">Check <a href="https://resend.com/emails" style="color:#0EA5E9;">Resend dashboard</a> for details.</p>`;
+  }
+
+  // -------- Monday-only weekly digest sections --------
+  if (input.isMondayDigest) {
+    html += `<h2 style="margin:32px 0 12px 0;color:#1A1A2E;border-top:1px solid #e7e5e4;padding-top:24px;">Weekly digest</h2>`;
+
+    if (input.weeklyHealth) {
+      html += `<h3 style="margin:16px 0 6px 0;color:#16a34a;">System health</h3>`;
+      html += `<table style="border-collapse:collapse;font-size:14px;margin-bottom:12px;">
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Healthy scrapers</td><td style="font-weight:bold;color:#16a34a;">${input.weeklyHealth.healthy} / ${input.totalCompanies}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Watch list</td><td style="font-weight:bold;color:#ea580c;">${input.weeklyHealth.watchListCount}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Currently auto-disabled</td><td style="font-weight:bold;color:#dc2626;">${input.weeklyHealth.disabled}</td></tr>
+      </table>`;
+    }
+
+    const events = input.weeklyEvents || [];
+    if (events.length > 0) {
+      const byType: Record<string, typeof events> = {};
+      for (const e of events) {
+        if (!byType[e.event_type]) byType[e.event_type] = [];
+        byType[e.event_type].push(e);
+      }
+
+      const eventTypeLabels: Record<string, { label: string; color: string }> = {
+        auto_remediation: { label: "Platform auto-fixed", color: "#16a34a" },
+        stealth_recovery: { label: "Stealth fallback recovered jobs", color: "#16a34a" },
+        auto_re_enabled: { label: "Re-enabled by Monday probe", color: "#16a34a" },
+        auto_disabled: { label: "Auto-disabled", color: "#ea580c" },
+      };
+
+      html += `<h3 style="margin:16px 0 6px 0;color:#1A1A2E;">Self-heal log (past 7 days)</h3>`;
+      for (const [type, list] of Object.entries(byType)) {
+        const meta = eventTypeLabels[type] || { label: type, color: "#6b7280" };
+        html += `<p style="margin:12px 0 4px 0;font-weight:bold;color:${meta.color};">${meta.label} (${list.length})</p>`;
+        html += `<ul style="margin:4px 0 0 0;padding-left:20px;font-size:13px;">`;
+        for (const e of list) {
+          const when = new Date(e.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          const detailsStr = e.details ? ` — ${escapeHtml(JSON.stringify(e.details).slice(0, 120))}` : "";
+          html += `<li style="margin:2px 0;color:#374151;">${escapeHtml(e.company_name)} <span style="color:#9ca3af;font-size:12px;">(${when})</span>${detailsStr}</li>`;
+        }
+        html += `</ul>`;
+      }
+    } else if (input.isMondayDigest) {
+      html += `<p style="font-size:13px;color:#6b7280;">No self-healing actions in the past 7 days. Everything ran clean.</p>`;
+    }
+
+    // Show today's just-happened events on Monday for completeness
+    if (input.reEnabled.length > 0) {
+      html += `<h3 style="margin:16px 0 6px 0;color:#16a34a;">Re-enabled today (${input.reEnabled.length})</h3>`;
+      html += `<ul style="font-size:13px;">`;
+      for (const r of input.reEnabled) html += `<li>${escapeHtml(r.name)} — ${r.jobCount} jobs</li>`;
+      html += `</ul>`;
+    }
+  }
+
+  html += `<p style="margin-top:24px;padding-top:12px;border-top:1px solid #e7e5e4;font-size:11px;color:#a8a29e;">
+    NewPMJobs admin digest. ${input.isMondayDigest ? "Weekly digest sent every Monday." : "Daily digest fires only when something needs attention."}
+    Full logs: <a href="https://newpmjobs.sentry.io" style="color:#0EA5E9;">Sentry</a>.
+  </p></div>`;
 
   try {
     await resend.emails.send({
@@ -598,8 +544,8 @@ export async function notifyAdminOfQualityReport(evalResult: {
       subject,
       html,
     });
-    console.log(`Daily eval report sent: ${issueCount} issues across ${companiesWithIssues} companies`);
+    console.log(`Admin digest sent: ${subject}`);
   } catch (err) {
-    console.error("Failed to send daily eval report:", err);
+    console.error("Failed to send admin digest:", err);
   }
 }

@@ -3,10 +3,31 @@ import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers, stealthFallbackScrape } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { broadATSDiscovery } from "../scraper/detectPlatform";
-import { sendBatchAlerts, buildAlertEmailPayload, notifyAdminOfFailures, notifyAdminOfScrapeFailures, notifyAdminOfQualityReport, NewJobAlert, EmailPayload } from "../email/sendAlert";
+import { sendBatchAlerts, buildAlertEmailPayload, sendAdminDigest, NewJobAlert, EmailPayload, BatchSendResult } from "../email/sendAlert";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
-import { evaluateDailyQuality, CompanyQualityData } from "../scraper/dailyEval";
+import { CompanyQualityData } from "../scraper/dailyEval";
+
+// Log a self-healing event to the scraper_events table. Used to power the
+// Monday weekly digest. Best-effort: failures are swallowed so they never
+// break the cron run.
+async function logScraperEvent(
+  companyId: string,
+  companyName: string,
+  eventType: "auto_remediation" | "stealth_recovery" | "auto_disabled" | "auto_re_enabled",
+  details: Record<string, unknown>
+): Promise<void> {
+  try {
+    await supabase.from("scraper_events").insert({
+      company_id: companyId,
+      company_name: companyName,
+      event_type: eventType,
+      details,
+    });
+  } catch (err) {
+    console.error(`Failed to log scraper_event (${eventType} for ${companyName}):`, err);
+  }
+}
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -50,8 +71,8 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
     { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }
   > = new Map();
 
-  // Track failures and auto-remediations for admin notification
-  const failedCompanies: { name: string; error: string }[] = [];
+  // Track failures and auto-remediations for the admin digest
+  const failedCompanies: { name: string; error: string; consecutiveFailures: number }[] = [];
   const autoRemediated: { name: string; from: string; to: string }[] = [];
   const stealthRecovered: { name: string; jobCount: number }[] = [];
   const autoDisabled: { name: string; reason: string }[] = [];
@@ -114,6 +135,11 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
                 .eq("id", company.id);
               console.log(`${company.name}: AUTO-REMEDIATED platform ${prevPlatform} → ${discovery.platformType}`);
               autoRemediated.push({ name: company.name, from: prevPlatform, to: discovery.platformType });
+              await logScraperEvent(company.id, company.name, "auto_remediation", {
+                from: prevPlatform,
+                to: discovery.platformType,
+                jobCount: rawJobs.length,
+              });
               Sentry.captureMessage(`Auto-remediated ${company.name}: ${prevPlatform} → ${discovery.platformType}`, {
                 level: "info",
                 tags: { company: company.name, phase: "auto-remediation" },
@@ -140,6 +166,9 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
             if (stealthJobs.length > 0) {
               rawJobs = stealthJobs;
               stealthRecovered.push({ name: company.name, jobCount: stealthJobs.length });
+              await logScraperEvent(company.id, company.name, "stealth_recovery", {
+                jobCount: stealthJobs.length,
+              });
               Sentry.captureMessage(`Stealth fallback recovered ${company.name}: ${stealthJobs.length} jobs`, {
                 level: "info",
                 tags: { company: company.name, phase: "stealth-fallback" },
@@ -258,6 +287,9 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         : "success";
       if (isProbing && jobs.length > 0) {
         reEnabled.push({ name: company.name, jobCount: jobs.length });
+        await logScraperEvent(company.id, company.name, "auto_re_enabled", {
+          jobCount: jobs.length,
+        });
         Sentry.captureMessage(`Auto-re-enabled ${company.name} via Monday probe (${jobs.length} jobs)`, {
           level: "info",
           tags: { company: company.name, phase: "auto-re-enable" },
@@ -300,8 +332,6 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         tags: { company: company.name, phase: "scrape" },
       });
 
-      failedCompanies.push({ name: company.name, error: errMsg });
-
       // If this was a probe-day re-attempt, the company stays disabled but we don't
       // ratchet the counter higher (it's already past the threshold).
       // Otherwise, increment and auto-disable at the threshold.
@@ -316,6 +346,10 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
         shouldAutoDisable = newFailureCount >= AUTO_DISABLE_THRESHOLD;
         if (shouldAutoDisable) {
           autoDisabled.push({ name: company.name, reason: errMsg });
+          await logScraperEvent(company.id, company.name, "auto_disabled", {
+            reason: errMsg,
+            consecutiveFailures: newFailureCount,
+          });
           Sentry.captureMessage(`Auto-disabled ${company.name} after ${newFailureCount} consecutive failures`, {
             level: "warning",
             tags: { company: company.name, phase: "auto-disable" },
@@ -323,6 +357,8 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
           console.warn(`${company.name}: AUTO-DISABLED after ${newFailureCount} consecutive failures`);
         }
       }
+
+      failedCompanies.push({ name: company.name, error: errMsg, consecutiveFailures: newFailureCount });
 
       await supabase
         .from("companies")
@@ -345,51 +381,31 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
     await delay(5000);
   }
 
-  // --- Daily Quality Evaluation ---
-  console.log("Running daily quality evaluation...");
-  const evalResult = evaluateDailyQuality(qualityData);
-  console.log(`Daily eval: ${evalResult.issues.length} issues found (${evalResult.totalUsJobs} US jobs, ${evalResult.totalNonUsFiltered} non-US filtered)`);
-  try {
-    await notifyAdminOfQualityReport(evalResult);
-  } catch (err) {
-    console.error("Failed to send daily eval report:", err);
-  }
-
   // --- Per-user email alerts ---
+  let emailBatchResult: BatchSendResult = { sent: 0, failed: 0, errors: [] };
   if (options?.skipEmails) {
     console.log("skipEmails=true — skipping per-user email alerts");
   } else {
     try {
-      await sendPerUserAlerts(companyAlerts);
+      emailBatchResult = await sendPerUserAlerts(companyAlerts);
     } catch (err) {
       console.error("Failed to send per-user alerts:", err);
     }
   }
 
-  // Send admin notification if anything noteworthy happened
-  if (
-    failedCompanies.length > 0 ||
-    autoRemediated.length > 0 ||
-    stealthRecovered.length > 0 ||
-    autoDisabled.length > 0 ||
-    reEnabled.length > 0
-  ) {
-    console.log(
-      `${failedCompanies.length} failed, ${autoRemediated.length} auto-remediated, ${stealthRecovered.length} stealth-recovered, ${autoDisabled.length} auto-disabled, ${reEnabled.length} re-enabled out of ${companies.length} companies`
-    );
-    try {
-      await notifyAdminOfScrapeFailures(
-        companies.length,
-        failedCompanies,
-        autoRemediated,
-        stealthRecovered,
-        autoDisabled,
-        reEnabled
-      );
-    } catch (err) {
-      console.error("Failed to send admin scrape failure notification:", err);
-    }
-  }
+  // --- Consolidated admin digest ---
+  // Daily: fires only if there's something the admin needs to act on.
+  // Monday (UTC): always fires with system health snapshot + past-7-days self-heal log.
+  await sendConsolidatedAdminDigest({
+    totalCompanies: companies.length,
+    failedCompanies,
+    autoRemediated,
+    stealthRecovered,
+    autoDisabled,
+    reEnabled,
+    qualityData,
+    emailBatchResult,
+  });
 
   // Refresh compensation data for all active companies
   console.log("Refreshing compensation data...");
@@ -427,14 +443,14 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
 
 async function sendPerUserAlerts(
   companyAlerts: Map<string, { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }>
-): Promise<void> {
+): Promise<BatchSendResult> {
   // Get all users
   const { data: usersData } = await supabase.auth.admin.listUsers();
   const users = usersData?.users || [];
 
   if (users.length === 0) {
     console.log("No users found — skipping email alerts");
-    return;
+    return { sent: 0, failed: 0, errors: [] };
   }
 
   // Get all user preferences
@@ -510,9 +526,109 @@ async function sendPerUserAlerts(
   const sendResult = await sendBatchAlerts(emailPayloads);
   console.log(`Per-user alerts: ${sendResult.sent} sent, ${sendResult.failed} failed`);
 
-  // Notify admin if any emails failed
-  if (sendResult.failed > 0) {
-    await notifyAdminOfFailures(sendResult);
+  // Email-send failures are surfaced in the admin digest (built at end of run).
+  return sendResult;
+}
+
+/**
+ * Build the inputs for sendAdminDigest, then call it.
+ *
+ * Decides whether today is a Monday weekly digest day. On Mondays, queries the
+ * scraper_events table for the past 7 days and the companies table for current
+ * system health. Otherwise, only computes the action-required inputs and lets
+ * sendAdminDigest decide whether to actually send (silent days = no email).
+ */
+async function sendConsolidatedAdminDigest(input: {
+  totalCompanies: number;
+  failedCompanies: { name: string; error: string; consecutiveFailures: number }[];
+  autoRemediated: { name: string; from: string; to: string }[];
+  stealthRecovered: { name: string; jobCount: number }[];
+  autoDisabled: { name: string; reason: string }[];
+  reEnabled: { name: string; jobCount: number }[];
+  qualityData: Map<string, CompanyQualityData>;
+  emailBatchResult: BatchSendResult;
+}): Promise<void> {
+  const isMondayDigest = new Date().getUTCDay() === 1;
+
+  // Watch list: companies that have failed 3+ days in a row but aren't auto-disabled yet.
+  // Snapshot AFTER the loop completes, since consecutive_failure_count was updated above.
+  const { data: watchListRows } = await supabase
+    .from("companies")
+    .select("name, consecutive_failure_count")
+    .gte("consecutive_failure_count", 3)
+    .lte("consecutive_failure_count", 6)
+    .eq("auto_disabled", false);
+
+  const watchList = (watchListRows || []).map((c) => ({
+    name: c.name,
+    consecutiveFailures: c.consecutive_failure_count,
+  }));
+
+  // Subscribed-company-dropped-to-zero: had jobs yesterday, has none today, has subscribers.
+  // This is the only daily-eval signal worth surfacing — it usually means a scraper broke.
+  const subscribedZeroDrops: { name: string; prevCount: number; subscribers: number }[] = [];
+  for (const data of input.qualityData.values()) {
+    if (
+      data.subscriberCount > 0 &&
+      data.prevJobCount > 0 &&
+      data.currentJobCount === 0
+    ) {
+      subscribedZeroDrops.push({
+        name: data.companyName,
+        prevCount: data.prevJobCount,
+        subscribers: data.subscriberCount,
+      });
+    }
+  }
+
+  // Monday-only: weekly health snapshot + past-7-days self-heal log
+  let weeklyHealth: { healthy: number; disabled: number; watchListCount: number } | undefined;
+  let weeklyEvents:
+    | { event_type: string; company_name: string; created_at: string; details: Record<string, unknown> | null }[]
+    | undefined;
+
+  if (isMondayDigest) {
+    const [healthCounts, eventsRows] = await Promise.all([
+      supabase
+        .from("companies")
+        .select("auto_disabled, consecutive_failure_count")
+        .eq("is_active", true),
+      (async () => {
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        return supabase
+          .from("scraper_events")
+          .select("event_type, company_name, created_at, details")
+          .gte("created_at", sevenDaysAgo.toISOString())
+          .order("created_at", { ascending: false });
+      })(),
+    ]);
+
+    const rows = healthCounts.data || [];
+    const disabled = rows.filter((r) => r.auto_disabled).length;
+    const onWatch = rows.filter((r) => !r.auto_disabled && (r.consecutive_failure_count ?? 0) >= 3).length;
+    const healthy = rows.length - disabled - onWatch;
+    weeklyHealth = { healthy, disabled, watchListCount: onWatch };
+    weeklyEvents = eventsRows.data || [];
+  }
+
+  try {
+    await sendAdminDigest({
+      totalCompanies: input.totalCompanies,
+      failedCompanies: input.failedCompanies,
+      watchList,
+      autoDisabled: input.autoDisabled,
+      subscribedZeroDrops,
+      autoRemediated: input.autoRemediated,
+      stealthRecovered: input.stealthRecovered,
+      reEnabled: input.reEnabled,
+      emailBatchResult: input.emailBatchResult,
+      isMondayDigest,
+      weeklyHealth,
+      weeklyEvents,
+    });
+  } catch (err) {
+    console.error("Failed to send admin digest:", err);
   }
 }
 

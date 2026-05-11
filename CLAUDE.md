@@ -98,6 +98,9 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 | `comp_cache` | id, company_slug (UNIQUE), data (jsonb), fetched_at | levels.fyi cache, 24hr TTL. No RLS. |
 | `scrape_issues` | id, company_id (FK CASCADE), user_id, issue_type, description | wrong_jobs/missing_jobs/bad_locations/other. |
 | `help_submissions` | id, user_id, user_email, issue_type, message, page_url | Index on created_at DESC. |
+| `scraper_events` | id, company_id, company_name, event_type, details (jsonb), created_at | Audit log of self-healing actions: stealth_recovery, auto_remediation, auto_disabled, auto_re_enabled. Queried by Monday weekly digest. |
+
+**Self-healing columns on `companies`** (added 2026-05-08): `consecutive_failure_count INTEGER DEFAULT 0` (resets to 0 on success, increments on each catch-block failure) and `auto_disabled BOOLEAN DEFAULT FALSE` (set true at 7+ consecutive failures, cron loop skips). Partial index `idx_companies_consecutive_failures` on `consecutive_failure_count > 0`.
 
 **Key indexes**: `(company_id, job_url_path)` unique, `(company_id, is_baseline, first_seen_at)`, `(company_id, status)`, `(status, first_seen_at DESC)`, `(is_active)`.
 
@@ -141,6 +144,17 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 **Scrape failure alerting** (upgraded 2026-03-20): Admin email now shows two sections: green "Auto-fixed" (platform changes the cron self-healed) and red "Still needs attention" (actual failures). Only sends email if there's something to report. Sentry captures each failure with company/phase tags. If >25% of companies fail, cron returns HTTP 500.
 
 **Auto-remediation** (added 2026-03-19): When ANY company (not just generic) returns 0 raw jobs, cron runs `broadATSDiscovery` to detect platform changes. If a new platform is found and produces results, auto-updates the DB and logs to Sentry. Still guarded by `CUSTOM_SCRAPER_HOSTS` blocklist.
+
+**Three-tier self-healing recovery** (added 2026-05-08): When any company returns 0 jobs, the cron now runs three recovery tiers in order:
+1. **Configured platform scraper** (existing) — uses `platform_type` from DB
+2. **broadATSDiscovery** (existing) — auto-detects new ATS, updates DB. Skipped for `CUSTOM_SCRAPER_HOSTS`
+3. **`stealthFallbackScrape`** (new, in `scraper.ts`) — generic last-resort using `puppeteer-extra` + `puppeteer-extra-plugin-stealth`. Sniffs all JSON XHR responses for arrays of objects with title+id-like fields via `extractJobsFromUnknownJson`, falls back to DOM extraction. Runs for ALL companies including custom-scraper hosts. Reported in admin email under green "Stealth fallback recovered" section.
+
+**Auto-disable** (added 2026-05-08): Companies that fail 7 consecutive days are auto-disabled — `auto_disabled=true` and skipped from cron. Threshold = `AUTO_DISABLE_THRESHOLD` constant in `dailyCheck.ts`. Successful scrape resets `consecutive_failure_count=0` and `auto_disabled=false`. To manually re-enable: `UPDATE companies SET auto_disabled = false, consecutive_failure_count = 0 WHERE name = '...';`
+
+**Monday watch-list probe** (added 2026-05-08): Every Monday UTC (`PROBE_DAY_OF_WEEK = 1`), the cron retries each auto-disabled company once. Successful probe → automatic re-enable + green "Watch-list re-enabled" section in admin email. Failed probe → counter stays at threshold, doesn't ratchet higher.
+
+**Stealth Puppeteer dependencies**: `puppeteer-extra@3.3.6` + `puppeteer-extra-plugin-stealth@2.11.2` (both pinned, see `backend/package.json`). Stealth plugin spoofs `navigator.webdriver`, window.chrome runtime, permissions API, and other headless-Chrome tells.
 
 **Double-filtering gotcha**: Most scrapers (Greenhouse, Workday, Lever, etc.) filter by PM_KEYWORDS internally before returning results. Then `validateScrapeResults` filters again. This means `rawJobs.length === 0` can mean "no PM jobs" (legit) OR "scraper broken" -- can't distinguish at the `dailyCheck` level. Actual scraper failures throw exceptions caught by the `catch` block.
 
@@ -203,8 +217,7 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - **Resend limits**: Free = 100 emails/day, 3K/month, 2 req/s. SMTP + API share quota.
 - **API key**: Only in Railway env vars. Empty locally.
 - Failure notifications sent to ADMIN_EMAIL after cron if email batches fail.
-- **Scrape failure alerts** (added 2026-03-07): `notifyAdminOfScrapeFailures()` sends admin email with failure count, percentage, and per-company error breakdown after daily cron.
-- **Daily quality eval email** (added 2026-03-22): `notifyAdminOfQualityReport()` sends per-company scorecard showing US jobs, non-US filtered, change vs previous, quality score, and any issues. Companies with issues sort to top.
+- **Consolidated admin digest** (added 2026-05-11): `sendAdminDigest()` replaces three previous admin emails (failures, quality report, batch-send failures) with one. Daily: fires ONLY if action items present (failed scrapes, watch list, auto-disabled, subscribed company dropped to 0, email send failures). Monday (UTC): always fires with system health + past-7-days self-heal log queried from `scraper_events` table. Most days = no admin email.
 
 ## Delete Semantics
 
@@ -270,6 +283,9 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - **Phase 6 migration complete (2026-04-22)**: Dropped legacy `favorites` table and `companies.user_id` column. Both replaced months ago by `user_job_favorites` and `user_subscriptions`.
 - **Empty locations default to excluded (fixed 2026-04-22)**: `isUSLocation("")` now returns `false`. Previously returned `true`, which included jobs with no location data.
 - **Oregon pattern case-sensitive (fixed 2026-04-22)**: `/\bOR\b/` (no `i` flag). Was matching the English word "or" in locations like "Bangalore or Remote".
+- **Coinbase deleted public Greenhouse board (2026-05-08)**: `boards-api.greenhouse.io/v1/boards/coinbase/*` returns 404 on every endpoint (jobs, embed/jobs, embed/departments). Coinbase migrated to a custom SPA at `coinbase.com/careers/positions` (server-redirects to `/careers`) that fetches `/api/v2/careers` from `api.coinbase.com`. The internal API returns HTTP 400 even from inside a stealth-rendered Puppeteer SPA with proper X-CB-* headers — server-side rejection of public scraping. Custom scraper at `scrapeCoinbaseCareers` returns `[]` on capture failure so the `stealthFallbackScrape` tier gets a chance. Will land in auto-disable after 7 days unless Coinbase reopens the API. May coincide with their public layoff announcement (hiring freeze).
+- **Throw vs return [] in custom scrapers**: Tier-1 scrapers that throw bypass tiers 2 and 3. To let auto-healing run, return `[]` instead of throwing for known/expected failures. Reserve exceptions for genuinely unexpected errors.
+- **Stealth fallback won't run if Tier 1 throws**: `dailyCheck` checks `rawJobs.length === 0` to trigger the stealth tier. If the configured scraper throws, the catch block fires and stealth fallback is skipped. Pattern: `try { ... return jobs } catch { console.warn; return [] }` for scrapers prone to non-fatal failures.
 
 ## Check-Then-Add Flow
 
