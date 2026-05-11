@@ -7,6 +7,19 @@ export interface ScrapedJob {
   urlPath: string;
 }
 
+/**
+ * Out-param scrapers can write to so the cron knows how many raw jobs the
+ * source returned BEFORE PM_KEYWORDS filtering. Used by dailyCheck to decide
+ * whether to run stealth fallback: if a scraper saw 50 jobs and just had no
+ * PMs, that's a legitimate zero — no point running Puppeteer-with-stealth.
+ *
+ * Filter-heavy scrapers (Greenhouse, Workday, Ashby, Eightfold) set this.
+ * Other scrapers leave it at 0; dailyCheck falls back to checking jobs.length.
+ */
+export interface ScrapeStats {
+  totalScanned: number;
+}
+
 const JOB_URL_RE =
   /\/jobs\/[a-z0-9][\w-]{1,}|\/job\/[a-z0-9][\w-]{1,}|\/positions\/[a-z0-9][\w-]{1,}|\/position\/[a-z0-9][\w-]{1,}|\/careers\/[a-z0-9][\w-]{1,}|\/openings\/[a-z0-9][\w-]{1,}|\/roles\/[a-z0-9][\w-]{1,}|\/postings\/[a-z0-9][\w-]{1,}/;
 
@@ -503,7 +516,8 @@ interface GreenhouseResponse {
 
 async function scrapeGreenhouseCareers(
   boardName: string,
-  companyLabel: string
+  companyLabel: string,
+  stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Fetching jobs from Greenhouse API (board: ${boardName})`);
 
@@ -529,6 +543,7 @@ async function scrapeGreenhouseCareers(
 
   const data: GreenhouseResponse = await response.json();
   console.log(`${companyLabel}: Found ${data.jobs.length} total jobs`);
+  if (stats) stats.totalScanned = data.jobs.length;
 
   const productJobs = data.jobs.filter((job) => {
     const lowerTitle = job.title.toLowerCase();
@@ -553,7 +568,8 @@ async function scrapeGreenhouseCareers(
  */
 async function scrapeGreenhouseDepartments(
   boardName: string,
-  companyLabel: string
+  companyLabel: string,
+  stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Fetching departments from Greenhouse API (board: ${boardName})`);
 
@@ -564,7 +580,7 @@ async function scrapeGreenhouseDepartments(
 
   if (!deptResponse.ok) {
     console.log(`${companyLabel}: Departments endpoint failed, falling back to keyword filter`);
-    return scrapeGreenhouseCareers(boardName, companyLabel);
+    return scrapeGreenhouseCareers(boardName, companyLabel, stats);
   }
 
   const deptData: { departments: Array<{ id: number; name: string; jobs: GreenhouseJob[] }> } =
@@ -578,7 +594,7 @@ async function scrapeGreenhouseDepartments(
 
   if (pmDepts.length === 0) {
     console.log(`${companyLabel}: No Product Management department found, falling back to keyword filter`);
-    return scrapeGreenhouseCareers(boardName, companyLabel);
+    return scrapeGreenhouseCareers(boardName, companyLabel, stats);
   }
 
   const deptJobs = pmDepts.flatMap((d) => d.jobs);
@@ -587,8 +603,10 @@ async function scrapeGreenhouseDepartments(
 
   // Also sweep all jobs for PM keyword matches not already in the department
   let keywordExtras: GreenhouseJob[] = [];
+  let allJobsTotal = 0;
   if (allJobsResponse.ok) {
     const allData: GreenhouseResponse = await allJobsResponse.json();
+    allJobsTotal = allData.jobs.length;
     keywordExtras = allData.jobs.filter((job) => {
       if (deptJobIds.has(job.id)) return false; // Already captured via department
       const lowerTitle = job.title.toLowerCase();
@@ -598,6 +616,8 @@ async function scrapeGreenhouseDepartments(
       console.log(`${companyLabel}: Found ${keywordExtras.length} additional PM roles via keyword sweep`);
     }
   }
+  // Report board size to caller — fall back to dept job count if /jobs failed.
+  if (stats) stats.totalScanned = allJobsTotal > 0 ? allJobsTotal : deptJobs.length;
 
   const combined = [...deptJobs, ...keywordExtras];
   return combined.map((job) => ({
@@ -791,7 +811,8 @@ async function scrapeWorkdayCareers(
   tenant: string,
   subdomain: string,
   boardPath: string,
-  companyLabel: string
+  companyLabel: string,
+  stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Fetching jobs from Workday API (${tenant}.${subdomain}/${boardPath})`);
 
@@ -942,6 +963,7 @@ async function scrapeWorkdayCareers(
   }
 
   console.log(`${companyLabel}: Found ${allJobs.length} Product Manager roles out of ${totalJobs} total jobs`);
+  if (stats) stats.totalScanned = totalJobs;
   return allJobs;
 }
 
@@ -951,7 +973,8 @@ async function scrapeWorkdayCareers(
  */
 async function scrapeAshbyCareers(
   orgName: string,
-  companyLabel: string
+  companyLabel: string,
+  stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Fetching jobs from Ashby GraphQL API (org: ${orgName})`);
 
@@ -1042,6 +1065,7 @@ async function scrapeAshbyCareers(
   const { teams, jobPostings } = data.data.jobBoard;
 
   console.log(`${companyLabel}: Found ${jobPostings.length} total jobs across ${teams.length} teams`);
+  if (stats) stats.totalScanned = jobPostings.length;
 
   // Find Product Management team and related product teams
   const productTeamIds = new Set<string>();
@@ -2492,7 +2516,8 @@ async function scrapeUberCareers(careersUrl: string): Promise<ScrapedJob[]> {
 export async function scrapeCompanyCareers(
   careersUrl: string,
   platformType?: string | null,
-  platformConfig?: Record<string, string> | null
+  platformConfig?: Record<string, string> | null,
+  stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   // Platform-based routing (for detected/cached platforms)
   if (platformType && platformConfig) {
@@ -2500,12 +2525,12 @@ export async function scrapeCompanyCareers(
     switch (platformType) {
       case "greenhouse":
         if (platformConfig.boardName) {
-          return scrapeGreenhouseCareers(platformConfig.boardName, label);
+          return scrapeGreenhouseCareers(platformConfig.boardName, label, stats);
         }
         break;
       case "greenhouse_departments":
         if (platformConfig.boardName) {
-          return scrapeGreenhouseDepartments(platformConfig.boardName, label);
+          return scrapeGreenhouseDepartments(platformConfig.boardName, label, stats);
         }
         break;
       case "lever":
@@ -2515,12 +2540,12 @@ export async function scrapeCompanyCareers(
         break;
       case "ashby":
         if (platformConfig.orgName) {
-          return scrapeAshbyCareers(platformConfig.orgName, label);
+          return scrapeAshbyCareers(platformConfig.orgName, label, stats);
         }
         break;
       case "workday":
         if (platformConfig.tenant && platformConfig.subdomain && platformConfig.boardPath) {
-          return scrapeWorkdayCareers(platformConfig.tenant, platformConfig.subdomain, platformConfig.boardPath, label);
+          return scrapeWorkdayCareers(platformConfig.tenant, platformConfig.subdomain, platformConfig.boardPath, label, stats);
         }
         break;
       case "eightfold":
@@ -2585,15 +2610,15 @@ export async function scrapeCompanyCareers(
 
     switch (regType) {
       case "greenhouse":
-        return scrapeGreenhouseCareers(regConfig.boardName, label);
+        return scrapeGreenhouseCareers(regConfig.boardName, label, stats);
       case "greenhouse_departments":
-        return scrapeGreenhouseDepartments(regConfig.boardName, label);
+        return scrapeGreenhouseDepartments(regConfig.boardName, label, stats);
       case "lever":
         return scrapeLeverCareers(regConfig.handle, label);
       case "ashby":
-        return scrapeAshbyCareers(regConfig.orgName, label);
+        return scrapeAshbyCareers(regConfig.orgName, label, stats);
       case "workday":
-        return scrapeWorkdayCareers(regConfig.tenant, regConfig.subdomain, regConfig.boardPath, label);
+        return scrapeWorkdayCareers(regConfig.tenant, regConfig.subdomain, regConfig.boardPath, label, stats);
     }
   }
 
@@ -2611,7 +2636,7 @@ export async function scrapeCompanyCareers(
     const orgName = new URL(careersUrl).pathname.split("/")[1];
     if (orgName && orgName !== "api") {
       console.log(`Detected Ashby careers page, using API scraper (org: ${orgName})`);
-      return scrapeAshbyCareers(orgName, orgName);
+      return scrapeAshbyCareers(orgName, orgName, stats);
     }
   }
 
@@ -2622,7 +2647,7 @@ export async function scrapeCompanyCareers(
     const wdSubdomain = parts[1];
     const wdBoardPath = new URL(careersUrl).pathname.split("/").filter(Boolean)[0] || "";
     console.log(`Detected Workday careers page (${wdTenant}.${wdSubdomain}/${wdBoardPath})`);
-    return scrapeWorkdayCareers(wdTenant, wdSubdomain, wdBoardPath, wdTenant);
+    return scrapeWorkdayCareers(wdTenant, wdSubdomain, wdBoardPath, wdTenant, stats);
   }
 
   // Eightfold.ai platform (PayPal, etc.): use their JSON API with pagination

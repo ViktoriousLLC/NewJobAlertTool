@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
-import { scrapeCompanyCareers, stealthFallbackScrape } from "../scraper/scraper";
+import { scrapeCompanyCareers, stealthFallbackScrape, ScrapeStats } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { broadATSDiscovery } from "../scraper/detectPlatform";
 import { sendBatchAlerts, buildAlertEmailPayload, sendAdminDigest, NewJobAlert, EmailPayload, BatchSendResult } from "../email/sendAlert";
@@ -101,11 +101,21 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
 
     try {
       console.log(`Scraping: ${company.name} (${company.careers_url})`);
+      // Filter-heavy scrapers (Greenhouse/Workday/Ashby) write their pre-PM-filter
+      // job count into stats. Lets us distinguish "API returned 50 jobs, 0 PMs"
+      // (legit zero — skip stealth fallback) from "API broken, returned nothing"
+      // (genuine zero — try recovery tiers).
+      const scrapeStats: ScrapeStats = { totalScanned: 0 };
       let rawJobs = await scrapeCompanyCareers(
         company.careers_url,
         company.platform_type || null,
-        company.platform_config || null
+        company.platform_config || null,
+        scrapeStats
       );
+
+      // Source was empty if the scraper saw zero raw jobs AND returned zero PMs.
+      // If totalScanned > 0, the source worked, there just weren't any PM matches.
+      const sourceEmpty = rawJobs.length === 0 && scrapeStats.totalScanned === 0;
 
       // Zero-result fallback: try broad ATS discovery to auto-remediate
       // Covers both generic companies AND companies whose known platform broke (e.g., Ashby → Greenhouse)
@@ -113,16 +123,17 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
       const CUSTOM_SCRAPER_HOSTS = ["ea.com", "atlassian.com", "netflix.net", "netflix.com", "uber.com", "google.com", "amazon.jobs", "intuit.com", "rivian.com", "costco.com", "coinbase.com"];
       const companyHost = new URL(company.careers_url).hostname;
       const isCustomScraper = CUSTOM_SCRAPER_HOSTS.some((h) => companyHost.includes(h));
-      if (rawJobs.length === 0 && !isCustomScraper) {
+      if (sourceEmpty && !isCustomScraper) {
         const prevPlatform = company.platform_type || "generic";
         console.log(`${company.name}: 0 jobs with ${prevPlatform} scraper, trying broad ATS discovery...`);
         try {
           const discovery = await broadATSDiscovery(company.careers_url, company.name);
           if (discovery && discovery.platformType !== company.platform_type) {
             console.log(`${company.name}: Broad discovery found NEW platform ${discovery.platformType} (was: ${prevPlatform})`);
-            // Re-scrape with discovered platform
-            rawJobs = await scrapeCompanyCareers(company.careers_url, discovery.platformType, discovery.platformConfig);
-            console.log(`${company.name}: Re-scrape with ${discovery.platformType} found ${rawJobs.length} raw jobs`);
+            // Re-scrape with discovered platform, reusing same stats out-param
+            scrapeStats.totalScanned = 0;
+            rawJobs = await scrapeCompanyCareers(company.careers_url, discovery.platformType, discovery.platformConfig, scrapeStats);
+            console.log(`${company.name}: Re-scrape with ${discovery.platformType} found ${rawJobs.length} raw jobs (scanned ${scrapeStats.totalScanned})`);
 
             // Auto-update platform_type + platform_config so future scrapes work directly
             if (rawJobs.length > 0) {
@@ -152,11 +163,13 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
       }
 
       // Final tier: stealth Puppeteer fallback when everything else returns 0.
-      // Runs for ALL companies (including custom scrapers) since their primary
-      // scraper has already had its chance. Stealth + JSON sniff + DOM extract
-      // catches sites that have moved off public APIs (e.g. Coinbase) or added
-      // bot protection. Skips if last_check_status was a transient timeout.
-      if (rawJobs.length === 0) {
+      // Only fires when the SOURCE was empty — not when the API returned data
+      // that just happened to contain zero PM matches. After Layer 2 (2026-05-11),
+      // companies like Block/Wiz/Confluent (50+ raw jobs, 0 PMs) no longer trigger
+      // Puppeteer-with-stealth — that was burning ~10 min of cron time daily for
+      // no benefit. Custom scrapers (Coinbase etc.) still trigger because they
+      // typically return [] on capture failure, which counts as source-empty.
+      if (rawJobs.length === 0 && scrapeStats.totalScanned === 0) {
         const lastStatus = company.last_check_status || "";
         const isTransientFailure = /timeout|ETIMEDOUT|ECONNRESET|ENOTFOUND/i.test(lastStatus);
         if (!isTransientFailure) {
