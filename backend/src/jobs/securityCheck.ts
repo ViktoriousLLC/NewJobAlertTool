@@ -67,10 +67,15 @@ export async function runSecurityCheck(): Promise<SecurityFindings | null> {
   const current = parseAuditOutput(auditJson);
   const fingerprints = current.map((v) => v.fingerprint);
 
-  // Fetch the most recent previous snapshot for diff
+  // Fetch the most recent snapshot at least 6 days old so the diff is always
+  // week-over-week regardless of which day the digest fires (Mon or Tue).
+  // Otherwise Tuesday would diff against Monday and show "0 new" — useless.
+  const sixDaysAgo = new Date();
+  sixDaysAgo.setDate(sixDaysAgo.getDate() - 6);
   const { data: prev } = await supabase
     .from("security_snapshots")
     .select("vuln_fingerprints, snapshot_date")
+    .lte("snapshot_date", sixDaysAgo.toISOString())
     .order("snapshot_date", { ascending: false })
     .limit(1)
     .maybeSingle();

@@ -607,7 +607,11 @@ async function sendConsolidatedAdminDigest(input: {
   emailBatchResult: BatchSendResult;
   forceMondayDigest: boolean;
 }): Promise<void> {
-  const isMondayDigest = input.forceMondayDigest || new Date().getUTCDay() === 1;
+  // Weekly digest fires Monday and Tuesday UTC. Two-day window gives the
+  // admin a second chance to review the weekly report if they miss Monday.
+  // forceMondayDigest=true overrides for ad-hoc manual triggers.
+  const dayOfWeek = new Date().getUTCDay();
+  const isMondayDigest = input.forceMondayDigest || dayOfWeek === 1 || dayOfWeek === 2;
 
   // Watch list: companies that have failed 3+ days in a row but aren't auto-disabled yet.
   // Snapshot AFTER the loop completes, since consecutive_failure_count was updated above.
