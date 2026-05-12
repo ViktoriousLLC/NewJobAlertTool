@@ -7,6 +7,7 @@ import { sendBatchAlerts, buildAlertEmailPayload, sendAdminDigest, NewJobAlert, 
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
 import { CompanyQualityData } from "../scraper/dailyEval";
+import { runSecurityCheck } from "./securityCheck";
 
 // Log a self-healing event to the scraper_events table. Used to power the
 // Monday weekly digest. Best-effort: failures are swallowed so they never
@@ -635,14 +636,15 @@ async function sendConsolidatedAdminDigest(input: {
     }
   }
 
-  // Monday-only: weekly health snapshot + past-7-days self-heal log
+  // Monday-only: weekly health snapshot + past-7-days self-heal log + security check
   let weeklyHealth: { healthy: number; disabled: number; watchListCount: number } | undefined;
   let weeklyEvents:
     | { event_type: string; company_name: string; created_at: string; details: Record<string, unknown> | null }[]
     | undefined;
+  let securityFindings: Awaited<ReturnType<typeof runSecurityCheck>> = null;
 
   if (isMondayDigest) {
-    const [healthCounts, eventsRows] = await Promise.all([
+    const [healthCounts, eventsRows, security] = await Promise.all([
       supabase
         .from("companies")
         .select("auto_disabled, consecutive_failure_count")
@@ -656,6 +658,7 @@ async function sendConsolidatedAdminDigest(input: {
           .gte("created_at", sevenDaysAgo.toISOString())
           .order("created_at", { ascending: false });
       })(),
+      runSecurityCheck(),
     ]);
 
     const rows = healthCounts.data || [];
@@ -664,6 +667,7 @@ async function sendConsolidatedAdminDigest(input: {
     const healthy = rows.length - disabled - onWatch;
     weeklyHealth = { healthy, disabled, watchListCount: onWatch };
     weeklyEvents = eventsRows.data || [];
+    securityFindings = security;
   }
 
   try {
@@ -680,6 +684,7 @@ async function sendConsolidatedAdminDigest(input: {
       isMondayDigest,
       weeklyHealth,
       weeklyEvents,
+      securityFindings,
     });
   } catch (err) {
     console.error("Failed to send admin digest:", err);

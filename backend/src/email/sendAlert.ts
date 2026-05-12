@@ -352,6 +352,14 @@ export interface AdminDigestInput {
   isMondayDigest: boolean;
   weeklyHealth?: { healthy: number; disabled: number; watchListCount: number };
   weeklyEvents?: { event_type: string; company_name: string; created_at: string; details: Record<string, unknown> | null }[];
+  securityFindings?: {
+    totalVulns: number;
+    bySeverity: { info: number; low: number; moderate: number; high: number; critical: number };
+    current: { package: string; severity: string; fixAvailable: boolean; via: string }[];
+    newSinceLastWeek: { package: string; severity: string; fixAvailable: boolean; via: string }[];
+    resolvedSinceLastWeek: { package: string; severity: string; fixAvailable: boolean; via: string }[];
+    isFirstSnapshot: boolean;
+  } | null;
 }
 
 export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
@@ -529,6 +537,63 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
       html += `<ul style="font-size:13px;">`;
       for (const r of input.reEnabled) html += `<li>${escapeHtml(r.name)} — ${r.jobCount} jobs</li>`;
       html += `</ul>`;
+    }
+
+    // --- Security check ---
+    if (input.securityFindings) {
+      const s = input.securityFindings;
+      const sevColors: Record<string, string> = {
+        critical: "#dc2626",
+        high: "#dc2626",
+        moderate: "#ea580c",
+        low: "#6b7280",
+        info: "#9ca3af",
+      };
+
+      html += `<h3 style="margin:24px 0 6px 0;color:#1A1A2E;">Security check (npm audit)</h3>`;
+
+      if (s.totalVulns === 0) {
+        html += `<p style="font-size:13px;color:#16a34a;margin:4px 0;">✓ 0 known vulnerabilities in production dependencies.</p>`;
+      } else {
+        // Summary line: counts by severity
+        const sevSummary = (["critical", "high", "moderate", "low", "info"] as const)
+          .filter((sev) => s.bySeverity[sev] > 0)
+          .map((sev) => `<span style="color:${sevColors[sev]};font-weight:bold;">${s.bySeverity[sev]} ${sev}</span>`)
+          .join(", ");
+        html += `<p style="font-size:13px;margin:4px 0;">${s.totalVulns} known vulnerabilit${s.totalVulns === 1 ? "y" : "ies"}: ${sevSummary}</p>`;
+
+        // New vulns this week (the most actionable signal)
+        if (s.newSinceLastWeek.length > 0) {
+          html += `<p style="margin:8px 0 4px 0;font-weight:bold;color:#dc2626;">New this week (${s.newSinceLastWeek.length})</p>`;
+          html += `<ul style="margin:4px 0 0 0;padding-left:20px;font-size:13px;">`;
+          for (const v of s.newSinceLastWeek) {
+            const fixBadge = v.fixAvailable
+              ? ` <span style="color:#16a34a;font-size:11px;">(npm audit fix available)</span>`
+              : ` <span style="color:#ea580c;font-size:11px;">(no automatic fix)</span>`;
+            html += `<li style="margin:2px 0;"><strong>${escapeHtml(v.package)}</strong> <span style="color:${sevColors[v.severity] || "#6b7280"};">[${escapeHtml(v.severity)}]</span> — ${escapeHtml(v.via.slice(0, 120))}${fixBadge}</li>`;
+          }
+          html += `</ul>`;
+        }
+
+        if (s.resolvedSinceLastWeek.length > 0) {
+          html += `<p style="margin:8px 0 4px 0;color:#16a34a;font-size:13px;">Resolved since last week: ${s.resolvedSinceLastWeek.map((v) => escapeHtml(v.package)).join(", ")}</p>`;
+        }
+
+        // Ongoing vulns (only show if there are any new ones or it's the first snapshot,
+        // otherwise repeat-week noise — the new/resolved diff is the actionable signal)
+        if ((s.newSinceLastWeek.length > 0 || s.isFirstSnapshot) && s.current.length > s.newSinceLastWeek.length) {
+          const ongoing = s.current.filter((v) => !s.newSinceLastWeek.some((n) => n.package === v.package));
+          if (ongoing.length > 0) {
+            html += `<p style="margin:8px 0 4px 0;color:#6b7280;font-size:13px;">Ongoing (carried from previous weeks): ${ongoing.slice(0, 10).map((v) => `${escapeHtml(v.package)} [${v.severity}]`).join(", ")}${ongoing.length > 10 ? `, +${ongoing.length - 10} more` : ""}</p>`;
+          }
+        }
+
+        if (s.isFirstSnapshot) {
+          html += `<p style="font-size:11px;color:#9ca3af;font-style:italic;margin:8px 0 0 0;">First snapshot — next Monday will show what changed.</p>`;
+        }
+      }
+
+      html += `<p style="font-size:11px;color:#9ca3af;margin:4px 0 0 0;">Backend production dependencies only. Frontend audit runs at Vercel build time.</p>`;
     }
   }
 

@@ -99,6 +99,7 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 | `scrape_issues` | id, company_id (FK CASCADE), user_id, issue_type, description | wrong_jobs/missing_jobs/bad_locations/other. |
 | `help_submissions` | id, user_id, user_email, issue_type, message, page_url | Index on created_at DESC. |
 | `scraper_events` | id, company_id, company_name, event_type, details (jsonb), created_at | Audit log of self-healing actions: stealth_recovery, auto_remediation, auto_disabled, auto_re_enabled. Queried by Monday weekly digest. |
+| `security_snapshots` | id, snapshot_date, total_vulns, by_severity (jsonb), vuln_fingerprints (jsonb) | Weekly npm audit snapshot. Monday cron writes new row, diffs against previous to surface new/resolved vulns in admin digest. |
 
 **Self-healing columns on `companies`** (added 2026-05-08): `consecutive_failure_count INTEGER DEFAULT 0` (resets to 0 on success, increments on each catch-block failure) and `auto_disabled BOOLEAN DEFAULT FALSE` (set true at 7+ consecutive failures, cron loop skips). Partial index `idx_companies_consecutive_failures` on `consecutive_failure_count > 0`.
 
@@ -217,7 +218,7 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - **Resend limits**: Free = 100 emails/day, 3K/month, 2 req/s. SMTP + API share quota.
 - **API key**: Only in Railway env vars. Empty locally.
 - Failure notifications sent to ADMIN_EMAIL after cron if email batches fail.
-- **Consolidated admin digest** (added 2026-05-11): `sendAdminDigest()` replaces three previous admin emails (failures, quality report, batch-send failures) with one. Daily: fires ONLY if action items present (failed scrapes, watch list, auto-disabled, subscribed company dropped to 0, email send failures). Monday (UTC): always fires with system health + past-7-days self-heal log queried from `scraper_events` table. Most days = no admin email.
+- **Consolidated admin digest** (added 2026-05-11): `sendAdminDigest()` replaces three previous admin emails (failures, quality report, batch-send failures) with one. Daily: fires ONLY if action items present (failed scrapes, watch list, auto-disabled, subscribed company dropped to 0, email send failures). Monday (UTC): always fires with system health + past-7-days self-heal log queried from `scraper_events` table + npm-audit security check (`runSecurityCheck()` in `backend/src/jobs/securityCheck.ts`) showing new/resolved vulns vs the previous week's `security_snapshots` row. Most days = no admin email.
 
 ## Delete Semantics
 
