@@ -1036,3 +1036,85 @@ User asked what they use for bug reports — it's a custom-built widget (`HelpBu
 - **P1**: Stripe billing schema (`billing_subscriptions` table with `stripe_customer_id`)
 - **P2**: Raw-body parser for `POST /api/stripe/webhook` (mount BEFORE `express.json()`)
 - **P3**: `requirePremium` middleware extensibility point
+
+## 2026-05-12 — Catalog Expansion (124 → 220) + Weekly Digest on Mon+Tue
+
+### Context
+
+Two threads in one session:
+
+1. **Catalog scale-up.** User wants the catalog to feel like "a real database, not a personal tool." Current size of ~124 felt small compared to the target of 500-1000. User specifically called out missing AI startups (Wispr Flow, Harvey) and asked for gaming + biotech + other West Coast tech additions.
+2. **Weekly digest cadence.** User wanted the full Monday-style weekly digest (system health + 7-day self-heal log + npm-audit security check) to also fire on Tuesday so they have a two-day window to review it instead of one shot per week.
+
+### What was decided
+
+**Bulk catalog expansion: +96 companies in one batch.**
+
+Wrote a one-off Node.js script (`backend/src/scripts/bulk-add-companies.js`, gitignored) that:
+1. Iterates a hardcoded list of ~94 (name, careers_url) tuples
+2. Calls the existing compiled `detectPlatform` from `dist/` for each
+3. Appends a JSONL line per company to `detected-companies.jsonl`
+
+Detection ran in ~10 min (most companies were trivial hostname matches; Puppeteer fallback for ~20 unknowns). Then a second script (`generate-insert-sql.js`) converted the JSONL to a single SQL `INSERT ... ON CONFLICT DO NOTHING` batch, which was executed via Supabase MCP (since local `SUPABASE_SERVICE_KEY` is a placeholder).
+
+Categories added:
+- **Hot AI startups (19)**: Perplexity, Glean, Sierra, Harvey, Wispr Flow, Decagon, Cursor, Windsurf, Together AI, Replicate, Cresta, Writer, Replit, xAI, Pika, Character.AI, Magic, Imbue, Figure AI
+- **Dev tools (14)**: Sentry, Linear, Retool, Webflow, Hex, Supabase, Convex, PlanetScale, Neon, Pinecone, GitLab, Statsig, Sumo Logic, Splunk
+- **Gaming (10)**: Niantic, Zynga, Riot Games, Epic Games, Unity, Bungie, Sony Interactive Entertainment, HoYoverse, Pokemon Company International, 2K Games
+- **Biotech/pharma (14)**: Genentech, Gilead Sciences, Amgen, Illumina, BeiGene, Twist Bioscience, 10x Genomics, Guardant Health, Exelixis, BioMarin, Verily, Color Health, 23andMe, insitro
+- **Hardware/space (5)**: SpaceX, Wisk Aero, Saildrone, Vast Space, Cruise
+- **Streaming (2)**: Disney, Pandora
+- **EdTech (5)**: Coursera, Chegg, Khan Academy, Quizlet, MasterClass
+- **Fintech (4)**: Bolt, Modern Treasury, Kraken, Anrok
+- **Crypto (3)**: Solana Labs, Aptos Labs, Mysten Labs
+- **Misc West Coast tech (18)**: Patreon, Strava, Hims & Hers, Calm, Quora, Twitch, Skydio, Archer Aviation, Joby Aviation, Faire, Whatnot, Grammarly, Lattice, Carta, Substack, Bluesky, Allbirds, Stitch Fix
+
+Platform breakdown of new entries:
+- greenhouse: 32, ashby: 29, workday: 7, lever: 4, smartrecruiters: 2, icims: 1, generic: 19 (left for cron auto-detect)
+
+**Three detection overrides after spot-check:**
+- **Niantic → Greenhouse "scopely"**: Initially looked like a false positive. WebFetch revealed Niantic redirects to scopely.com/join-us — they merged. Detection was correct; reverted my null override.
+- **xAI → Greenhouse "xai"**: Initial detection picked SmartRecruiters slug "x" (low confidence). Direct API check at `boards-api.greenhouse.io/v1/boards/xai/jobs` confirmed 200+ jobs at xai. Set correctly.
+- **Zynga, Solana Labs → NULL**: No public ATS detected. Solana uses Getro (talent-network platform not in our registry). Stealth fallback (Layer 3) will handle on first cron run.
+
+**Weekly digest fires Mon + Tue UTC (commit `f1810e2`).**
+
+Single-line condition change in `sendConsolidatedAdminDigest`:
+```javascript
+const isMondayDigest = input.forceMondayDigest || dayOfWeek === 1 || dayOfWeek === 2;
+```
+
+Also fixed `runSecurityCheck` to query the most recent snapshot at least 6 days old (instead of "latest"). Without this, Tuesday would diff against Monday's snapshot and always show "0 new vulns since yesterday" — technically correct but useless. With the 6-day floor, both Monday and Tuesday show genuine week-over-week deltas.
+
+**Ad-hoc trigger: `forceMondayDigest=true` query param (commit `db5c270`).**
+
+Added to `/api/cron/trigger`. Lets the admin request a Monday-style report on any day without modifying code. Combined with `skipEmails=true` (suppresses per-user job alerts so subscribers don't get duplicates from a mid-day manual run), it's a clean way to get the weekly digest on demand.
+
+### Alternatives considered
+
+- **Add companies in smaller batches with manual review per group.** Considered; rejected. User explicitly said "I don't think you even need to group them. I think all of them are fine." Trust the user's go-big stance and the self-healing layer to catch any bad inserts.
+- **Use the production `/api/admin/add-company` endpoint with CRON_SECRET for each company.** Considered; rejected. Local CRON_SECRET is `test-secret-123` (placeholder), so this would have required user to share their Railway secret. Faster to run `detectPlatform` locally and bulk-insert via Supabase MCP.
+- **Skip platform detection and insert all 94 with `platform_type=NULL`, let cron auto-detect.** User explicitly said: "you should absolutely always, always do platform detection." Run detection upfront so tomorrow's first scrape has the right config and Layer 2/3 only handle genuine edge cases.
+- **Split Monday vs Tuesday digest content (e.g., Mon = system health, Tue = security check).** Considered; rejected as overcomplication. User wants the FULL report both days. Simpler to fire the same digest twice, with security diff window adjusted to stay week-over-week.
+
+### Key insights
+
+- **Bulk-add tooling is reusable. Don't throw it away.** Moved `bulk-add-companies.js` and `generate-insert-sql.js` to `backend/src/scripts/` (gitignored) for next batch. User wants to keep growing the catalog toward 500-1000, so this pattern will repeat.
+- **Detection false positives need spot-checking.** `detectPlatform`'s speculative API probes can match a different company that happens to share a slug. The `isProbeNameMatch()` guard catches some of these, but not all (Niantic → "scopely" via probe; Solana → "sphere-laboratories" via probe). Always sample 5-10 medium-confidence detections after a bulk run.
+- **The self-healing layer is the safety net for batch operations.** Of 94 new companies, ~28 have `platform_type=NULL`. Pre-cron, that would have been worrying. With Layer 2/3 in place, those companies just get a slower first scrape (broadATSDiscovery + stealth fallback) and the Monday digest surfaces any that genuinely failed. Bulk operations are safer because of the recovery infrastructure.
+- **Cadence > schedule precision for operational reports.** Firing the weekly digest on Mon AND Tue means a two-day window to review. The marginal cost (one extra email per week, partially overlapping content) is tiny. The benefit (user doesn't miss the report if Monday gets buried) is real.
+
+### Files / artifacts
+- `backend/src/scripts/bulk-add-companies.js` — reusable bulk-add (gitignored)
+- `backend/src/scripts/generate-insert-sql.js` — JSONL → SQL converter (gitignored)
+- `backend/src/scripts/detected-companies.jsonl` — output of last run (gitignored)
+- `backend/src/jobs/dailyCheck.ts` — Mon+Tue digest condition
+- `backend/src/jobs/securityCheck.ts` — 6-day snapshot floor for diff
+- `backend/src/index.ts` — `forceMondayDigest` query param
+
+### Next batch — open ideas
+- More biotech / pharma (we got 14; there are 50+ notable West Coast biotechs)
+- Defense / aerospace (Hadrian, Shield AI, Helsing, Saronic, Vannevar Labs)
+- Specific verticals: logistics, insurance tech, agtech, climate
+- East Coast tech if going for 500-1000 (NYC startups, Boston biotech, DC)
+- Public mid-caps in PM target work areas

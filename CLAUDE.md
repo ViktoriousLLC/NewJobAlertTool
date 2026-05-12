@@ -83,6 +83,7 @@ GET    /api/admin/users                  — User list + subs + email prefs
 # Cron (requires Authorization: Bearer <CRON_SECRET>)
 GET    /api/cron/trigger                 — Must await runDailyCheck() — Railway kills idle processes
          Optional: ?skipEmails=true      — Skips per-user alerts (for safe manual re-runs)
+         Optional: ?forceMondayDigest=true — Forces the Monday-style weekly digest (system health + 7-day self-heal log + npm-audit) on any day. Use with skipEmails for on-demand admin reports.
 ```
 
 ## Database Schema
@@ -218,7 +219,7 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - **Resend limits**: Free = 100 emails/day, 3K/month, 2 req/s. SMTP + API share quota.
 - **API key**: Only in Railway env vars. Empty locally.
 - Failure notifications sent to ADMIN_EMAIL after cron if email batches fail.
-- **Consolidated admin digest** (added 2026-05-11): `sendAdminDigest()` replaces three previous admin emails (failures, quality report, batch-send failures) with one. Daily: fires ONLY if action items present (failed scrapes, watch list, auto-disabled, subscribed company dropped to 0, email send failures). Monday (UTC): always fires with system health + past-7-days self-heal log queried from `scraper_events` table + npm-audit security check (`runSecurityCheck()` in `backend/src/jobs/securityCheck.ts`) showing new/resolved vulns vs the previous week's `security_snapshots` row. Most days = no admin email.
+- **Consolidated admin digest** (added 2026-05-11, expanded 2026-05-12): `sendAdminDigest()` replaces three previous admin emails (failures, quality report, batch-send failures) with one. Daily: fires ONLY if action items present (failed scrapes, watch list, auto-disabled, subscribed company dropped to 0, email send failures). **Monday AND Tuesday (UTC)**: always fires with system health + past-7-days self-heal log queried from `scraper_events` table + npm-audit security check (`runSecurityCheck()` in `backend/src/jobs/securityCheck.ts`) showing new/resolved vulns vs the previous week's `security_snapshots` row. Two-day window gives admin a chance to review the weekly report if Monday gets buried. Security check diff queries snapshots ≥6 days old so both Mon and Tue show real week-over-week deltas. Most days = no admin email.
 
 ## Delete Semantics
 
