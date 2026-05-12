@@ -37,7 +37,7 @@ function delay(ms: number) {
 // Overlap guard: prevent concurrent daily check runs
 let dailyCheckRunning = false;
 
-export async function runDailyCheck(options?: { skipEmails?: boolean }): Promise<void> {
+export async function runDailyCheck(options?: { skipEmails?: boolean; forceMondayDigest?: boolean }): Promise<void> {
   if (dailyCheckRunning) {
     console.warn("Daily check already running — skipping this trigger to prevent overlap");
     return;
@@ -51,7 +51,7 @@ export async function runDailyCheck(options?: { skipEmails?: boolean }): Promise
   }
 }
 
-async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<void> {
+async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayDigest?: boolean }): Promise<void> {
   console.log(`Starting daily job check...${options?.skipEmails ? " (skipEmails mode)" : ""}`);
 
   // Scrape all companies so the catalog stays fresh (even with 0 subscribers)
@@ -451,6 +451,8 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
   // --- Consolidated admin digest ---
   // Daily: fires only if there's something the admin needs to act on.
   // Monday (UTC): always fires with system health snapshot + past-7-days self-heal log.
+  // forceMondayDigest=true overrides the day check (useful for manual triggers
+  // when you want a Monday-style report on a non-Monday).
   await sendConsolidatedAdminDigest({
     totalCompanies: companies.length,
     failedCompanies,
@@ -460,6 +462,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean }): Promise<v
     reEnabled,
     qualityData,
     emailBatchResult,
+    forceMondayDigest: options?.forceMondayDigest ?? false,
   });
 
   // Refresh compensation data for all active companies
@@ -602,8 +605,9 @@ async function sendConsolidatedAdminDigest(input: {
   reEnabled: { name: string; jobCount: number }[];
   qualityData: Map<string, CompanyQualityData>;
   emailBatchResult: BatchSendResult;
+  forceMondayDigest: boolean;
 }): Promise<void> {
-  const isMondayDigest = new Date().getUTCDay() === 1;
+  const isMondayDigest = input.forceMondayDigest || new Date().getUTCDay() === 1;
 
   // Watch list: companies that have failed 3+ days in a row but aren't auto-disabled yet.
   // Snapshot AFTER the loop completes, since consecutive_failure_count was updated above.
