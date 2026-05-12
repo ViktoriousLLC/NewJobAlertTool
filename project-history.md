@@ -925,3 +925,114 @@ Added one new check:
 
 ### Key insight
 Monitoring that alerts on known-good states trains you to ignore the alerts. The email goes from "daily health report" to "daily annoyance." The right threshold for automated monitoring isn't "anything unusual" — it's "anything that changed unexpectedly." Steady states, even unusual ones, should be silent.
+
+## 2026-05-08 — Self-Healing Scrapers + Coinbase Goes Dark
+
+### Context
+Session opened with a single failure flagged: Coinbase. Their public Greenhouse board (`boards-api.greenhouse.io/v1/boards/coinbase`) had returned 404 on every endpoint — the board was deleted, not renamed. Investigation showed Coinbase rebuilt their careers experience as a custom SPA at `coinbase.com/careers/positions` (server-redirects to `/careers`) backed by an internal `api.coinbase.com/v2/careers` endpoint that requires authenticated/cookied requests. Even from inside a stealth-rendered Puppeteer browser with all the right `X-CB-*` headers, the API returns HTTP 400 — server-side rejection of public scraping.
+
+User pointed out Coinbase recently announced layoffs, so this could equally be a hiring freeze plus protective lockdown rather than purely anti-scrape. Either way, no clean path to scrape them right now.
+
+### What was decided
+Instead of fighting Coinbase specifically, build a generalized self-healing layer so this never has to be a manual session again. Three tiers of recovery now run automatically when any company returns 0 jobs:
+
+1. **Configured platform scraper** — uses `platform_type` from the DB (existing)
+2. **broadATSDiscovery** — auto-detects new ATS, updates DB on success (existing, skipped for `CUSTOM_SCRAPER_HOSTS`)
+3. **stealthFallbackScrape (NEW)** — generic last-resort using `puppeteer-extra` + `puppeteer-extra-plugin-stealth`. Sniffs every JSON XHR response for arrays of objects with title+id-like fields, falls back to DOM extraction. Runs for ALL companies including custom-scraper hosts.
+
+When all three tiers fail, a `consecutive_failure_count` column on `companies` increments. After 7 consecutive days, `auto_disabled = true` and the cron loop skips the company. Every Monday UTC the cron probes auto-disabled companies once and re-enables them automatically if jobs return — handles the "Coinbase reopens" case without manual intervention. Successful scrape resets both flags to zero.
+
+Admin email gets four colored sections instead of two: green "Watch-list re-enabled," green "Auto-fixed," green "Stealth fallback recovered," orange "Auto-disabled," red "Still needs attention." Coinbase will appear once in orange when it auto-disables in ~7 days, then go silent.
+
+### Alternatives considered
+- **Hard-delete Coinbase from catalog.** Cleanest but loses the company permanently and doesn't help the next company that breaks the same way. Rejected in favor of building general recovery.
+- **Reverse-engineer Coinbase's `X-CB-*` headers and signed cookies.** Possible but brittle — they'll change it within months and we're back to square one. Rejected.
+- **Use a paid scraping service (Browserless / Bright Data).** Would solve Cloudflare bot detection. Adds ongoing cost and a vendor dependency for one company. Rejected at this scale.
+- **Auto-disable threshold of 3 days vs 7.** 7 chosen because some companies legitimately have 0 PM roles for a week (small companies, hiring pauses). 3 would auto-disable real companies that just aren't hiring.
+
+### Key insights
+- The right fix for "this one company broke" is usually "build the recovery system that catches the next ten." Coinbase's specific problem is unsolvable without their cooperation, but the architecture that handles it gracefully also handles every silent ATS migration that hasn't happened yet.
+- **Throw vs return-empty matters for tiered recovery.** Tier-1 scrapers that throw bypass tiers 2 and 3. Pattern is now: return `[]` for known/expected failures so auto-healing runs, reserve exceptions for genuinely unexpected errors. Updated `scrapeCoinbaseCareers` to this pattern.
+- **Stealth Puppeteer dodges fingerprinting, not server-side bot rejection.** Cloudflare's challenge page is one thing; an application-level 400 from the origin server is another. Stealth helps with the former, can't touch the latter. Useful tool but not magic.
+
+### Pending decision
+User asked whether the system could try to fix broken scrapers itself, not just retry. Proposal sketched but not yet built: when auto-disable triggers, snapshot diagnostics (HTML, network log, error message) and send to the Claude API with a structured prompt asking for a `platform_type + platform_config` proposal. The system tries the proposal in propose-mode (emails admin "click to apply") rather than auto-applying, to avoid hallucinated configs. Estimated cost ~$1-3/year, build is ~half a session. Awaiting user approval to proceed.
+
+## 2026-05-11 — Email Consolidation + Stealth Fix + End-to-End Security Audit
+
+### Context
+
+Three related operational issues opened the session:
+
+1. User was getting **three admin emails per day** from the cron: a scrape report, a daily quality eval, and a separate failure notification when email batches failed. Most of the content was "FYI, system recovered" noise — not action items.
+2. The "stealth fallback recovered jobs" line was firing for **13 companies daily**, suggesting widespread Tier-1 breakage. Investigation showed it was actually doing wasteful duplicate work for companies with legitimate zero PM roles (Block had 50 jobs, none PMs; Wiz had 202, none PMs; etc.). Only LinkedIn-style cases were real recoveries.
+3. The last security audit was ~16 days old. With Stripe Billing on the roadmap, time for a fresh pass before adding payment processing.
+
+### What was decided — three commits
+
+**1. Email consolidation** (commit `ed40c5b`)
+
+One `sendAdminDigest()` replaces three separate emails. Daily: silent unless action items present (failed scrapes, watch list at 3-6 strikes, auto-disabled, subscribed-company-dropped-to-zero, email send failures). Monday: same email picks up a weekly digest section with system health + past-7-days self-heal log queried from new `scraper_events` table (audit-log table for self-healing actions, indexed on `created_at DESC`).
+
+**2. Layer 2 stealth fix** (commit `d728f12`)
+
+Added `ScrapeStats` out-param. Filter-heavy scrapers (Greenhouse, Workday, Ashby) now write their pre-PM-filter raw count. dailyCheck only triggers stealth fallback when both `rawJobs.length === 0 AND scrapeStats.totalScanned === 0` — true source failure. Cuts stealth runs from ~13/day to ~3/day.
+
+**3. Layer 1 stealth auto-fix** (commit `a1fa23c`)
+
+`stealthFallbackScrape` now returns `{ jobs, sniffedUrl, via }` instead of just `jobs`. New `inferPlatformFromSniffedUrl()` maps known patterns (Greenhouse, Lever, Ashby, SmartRecruiters APIs) back to `platform_type + platform_config`. On match, cron auto-updates the company so next run skips stealth entirely. Unknown URLs (e.g., LinkedIn's in-house career API) get logged to `scraper_events` for Monday digest visibility.
+
+### Security audit + hardening (commit `164606f`)
+
+Ran three parallel review agents focused on (a) auth flow, (b) data isolation, (c) infrastructure + monetization readiness. **Eleven findings, all shipped in one commit.**
+
+**Exploitable (RED):**
+- **Cookies were not HttpOnly.** Three places (`auth/confirm/route.ts`, `auth/callback/route.ts`, `middleware.ts`) explicitly stripped HttpOnly via `{ ...options, httpOnly: false }`. The `/api/auth/token` bridge route existed specifically because of HttpOnly, defeated by the override. Removed override in all three.
+- **`GET /api/companies/:id` returned any company's full job list to non-subscribers.** Added 403 guard after loading user's subscription list.
+- **`CRON_SECRET` compared with plain `===`** (timing-attack vulnerable). New `safeCompareSecret()` helper using `crypto.timingSafeEqual` with length equalization. Applied to `/api/cron/trigger` and `/api/admin/add-company`. Reusable for upcoming Stripe webhook signature verification.
+- **`npm audit fix` in backend:** closed `express-rate-limit` CVE (IPv4-mapped IPv6 bypass on Railway dual-stack), `path-to-regexp` ReDoS, `qs` DoS, `minimatch` ReDoS. 7 vulns → 0.
+- **`npm audit fix` in frontend:** 12 vulns → 2 (remaining 2 are build-time only inside Next.js internals).
+
+**Defense-in-depth (YELLOW):**
+- JWT verification now validates `audience: "authenticated"` and `issuer: <supabase-url>/auth/v1` (was only signature + HS256 pinned).
+- `requireAuth` fails closed at boot if `SUPABASE_JWT_SECRET` missing in production; Sentry alert when API fallback runs.
+- `POST /api/favorites/:jobId` and `POST /api/issues` now require subscription check on the relevant company.
+- `express.json()` body limit set to 256kb (was unbounded). `/api/issues.description` capped at 5000 chars.
+- RLS enabled on new `scraper_events` table. Verified all other user-scoped tables have RLS + `auth.uid() = user_id` policies via Supabase MCP.
+
+### Weekly security check (commit `d5316e1`)
+
+New `backend/src/jobs/securityCheck.ts` module. Monday cron runs `npm audit --json --omit=dev` against backend production deps, snapshots vuln fingerprints to new `security_snapshots` table, diffs against previous Monday's snapshot, surfaces new/resolved/ongoing in admin digest. Failures don't break the cron — silently skip the section on error and log to Sentry.
+
+### Alternatives considered
+
+- **Split Monday into a separate email from the daily.** Considered, rejected. Splitting partially undoes the consolidation we just did. Most Mondays will have no daily action items anyway, so the Monday email is functionally a weekly digest already.
+- **Frontend npm audit in the same Monday check.** Frontend doesn't deploy to Railway, so the cron container can't run it directly. Would need a Vercel build hook or scraping the lock file from GitHub. Deferred — easier to configure Vercel to fail builds on high-severity vulns.
+- **Ship CSP `unsafe-inline` removal in the same security commit.** Could break Sentry/PostHog inline scripts at runtime. Bundling a CSP change with a security commit makes rollback messier. Deferred to a separate Vercel-preview-tested commit before public marketing launch.
+- **Bump Next.js 16.1.6 → 16.2.6 to close last 2 frontend vulns.** Minor bump within Next 16. Vulns are build-time only (picomatch + postcss in Next internals). Deferred to next opportunistic Next.js work.
+- **Manual fix for LinkedIn's fake Greenhouse board (`linkedin` board is actually "LI Test Company" — test/staging data, not real LinkedIn).** Considered, deferred. Layer 1 auto-fix will discover the real URL (`linkedin.com/...`) on next cron run and log it. Will decide whether to build a custom scraper based on what Monday digest surfaces.
+
+### Key insights
+
+- **Documentation drifts from code during refactors.** The cookie HttpOnly override was added during some past refactor and never reverted. Docs claimed HttpOnly. The `/api/auth/token` bridge route, built specifically because of HttpOnly, kept working because the override happened to not break it. Audits exist to compare what you think is happening against what is actually happening — never because someone is lying, just because docs drift naturally.
+- **Action-only alerting beats activity logging.** A self-healing system that emails you about every recovery trains you to ignore the channel. By the time something actually needs attention, you've been habituated to skip the inbox notification. The fix is silent-by-default daily emails, with successes audited to a database for weekly review.
+- **Specialized > general for security audits.** Three agents each scoped to one surface (auth, data isolation, infra) found things a single general review would have missed. The HttpOnly bug specifically was caught because one agent compared cookie setter code against the documented design rather than just against best practices.
+- **Pre-filter count vs post-filter count is a meaningful distinction in tiered recovery.** Zero post-filter jobs can mean "source returned nothing" OR "source returned data, just nothing matched our filter." These need different recovery responses. Out-param pattern lets each scraper signal both states cheaply.
+- **Build the weekly monitoring once.** Adding npm-audit to the Monday cron took ~45 min. Catches new CVEs the week after they're published, instead of waiting for the next manual audit. The opportunity cost of building it is tiny; the cost of NOT building it could have been shipping Stripe Billing with a known CVE in a transitive dep.
+
+### Bug-reporting system clarification
+User asked what they use for bug reports — it's a custom-built widget (`HelpButton.tsx` → `POST /api/help` → `help_submissions` table + admin email via Resend → admin dashboard view). Not a third-party tool. $0 incremental cost, ~120 lines of React + one Express endpoint.
+
+### Files created
+- `backend/src/jobs/securityCheck.ts` — weekly npm audit + diff
+- `docs/security-log.md` (gitignored) — running record of audits, fixes, deferred items
+- New tables: `scraper_events`, `security_snapshots`
+
+### Deferred items (tracked in `docs/security-log.md`)
+- **D1**: Frontend CSP `unsafe-inline` removal (needs runtime testing)
+- **D2**: Next.js 16.1.6 → 16.2.6 bump (closes last 2 build-time frontend vulns)
+- **D3**: `/api/auth/token` rate limit (Next.js route, low exploitability)
+- **D4**: Vercel "fail build on high severity audit" toggle
+- **P1**: Stripe billing schema (`billing_subscriptions` table with `stripe_customer_id`)
+- **P2**: Raw-body parser for `POST /api/stripe/webhook` (mount BEFORE `express.json()`)
+- **P3**: `requirePremium` middleware extensibility point

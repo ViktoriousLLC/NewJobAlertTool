@@ -25,6 +25,8 @@ How a personal localhost script became a production multi-user SaaS, built entir
 | 15. Self-Healing Scrapers | Companies change job platforms without warning, breaking the scraper silently | Auto-remediation detects platform migrations and re-scrapes, two-tier admin email shows what was fixed vs what needs attention | The hardest bugs to find are the ones that look like "working correctly." Zero PM jobs from a company could mean "they're not hiring PMs" or "the scraper is broken." Distinguishing between those two requires knowing that scrapers pre-filter internally, so an empty result is ambiguous. |
 | 16. Data Quality Pipeline | Microsoft showed 157 jobs including India, daily email had no quality checks | Backend location filtering (US only), daily eval email with per-company scorecard showing what passed and what failed | Filtering in the UI isn't filtering. If the backend stores and emails unfiltered data, the "filter" is just hiding the problem from some users while showing it to others. Always apply data quality rules at the source. |
 | 17. Puppeteer Elimination + Catalog Expansion | 10 companies broke overnight, catalog was only 55 companies | Researched ATS for every company, built 5 new scraper types, expanded catalog to 126 (118 API-based), ran full security audit | When a dependency breaks, the fix isn't to patch the dependency. It's to ask whether you need it at all. Also: npm version ranges (^) in Docker builds are a time bomb. Pin exact versions. |
+| 18. Self-Healing Scraper Layer | Coinbase quietly deleted their public job board; one company breaks per month and I have to manually investigate each time | Three-tier auto-recovery (configured scraper → platform auto-detect → stealth browser fallback), auto-disable after 7 failures, Monday probe re-enables companies that come back online | The right fix for "this one company broke" is usually "build the recovery system that catches the next ten." Coinbase specifically can't be saved — but the architecture that handles it gracefully also handles every silent ATS migration that hasn't happened yet. |
+| 19. Less Noise, Tighter Security | Self-healing system was sending 3 admin emails a day, mostly success notifications I didn't need. Last security audit was a few weeks old and the docs were quietly out of sync with what the code actually did. | Consolidated 3 emails into 1 digest that fires only when something needs my attention. Ran 3 parallel security audits, shipped 11 fixes including a cookie security bug where the code contradicted its own documentation, a cross-user data leak on a read endpoint, and a published rate-limiter CVE. Added weekly npm-audit check to the Monday email. | A system that emails you about every success trains you to ignore the channel by the time something actually needs your attention. Also, your own documentation drifts from the code during refactors, which is the whole reason audits exist. Three specialized review agents found things one general pass would have missed. |
 
 ---
 
@@ -542,6 +544,74 @@ With the scraper infrastructure proven out, I expanded the catalog from 55 to 12
 
 ---
 
+## Phase 18: Self-Healing Scraper Layer
+
+**Goal:** Stop manually investigating every time a company silently breaks their scraper. Build a recovery system that handles platform migrations, dead APIs, and bot blocks automatically.
+
+### What I Built
+
+The session opened with Coinbase failing. Their public Greenhouse board, which my scraper had been hitting for months, was returning 404 on every endpoint. The board had been deleted, not renamed. I traced what happened: Coinbase rebuilt their careers experience as a custom single-page app at coinbase.com/careers/positions, backed by an internal API that requires authenticated requests. From inside a stealth-rendered Puppeteer browser with all the right headers, the API still returned a 400 error. They had effectively closed off public scraping. Coinbase had also recently announced layoffs, so this could have been a hiring freeze plus a protective lockdown rather than purely anti-scrape sentiment. Either way, no clean fix.
+
+Instead of fighting Coinbase specifically, I built a generalized recovery system so the next company that breaks the same way won't need a manual session. The cron loop now has three tiers when a company returns zero jobs. Tier one is the configured scraper, which uses whatever ATS platform was last detected. Tier two is the existing platform auto-detection that probes known ATS endpoints to see if the company switched providers. Tier three is new: a generic stealth browser scraper that loads the careers page, watches every JSON response on the page, and tries to extract job listings from any response that looks like a list of job objects. If the JSON sniff fails, it falls back to scraping job links from the rendered DOM. This catches companies that move to custom APIs the system has never seen before.
+
+If all three tiers fail for the same company seven days in a row, the system marks the company as auto-disabled and stops trying. This prevents permanently broken scrapers from polluting the daily admin email and wasting cron time. To handle the case where a company comes back online (Coinbase reopens their API, or a temporarily broken site recovers), every Monday the cron retries each auto-disabled company once. A successful Monday probe automatically re-enables the company. The admin email gets new sections for "watch-list re-enabled," "stealth fallback recovered," and "auto-disabled," so I can see at a glance what the system handled itself and what's truly stuck.
+
+### Key Decisions
+
+**Build the recovery system, not the Coinbase fix.** The instinct was to keep digging at Coinbase: maybe a different stealth library, maybe LinkedIn as a backup data source, maybe a paid scraping service. I caught myself an hour in and reframed: if I'm fighting one company this hard, the next ten will eat the rest of my month. The right scope was a system that turns "manual investigation every two weeks" into "system handles it, emails me only when it can't." Coinbase specifically may not be saveable without their cooperation. The architecture is.
+
+**Auto-disable threshold of seven days, not three.** Some companies legitimately have zero PM roles for a week — small companies, hiring pauses, end-of-quarter freezes. Three days would auto-disable real companies that just aren't hiring at the moment. Seven days is conservative enough that real "no roles" states recover before the system gives up, but short enough that genuinely broken scrapers don't pollute reports for weeks. The Monday probe means even a fully disabled company gets one retry per week, so the cost of being too conservative is low.
+
+**Return empty arrays instead of throwing exceptions.** Tier-1 scrapers that throw exceptions bypass tiers two and three because the catch block fires immediately. To let auto-healing run, custom scrapers now return an empty array for known failure cases (like "API returned 400") and reserve exceptions for genuinely unexpected errors. This was a subtle architectural shift: the contract for "I tried and got nothing" has to be different from "something is so broken I can't continue."
+
+### What I Learned
+
+**Stealth browsers dodge fingerprinting, not server-side rejection.** I added the puppeteer-extra-stealth plugin assuming it would unlock Coinbase. It didn't. The plugin defeats Cloudflare's challenge page (which detects headless Chrome by fingerprinting), but it can't help when the origin server itself returns a 400 error to the request. Application-level rejection is a different problem from bot detection. Useful tool, but not magic.
+
+**The "this one company" trap.** Every time a company breaks, there's a temptation to write a one-off fix for that company and move on. After about the third one, you have a graveyard of bespoke scrapers and you still get woken up every other week. The right move is usually to recognize the pattern early and build the recovery system instead. I did this for Phase 17 (eliminating Puppeteer dependency); I should have done it earlier than Phase 18 (auto-recovery), because the pattern was visible by Phase 15 already.
+
+**Tiered recovery is fundamentally about graceful degradation.** Each tier knows less about the specific company than the one before it, but works for more companies. Tier 1 is precise but breaks when the platform changes. Tier 2 is general but only handles known ATS patterns. Tier 3 is fully generic but slower and less accurate. Failing forward through the tiers means the system can usually find at least some answer, even when it doesn't know what the company has done. Good engineering rarely produces one perfect answer; it produces a chain of progressively-less-confident answers and trusts the most confident one that succeeds.
+
+---
+
+## Phase 19: Less Noise, Tighter Security
+
+**Goal:** Trust the self-healing system to run quietly. Verify the security claims in our docs match what the code actually does. Surface new vulnerabilities every week instead of hoping someone remembers to audit.
+
+### What I Built
+
+The Phase 18 self-healing layer was working but I was getting three admin emails per day. A scrape report. A daily quality evaluation. A separate alert when the email batch failed. Most of the content was the system telling me about successes I did not need to know about. I asked the simple version of the question: what do I actually need to act on, and what is just informational? The answer was that very little of it was actionable. I consolidated the three emails into one digest that fires only when something needs my attention. A scrape that failed today. A company trending toward auto-disable. A subscribed company that suddenly dropped to zero jobs. A delivery batch failure. On Mondays, the same email picks up a weekly digest section showing system health and the past seven days of self-healing activity, logged to a new audit table. Most days now result in zero admin emails.
+
+While simplifying the emails I noticed something else. The "stealth fallback recovered jobs" line was firing for thirteen companies every day. I assumed those were companies whose primary scraper was broken. Investigation showed that was wrong. Most of them, like Block and Wiz, had perfectly functional Greenhouse boards with fifty or two hundred jobs. None of those jobs happened to be Product Managers. The primary scraper correctly returned zero, the system fell through to stealth fallback, stealth returned the same jobs from a different URL, and the PM filter eliminated everything again. The stealth fallback was doing wasteful duplicate work, not actual recovery. I added an out-parameter so the primary scraper now reports its pre-filter job count. The cron only triggers stealth fallback when both the post-filter count and the pre-filter count are zero, meaning the source actually returned nothing. Daily stealth runs dropped from thirteen to three.
+
+The next step was making stealth fallback actually useful when it does run. Previously, when it sniffed a JSON response that contained jobs, it returned the jobs but threw away the URL. I changed it to return the URL too, and added a function that maps known URL patterns (Greenhouse, Lever, Ashby, SmartRecruiters APIs) back to a platform configuration. When the URL is recognized and differs from what is in the database, the system auto-updates the company's platform config so the next run goes through the API directly and skips Puppeteer entirely. When the URL is unrecognized (like LinkedIn's in-house career API), it gets logged for the Monday digest so I can decide whether to build a custom scraper for it.
+
+Then I ran a full security audit. Three parallel review agents focused on three separate surfaces: the authentication flow, data isolation between users, and infrastructure plus monetization readiness for the upcoming Stripe phase. They surfaced eleven distinct issues. Some were exploitable today, some were defense-in-depth. The most embarrassing finding was that our cookies were not HttpOnly. The documentation said HttpOnly cookies. The auth design assumed HttpOnly cookies. There is a whole server-side bridge route called /api/auth/token that exists specifically because HttpOnly cookies cannot be read by browser JavaScript. But three places in the code explicitly set httpOnly to false when writing cookies, defeating the design. Someone added that override during a refactor and never removed it. The audit also found that one read endpoint returned company job data to non-subscribers, the cron secret comparison was vulnerable to timing attacks, and our rate limiter had a published CVE that let attackers bypass per-IP limits using IPv4-mapped IPv6 addresses. I shipped fixes for all eleven in one commit.
+
+To prevent future drift, the Monday admin email now also runs npm audit on the backend production dependencies, stores a snapshot in a new security_snapshots table, and shows new and resolved vulnerabilities week over week. New CVEs published into our dependency tree surface in the next Monday's email, instead of waiting for the next manual audit.
+
+### Key Decisions
+
+**One email channel, not three.** The instinct when you have multiple types of operational alerts is to split them by category. Failures get one email, quality issues get another, batch problems a third. It feels organized. In practice it makes the reader triage which email is worth opening first, and each one needs its own subject line and template. Folding everything into one daily channel that fires only when something needs attention is harder to ignore because you know it always means something. The Monday weekly digest is the same channel with an extra section, not a separate email.
+
+**Three specialized review agents instead of one general pass.** I considered running one comprehensive audit. Each parallel agent was scoped to a single surface and read its target files line by line. A generalist pass usually covers more ground at less depth per surface and would have missed the kind of subtle issue where one read endpoint forgot a subscription check while every other route had one. Splitting the audit also let me run three reviews in the time of one. The HttpOnly cookie bug specifically was caught because the auth-focused agent compared the cookie setter code against the documented design, not just against best practices.
+
+**Ship the runtime-safe fixes in one commit, defer the runtime-risky ones.** Out of eleven findings, ten were code-only changes I could typecheck and build-verify locally. One was removing the unsafe-inline directive from the Content Security Policy, which would require runtime testing in a Vercel preview because Sentry and PostHog use inline scripts. Bundling a CSP change with a security commit makes rollback messier if something breaks. I shipped the typechecked fixes and added the deferred items to a security log file so they would not be forgotten.
+
+**Audit log as defense against documentation drift.** I created a local-only security log file that records what each audit found, what got shipped, what got deferred and why, plus the conclusion that documentation lies eventually even when nobody is lying on purpose. Every future audit appends to it. This solves the question I kept asking myself: why didn't the last audit catch this? The answer turned out to be partly that the previous audit was a snapshot in time and partly that the previous audit was less specialized. Writing those reasons down makes the next audit better.
+
+### What I Learned
+
+**A self-healing system that emails you about every success trains you to ignore the channel.** By the time something actually needs my attention, I have been habituated to skip the inbox notification. The fix is not a better email template, it is not emailing me when nothing needs to change. Successful auto-recoveries should be logged to a database and surfaced in a weekly review, not push notifications. This applies far beyond scrapers. Any monitoring that alerts on known-good states eventually loses signal.
+
+**Documentation drifts from code during refactors, and audits exist because of that.** The cookie HttpOnly story is the cleanest illustration. Someone added a one-line override during a refactor. The override was probably correct at that moment for some local reason. It was never reverted. The documentation kept claiming HttpOnly was on. The /api/auth/token bridge route, which was built specifically because HttpOnly was on, kept working because the override happened to not break it. From the outside everything looked right. Periodic audits exist to compare what you think is happening against what is actually happening, because no individual change ever sets out to lie.
+
+**Specialized matters more than thorough.** Three reviews each focused on one surface found things a single general review would have missed. Where you choose to look is more valuable than how widely you look. Twenty surface-level checks against a codebase miss what one deep check uncovers. This is the same lesson as the dependency-elimination work in Phase 17. The right scope for a tool is narrow enough to be deep.
+
+**Build the monitoring before you need it.** The weekly npm-audit check is the cheapest possible monitoring I could have built. It runs in the same cron, costs nothing, takes thirty seconds. It catches the next "we have a CVE we do not know about" months earlier than the next manual audit. The cost of building it was small. The cost of not building it could have been a Stripe-billing-era CVE shipped to production. The pattern is: every time you do a manual investigation, ask whether the same work could happen automatically every week.
+
+---
+
 ## Summary of Concepts Learned
 
 | # | Concept | Where I Learned It |
@@ -575,3 +645,14 @@ With the scraper infrastructure proven out, I expanded the catalog from 55 to 12
 | 27 | Docker image pinning (never use :latest in production) | Puppeteer crash recovery (Phase 17) |
 | 28 | Hidden REST APIs behind enterprise ATS platforms (iCIMS, TalentBrew) | ATS research and migration (Phase 17) |
 | 29 | Dependency elimination over dependency repair | Puppeteer mass migration (Phase 17) |
+| 30 | Tiered recovery and graceful degradation in scraper architecture | Self-healing layer (Phase 18) |
+| 31 | Auto-disable thresholds and watch-list probing for ongoing reliability | Self-healing layer (Phase 18) |
+| 32 | Stealth browser fingerprint evasion vs server-side rejection (different problems) | Coinbase investigation (Phase 18) |
+| 33 | Return-empty vs throw contracts for tier handoff | Self-healing layer (Phase 18) |
+| 34 | Action-only operational alerting (silent-by-default email channels with weekly digest for audit trail) | Email consolidation (Phase 19) |
+| 35 | Pre-filter vs post-filter counts to distinguish "source empty" from "source had no matches" in tiered recovery | Layer 2 stealth fix (Phase 19) |
+| 36 | Stealth-discovered URL inference for auto-configuring scrapers from their actual data sources | Layer 1 stealth auto-fix (Phase 19) |
+| 37 | Parallel specialized review agents over single-pass audits | Security audit (Phase 19) |
+| 38 | Documentation-vs-code drift as the real reason audits exist | HttpOnly cookie bug (Phase 19) |
+| 39 | Timing-safe secret comparison for shared-secret bearer tokens (cron, future Stripe webhooks) | Security hardening (Phase 19) |
+| 40 | Weekly automated dependency vulnerability surfacing via diff-against-snapshot | Monday digest security check (Phase 19) |

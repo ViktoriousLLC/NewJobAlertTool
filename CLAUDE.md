@@ -241,9 +241,15 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - **CSP connect-src**: self, backend API, Supabase HTTPS+WSS, PostHog, Sentry
 - **Input validation**: UUID regex on IDs, HTTPS-only URLs, LinkedIn blocked, SSRF protection (no private IPs)
 - **Auth hardening**: Open redirect prevention on `/auth/confirm`, HTML-escaped user input in emails, PII removed from logs
-- **Cron**: Header-only auth (Bearer CRON_SECRET), overlap guard, 120s Puppeteer timeout
+- **JWT verification** (`backend/src/middleware/auth.ts`): HS256 pinned, validates `audience: "authenticated"` and `issuer: <supabase-url>/auth/v1`. Fails closed at boot in production if `SUPABASE_JWT_SECRET` missing. Sentry warning fires when local-verify fails and code falls back to Supabase API.
+- **Cookies are HttpOnly** (`frontend/middleware.ts`, `auth/confirm`, `auth/callback`): Supabase defaults preserved. Browser JS reads tokens via `/api/auth/token` server route — never directly. **Do NOT override `httpOnly: false` on cookie set calls.**
+- **Cron / shared-secret bearer tokens**: Use `safeCompareSecret()` in `backend/src/index.ts` (constant-time `crypto.timingSafeEqual` with length equalization). Applied to `/api/cron/trigger` and `/api/admin/add-company`. Reuse for future Stripe/Twilio webhook signature verification.
+- **Body limits**: `express.json({ limit: "256kb" })` globally. Per-route caps: `/api/help.message` ≤ 5000, `/api/issues.description` ≤ 5000.
+- **Data isolation**: Every read endpoint on user-scoped or subscription-gated data MUST check the requester's subscription before returning. Pattern: load `user_subscriptions` for `req.userId`, return 403 if target not in list. Applies to `GET /api/companies/:id`, `POST /api/favorites/:jobId`, `POST /api/issues`. **Never trust client-supplied user_id; always derive from JWT.**
 - **PostHog**: User ID hashed with SHA-256 (no raw emails)
 - **DNS**: DMARC + DKIM + SPF configured
+- **Security log**: `docs/security-log.md` (gitignored) — running record of audits, fixes, deferred items. Append to it after every audit. Includes "why didn't last audit catch this" answer.
+- **Audit framework**: Three parallel specialized review agents (auth flow / data isolation / infra + monetization-readiness), NOT one general pass. See `docs/security-log.md` "Process notes" section.
 
 ## Gotchas
 
