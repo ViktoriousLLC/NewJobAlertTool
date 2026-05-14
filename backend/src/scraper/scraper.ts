@@ -2702,6 +2702,234 @@ async function scrapeUberCareers(careersUrl: string): Promise<ScrapedJob[]> {
   return allJobs;
 }
 
+/**
+ * Shopify uses Ashby in embedded mode — the standard Ashby hosted board API returns
+ * jobBoard: null for org slug "shopify". Their React Router v7 SPA at shopify.com/careers
+ * renders all jobs server-side into a React Flight (RSC) streaming payload embedded in
+ * the page HTML as `window.__reactRouterContext.streamController.enqueue(...)`.
+ *
+ * The payload is a deduplicated JSON array where field names appear once as string
+ * literals (e.g., "title" at some index) and each job object references them by index
+ * (e.g., {_<keyIdx>: <valueIdx>} → title = arr[valueIdx]). Indices shift on each CDN
+ * deploy, so we resolve them dynamically by scanning for the known field-name strings.
+ */
+async function scrapeShopifyCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
+  const UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+  let html: string;
+  try {
+    const res = await fetch("https://www.shopify.com/careers", {
+      headers: { "User-Agent": UA, Accept: "text/html" },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    html = await res.text();
+  } catch (err) {
+    console.warn("Shopify: Failed to fetch careers page:", err);
+    return [];
+  }
+
+  // Match every enqueue() call. Today there's one, but if Shopify ever chunks the
+  // stream we'd silently under-count by parsing only the first. Concat all chunks.
+  const enqueueRe = /window\.__reactRouterContext\.streamController\.enqueue\(([\s\S]*?)\);\s*<\/script>/g;
+  const chunks: unknown[][] = [];
+  let m: RegExpExecArray | null;
+  while ((m = enqueueRe.exec(html)) !== null) {
+    try {
+      const outerStr = JSON.parse(m[1]) as string;
+      const chunk = JSON.parse(outerStr) as unknown[];
+      if (Array.isArray(chunk)) chunks.push(chunk);
+    } catch (err) {
+      console.warn("Shopify: Failed to parse one RSC chunk:", err);
+    }
+  }
+  if (chunks.length === 0) {
+    console.warn("Shopify: Could not find any streamController.enqueue() chunks in HTML");
+    return [];
+  }
+  if (chunks.length > 1) {
+    console.log(`Shopify: parsed ${chunks.length} RSC chunks`);
+  }
+  const arr: unknown[] = chunks.flat();
+  if (arr.length === 0) {
+    console.warn("Shopify: RSC array is empty after merging chunks");
+    return [];
+  }
+
+  const KEY_FIELDS = ["title", "locationName", "locationExternalName", "workplaceType", "externalLink"] as const;
+  type KeyField = typeof KEY_FIELDS[number];
+  const keyIdx: Partial<Record<KeyField, number>> = {};
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (typeof v === "string" && KEY_FIELDS.includes(v as KeyField) && !(v in keyIdx)) {
+      keyIdx[v as KeyField] = i;
+    }
+  }
+
+  const extLinkKey = keyIdx["externalLink"];
+  const titleKey = keyIdx["title"];
+  if (extLinkKey === undefined || titleKey === undefined) {
+    console.warn("Shopify: Could not locate required RSC key indices (title, externalLink)");
+    return [];
+  }
+
+  const extLinkObjKey = `_${extLinkKey}`;
+  const titleObjKey = `_${titleKey}`;
+  const locExtObjKey = keyIdx["locationExternalName"] !== undefined ? `_${keyIdx["locationExternalName"]}` : null;
+  const locNameObjKey = keyIdx["locationName"] !== undefined ? `_${keyIdx["locationName"]}` : null;
+  const workplaceObjKey = keyIdx["workplaceType"] !== undefined ? `_${keyIdx["workplaceType"]}` : null;
+
+  function deref(ref: unknown): string | null {
+    if (typeof ref !== "number" || ref < 0 || ref >= arr.length) return null;
+    const v = arr[ref];
+    return typeof v === "string" ? v : null;
+  }
+
+  const SHOPIFY_JOB_URL_RE = /^https:\/\/www\.shopify\.com\/careers\?ashby_jid=[a-f0-9-]{36}$/;
+  const allRaw: ScrapedJob[] = [];
+
+  for (let i = 0; i < arr.length; i++) {
+    const obj = arr[i];
+    if (typeof obj !== "object" || obj === null || Array.isArray(obj)) continue;
+    const record = obj as Record<string, unknown>;
+    if (!(extLinkObjKey in record)) continue;
+
+    const extLink = deref(record[extLinkObjKey]);
+    if (!extLink || !SHOPIFY_JOB_URL_RE.test(extLink)) continue;
+
+    const title = deref(record[titleObjKey]);
+    if (!title) continue;
+
+    const locationExt = locExtObjKey ? deref(record[locExtObjKey]) : null;
+    const locationName = locNameObjKey ? deref(record[locNameObjKey]) : null;
+    const workplace = workplaceObjKey ? deref(record[workplaceObjKey]) : null;
+    const location = (locationExt || locationName || workplace || "").trim();
+
+    allRaw.push({ title: title.trim(), location, urlPath: extLink });
+  }
+
+  if (stats) stats.totalScanned = allRaw.length;
+  console.log(`Shopify: Found ${allRaw.length} total jobs in RSC payload`);
+
+  const pmJobs = allRaw.filter((job) => {
+    const lower = job.title.toLowerCase();
+    return PM_KEYWORDS.some((kw) => lower.includes(kw));
+  });
+  console.log(`Shopify: ${pmJobs.length} PM roles after keyword filter`);
+  return pmJobs;
+}
+
+interface PhenomJob {
+  title?: string;
+  location?: string;
+  cityState?: string;
+  city?: string;
+  state?: string;
+  reqId?: string;
+  jobId?: string;
+}
+
+/**
+ * Phenom People ATS scraper. Used by eBay (and other enterprises like Cisco).
+ *
+ * Phenom is a JS-heavy career-site platform. Their OAuth API requires credentials,
+ * and the widget POST API only returns config/counts. The server pre-renders exactly
+ * 10 jobs in the inline phApp.ddo["eagerLoadRefineSearch"] object — all further
+ * pagination is client-side Vue 3 JS (not reproducible server-side).
+ *
+ * We GET the search-results page with keyword=product+manager, parse the DDO, and
+ * return the 10 pre-rendered jobs. stats.totalScanned is set to totalHits so the
+ * self-healing tier knows the source is live (not broken) even if we capture a
+ * first-page sample.
+ *
+ * Known limitation: capture is 10/page only. For eBay that's typically 3-6 PMs after
+ * US filter — partial coverage, but unblocks auto-disable.
+ */
+async function scrapePhenomCareers(
+  baseDomain: string,
+  companyLabel: string,
+  stats?: ScrapeStats
+): Promise<ScrapedJob[]> {
+  if (!/^https:\/\/[a-z0-9.-]+\.[a-z]{2,}$/i.test(baseDomain)) {
+    throw new Error(`${companyLabel}: Invalid Phenom baseDomain: ${baseDomain}`);
+  }
+
+  const searchUrl = `${baseDomain}/us/en/search-results?keywords=product+manager`;
+  console.log(`${companyLabel}: Phenom DDO scraper → ${searchUrl}`);
+
+  let html: string;
+  try {
+    const res = await fetch(searchUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      // Return [] instead of throwing so the self-healing tier runs on transient 5xx
+      // and a single bad day doesn't ratchet auto-disable.
+      console.warn(`${companyLabel}: Phenom returned HTTP ${res.status} — yielding to stealth fallback`);
+      return [];
+    }
+    html = await res.text();
+  } catch (err) {
+    console.warn(`${companyLabel}: Phenom fetch failed:`, err);
+    return [];
+  }
+
+  const DDO_START = "phApp.ddo = ";
+  const DDO_END = "; phApp.experimentData =";
+  const start = html.indexOf(DDO_START);
+  const end = html.indexOf(DDO_END, start);
+  if (start === -1 || end === -1) {
+    console.warn(`${companyLabel}: phApp.ddo boundaries not found`);
+    return [];
+  }
+
+  let ddo: Record<string, unknown>;
+  try {
+    ddo = JSON.parse(html.slice(start + DDO_START.length, end)) as Record<string, unknown>;
+  } catch {
+    console.warn(`${companyLabel}: Failed to JSON-parse phApp.ddo`);
+    return [];
+  }
+
+  const searchData = ddo["eagerLoadRefineSearch"] as
+    | { status?: number; totalHits?: number; data?: { jobs?: PhenomJob[] } }
+    | undefined;
+  if (!searchData || searchData.status !== 200) {
+    console.warn(`${companyLabel}: eagerLoadRefineSearch missing or non-200 (status ${searchData?.status})`);
+    return [];
+  }
+
+  const totalHits = searchData.totalHits ?? 0;
+  const rawJobs: PhenomJob[] = searchData.data?.jobs ?? [];
+  if (stats) stats.totalScanned = totalHits;
+
+  console.log(`${companyLabel}: Phenom returned ${rawJobs.length} server-rendered jobs (totalHits: ${totalHits})`);
+
+  const pmJobs = rawJobs.filter((job) => {
+    const lowerTitle = (job.title ?? "").toLowerCase();
+    return PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
+  });
+  console.log(`${companyLabel}: ${pmJobs.length} PM roles after keyword filter`);
+
+  return pmJobs.map((job) => ({
+    title: job.title ?? "",
+    location: job.location ?? job.cityState ?? job.city ?? "",
+    urlPath: `${baseDomain}/us/en/job/${job.reqId ?? job.jobId ?? ""}`,
+  }));
+}
+
+/** eBay uses Phenom People (tenant EBAEBAUS) at jobs.ebayinc.com. */
+async function scrapeEbayCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
+  return scrapePhenomCareers("https://jobs.ebayinc.com", "eBay", stats);
+}
+
 
 export async function scrapeCompanyCareers(
   careersUrl: string,
@@ -2754,6 +2982,13 @@ export async function scrapeCompanyCareers(
         break;
       case "apple":
         return scrapeAppleCareers(stats);
+      case "shopify":
+        return scrapeShopifyCareers(stats);
+      case "phenom":
+        if (platformConfig.baseDomain) {
+          return scrapePhenomCareers(platformConfig.baseDomain, label, stats);
+        }
+        break;
       case "custom_api":
         // Fall through to hostname-based routing below
         break;
@@ -2816,6 +3051,14 @@ export async function scrapeCompanyCareers(
   if (hostname.includes("wayfair.com") || hostname.includes("wayfair.wd")) {
     console.log("Detected Wayfair careers page — yielding to stealth fallback");
     return [];
+  }
+  if (hostname === "www.shopify.com" || hostname === "shopify.com") {
+    console.log("Detected Shopify careers page, using RSC embedded scraper");
+    return scrapeShopifyCareers(stats);
+  }
+  if (hostname.includes("ebayinc.com")) {
+    console.log("Detected eBay careers page (Phenom), using Phenom DDO scraper");
+    return scrapeEbayCareers(stats);
   }
 
   // ATS registry lookup — replaces per-company hostname checks for standard ATS platforms
