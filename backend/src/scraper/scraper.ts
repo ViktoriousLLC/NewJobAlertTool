@@ -1279,9 +1279,10 @@ async function scrapeEACareers(): Promise<ScrapedJob[]> {
  * on pages 1-6 and collapses by page 8 — the early-exit on zero PM hits saves
  * tail pages once relevance drops off.
  */
-async function scrapeAppleCareers(): Promise<ScrapedJob[]> {
+async function scrapeAppleCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
   const BASE = "https://jobs.apple.com";
-  const MAX_PAGES = 8;
+  const MAX_PAGES = 8;  // 160 search hits scanned; PM density collapses past page 6
+  const PAGE_DELAY_MS = 300;
   const UA =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -1301,13 +1302,15 @@ async function scrapeAppleCareers(): Promise<ScrapedJob[]> {
     csrfToken = csrfRes.headers.get("X-Apple-CSRF-Token") || "";
     if (!csrfToken) throw new Error("No X-Apple-CSRF-Token header in response");
     const raw = csrfRes.headers.get("set-cookie") || "";
-    // Capture jobs=... and jssid=... cookie names (Apple sets multiple).
+    // Forward every cookie Apple sets except known-analytics. AWS ALB stickiness
+    // cookies (AWSALBAPP-*, AWSALB) are needed if Apple rolls our session between
+    // load-balancer targets mid-pagination.
+    const ANALYTICS_COOKIE = /^(s_|_ga|_gid|geo|pxsid|dssf|dssid)/i;
     const cookies: string[] = [];
     for (const part of raw.split(/,(?=\s*[A-Za-z0-9_-]+=)/)) {
       const pair = part.split(";")[0].trim();
-      if (pair.startsWith("jobs=") || pair.startsWith("jssid=")) {
-        cookies.push(pair);
-      }
+      const name = pair.split("=")[0];
+      if (name && !ANALYTICS_COOKIE.test(name)) cookies.push(pair);
     }
     cookieHeader = cookies.join("; ");
   } catch (err) {
@@ -1323,8 +1326,8 @@ async function scrapeAppleCareers(): Promise<ScrapedJob[]> {
     name?: string;
   }
   interface AppleSearchJob {
-    positionId: string;
-    postingTitle: string;
+    positionId?: string;
+    postingTitle?: string;
     transformedPostingTitle?: string;
     locations?: AppleLocation[];
   }
@@ -1365,6 +1368,7 @@ async function scrapeAppleCareers(): Promise<ScrapedJob[]> {
     }
 
     const results = data?.res?.searchResults ?? [];
+    if (stats) stats.totalScanned = (stats.totalScanned || 0) + results.length;
     if (results.length === 0) break;
 
     let pageHits = 0;
@@ -1396,7 +1400,7 @@ async function scrapeAppleCareers(): Promise<ScrapedJob[]> {
 
     console.log(`Apple: page ${page} — ${pageHits} PM hits / ${results.length} total`);
     if (pageHits === 0 && page > 1) break;
-    if (page < MAX_PAGES) await new Promise((r) => setTimeout(r, 300));
+    if (page < MAX_PAGES) await new Promise((r) => setTimeout(r, PAGE_DELAY_MS));
   }
 
   console.log(`Apple: scraped ${pmJobs.length} PM jobs total`);
@@ -2748,7 +2752,7 @@ export async function scrapeCompanyCareers(
         }
         break;
       case "apple":
-        return scrapeAppleCareers();
+        return scrapeAppleCareers(stats);
       case "custom_api":
         // Fall through to hostname-based routing below
         break;
@@ -2790,12 +2794,12 @@ export async function scrapeCompanyCareers(
   }
   if (hostname.includes("jobs.apple.com") || hostname === "apple.com" || hostname.endsWith(".apple.com")) {
     console.log("Detected Apple careers page, using REST API scraper");
-    return scrapeAppleCareers();
+    return scrapeAppleCareers(stats);
   }
   // Meta + TikTok: known to actively block server-side requests. Short-circuit to []
   // so the configured-scraper tier yields nothing, broadATSDiscovery is blocked by
   // CUSTOM_SCRAPER_HOSTS, and stealthFallbackScrape gets the real attempt.
-  if (hostname.includes("metacareers.com") || hostname.endsWith("meta.com")) {
+  if (hostname.includes("metacareers.com") || hostname === "meta.com" || hostname.endsWith(".meta.com")) {
     console.log("Detected Meta careers page — yielding to stealth fallback");
     return [];
   }
