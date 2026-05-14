@@ -484,6 +484,7 @@ async function scrapeAtlassianCareers(): Promise<ScrapedJob[]> {
  */
 export const PM_KEYWORDS = [
   "product manager",
+  "product management",  // AmEx / JPMorgan / Oracle put the function name in the title
   "product lead",
   "group product manager",
   "senior product manager",
@@ -2805,6 +2806,15 @@ export async function scrapeCompanyCareers(
   }
   if (hostname.includes("tiktok.com")) {
     console.log("Detected TikTok careers page — yielding to stealth fallback");
+    return [];
+  }
+  // Tesla + Wayfair: Workday is auth-gated/edge-blocked. Same yield-to-stealth pattern.
+  if (hostname === "tesla.com" || hostname.endsWith(".tesla.com") || hostname.includes("tesla.wd")) {
+    console.log("Detected Tesla careers page — yielding to stealth fallback");
+    return [];
+  }
+  if (hostname.includes("wayfair.com") || hostname.includes("wayfair.wd")) {
+    console.log("Detected Wayfair careers page — yielding to stealth fallback");
     return [];
   }
 
