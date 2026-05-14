@@ -1210,10 +1210,11 @@ async function scrapeEACareers(): Promise<ScrapedJob[]> {
       titles.push(title);
     }
 
-    // Extract locations: list-item-jobPostingLocation followed by first span
-    // Each job's location block has one or more <span class="list-item-N"> with location text
-    // We want the first location span per job block
-    const locRegex = /list-item-jobPostingLocation">\s*(?:<span[^>]*>)?\s*<span class="list-item-0">([^<]*)<\/span>/g;
+    // Extract locations from the <span class="list-item-location"> element, which is present
+    // on every job article. The older list-item-jobPostingLocation → list-item-0 pattern only
+    // appeared on multi-location postings (~9/20 per page) and dropped 11 jobs/page to empty,
+    // which isUSLocation rejects.
+    const locRegex = /<span class="list-item-location">([^<]*)<\/span>/g;
     const locations: string[] = [];
     let locMatch;
     while ((locMatch = locRegex.exec(html)) !== null) {
@@ -1264,6 +1265,141 @@ async function scrapeEACareers(): Promise<ScrapedJob[]> {
   });
 
   console.log(`EA: Scraped ${allJobs.length} jobs from search, ${pmJobs.length} after PM keyword filter`);
+  return pmJobs;
+}
+
+/**
+ * Apple careers — uses jobs.apple.com's internal SPA REST API.
+ *
+ * Two-step CSRF flow: GET /api/v1/CSRFToken returns X-Apple-CSRF-Token + cookies,
+ * then POST /api/v1/search with that token + the page's expected payload shape
+ * (the `format` field is mandatory — without it the API silently returns 0).
+ *
+ * Bounds: paginates up to 8 pages (160 search hits scanned). PM density is high
+ * on pages 1-6 and collapses by page 8 — the early-exit on zero PM hits saves
+ * tail pages once relevance drops off.
+ */
+async function scrapeAppleCareers(): Promise<ScrapedJob[]> {
+  const BASE = "https://jobs.apple.com";
+  const MAX_PAGES = 8;
+  const UA =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+  let csrfToken: string;
+  let cookieHeader: string;
+  try {
+    const csrfRes = await fetch(`${BASE}/api/v1/CSRFToken`, {
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json",
+        Referer: `${BASE}/en-us/search`,
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!csrfRes.ok) throw new Error(`CSRF fetch returned ${csrfRes.status}`);
+    csrfToken = csrfRes.headers.get("X-Apple-CSRF-Token") || "";
+    if (!csrfToken) throw new Error("No X-Apple-CSRF-Token header in response");
+    const raw = csrfRes.headers.get("set-cookie") || "";
+    // Capture jobs=... and jssid=... cookie names (Apple sets multiple).
+    const cookies: string[] = [];
+    for (const part of raw.split(/,(?=\s*[A-Za-z0-9_-]+=)/)) {
+      const pair = part.split(";")[0].trim();
+      if (pair.startsWith("jobs=") || pair.startsWith("jssid=")) {
+        cookies.push(pair);
+      }
+    }
+    cookieHeader = cookies.join("; ");
+  } catch (err) {
+    console.warn("Apple: CSRF token fetch failed:", err);
+    return [];
+  }
+
+  interface AppleLocation {
+    city?: string;
+    stateProvince?: string;
+    countryName?: string;
+    countryID?: string;
+    name?: string;
+  }
+  interface AppleSearchJob {
+    positionId: string;
+    postingTitle: string;
+    transformedPostingTitle?: string;
+    locations?: AppleLocation[];
+  }
+
+  const seen = new Set<string>();
+  const pmJobs: ScrapedJob[] = [];
+
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const body = {
+      query: "product manager",
+      filters: { locations: ["postLocation-USA"] },
+      page,
+      locale: "en-us",
+      sort: "relevance",
+      format: { longDate: "MMMM D, YYYY", mediumDate: "MMM D, YYYY" },
+    };
+    let data: { res?: { searchResults?: AppleSearchJob[]; totalRecords?: number } };
+    try {
+      const res = await fetch(`${BASE}/api/v1/search`, {
+        method: "POST",
+        headers: {
+          "User-Agent": UA,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Origin: BASE,
+          Referer: `${BASE}/en-us/search?key=product+manager&location=united-states-USA`,
+          "X-Apple-CSRF-Token": csrfToken,
+          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) throw new Error(`Apple search API returned ${res.status}`);
+      data = await res.json();
+    } catch (err) {
+      console.warn(`Apple: page ${page} fetch failed:`, err);
+      break;
+    }
+
+    const results = data?.res?.searchResults ?? [];
+    if (results.length === 0) break;
+
+    let pageHits = 0;
+    for (const job of results) {
+      const posId = job.positionId;
+      if (!posId || seen.has(posId)) continue;
+      seen.add(posId);
+
+      const title = job.postingTitle || "";
+      const lowerTitle = title.toLowerCase();
+      if (!PM_KEYWORDS.some((kw) => lowerTitle.includes(kw))) continue;
+
+      pageHits++;
+
+      const loc = job.locations?.[0];
+      let location = "";
+      if (loc) {
+        const parts = [loc.city, loc.stateProvince].filter(Boolean);
+        location = parts.length > 0 ? parts.join(", ") : loc.name || "";
+      }
+
+      const slug = job.transformedPostingTitle || "";
+      const urlPath = slug
+        ? `${BASE}/en-us/details/${posId}/${slug}`
+        : `${BASE}/en-us/details/${posId}`;
+
+      pmJobs.push({ title, location, urlPath });
+    }
+
+    console.log(`Apple: page ${page} — ${pageHits} PM hits / ${results.length} total`);
+    if (pageHits === 0 && page > 1) break;
+    if (page < MAX_PAGES) await new Promise((r) => setTimeout(r, 300));
+  }
+
+  console.log(`Apple: scraped ${pmJobs.length} PM jobs total`);
   return pmJobs;
 }
 
@@ -2611,6 +2747,8 @@ export async function scrapeCompanyCareers(
           return scrapeOracleHCMCareers(platformConfig.tenantUrl, platformConfig.siteNumber, label);
         }
         break;
+      case "apple":
+        return scrapeAppleCareers();
       case "custom_api":
         // Fall through to hostname-based routing below
         break;
@@ -2649,6 +2787,21 @@ export async function scrapeCompanyCareers(
   if (hostname.includes("coinbase.com")) {
     console.log("Detected Coinbase careers page, using Puppeteer + intercept");
     return scrapeCoinbaseCareers();
+  }
+  if (hostname.includes("jobs.apple.com") || hostname === "apple.com" || hostname.endsWith(".apple.com")) {
+    console.log("Detected Apple careers page, using REST API scraper");
+    return scrapeAppleCareers();
+  }
+  // Meta + TikTok: known to actively block server-side requests. Short-circuit to []
+  // so the configured-scraper tier yields nothing, broadATSDiscovery is blocked by
+  // CUSTOM_SCRAPER_HOSTS, and stealthFallbackScrape gets the real attempt.
+  if (hostname.includes("metacareers.com") || hostname.endsWith("meta.com")) {
+    console.log("Detected Meta careers page — yielding to stealth fallback");
+    return [];
+  }
+  if (hostname.includes("tiktok.com")) {
+    console.log("Detected TikTok careers page — yielding to stealth fallback");
+    return [];
   }
 
   // ATS registry lookup — replaces per-company hostname checks for standard ATS platforms
