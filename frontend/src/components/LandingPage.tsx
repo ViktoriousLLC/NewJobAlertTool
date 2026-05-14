@@ -453,7 +453,7 @@ export default function LandingPage() {
                 animation: "slideIn 0.6s ease 0.2s both",
               }}
             >
-              New PM role at your
+              New PM role posted at your
               <br />
               dream company?
               <br />
