@@ -6,7 +6,7 @@
 - **DO NOT leave manual steps for the user.** If it can be done via API, CLI, or script — do it yourself.
 - **Push code, deploy, clean DB, re-add companies — all autonomously.** Full access granted.
 - **Execute end-to-end** including deployment and verification. Come back with proof it works, not "next steps."
-- **Never ask before pushing.** Just push.
+- **Never ask before pushing — to a feature branch.** `main` is branch-protected (added 2026-05-14). Push to `claude/<slug>` branches and open PRs with `gh pr create`. The user merges via GitHub.
 - **Session start health check:** At the start of every conversation, query the `companies` table for scrape failures (`last_check_status` containing 'error' or 'quality: 0/100'). If any exist, investigate and fix them immediately before doing anything else. Don't report failures — fix them, push, and show proof.
 
 ## Architecture
@@ -23,11 +23,45 @@
 
 ## Deployment
 
-Push to `main` auto-deploys both Railway (~60s) and Vercel (~30s). Wait 90+ seconds before verifying.
+`main` is branch-protected (GitHub rule set, added 2026-05-14). Direct push to `main` is rejected. Every change goes through a PR.
+
+**Workflow:**
+1. Create feature branch: `git checkout -b claude/<slug>`
+2. Edit + commit + `git push -u origin <branch>`
+3. Open PR: `gh pr create --title "..." --body "..."`
+4. Vercel + Railway auto-deploy preview environments on the PR
+5. User reviews preview URLs → clicks "Merge" on GitHub
+6. Merge to `main` auto-deploys to production (~60s Railway, ~30s Vercel)
+
+**Vercel preview URLs** post automatically to the PR via the Vercel bot. Pull Request Comments must stay enabled in Vercel project settings.
+
+**Railway PR environments**: `Base = Production` (env vars cloned from prod), `Bot PR Environments = on`, `Focused PR Environments = on`. Preview URLs are unguessable but still touch the prod Supabase + Resend — do not share publicly.
 
 ```bash
-curl -s "https://api.<your-domain>/api/health"   # verify backend
+curl -s "https://api.<your-domain>/api/health"   # verify backend after merge
 ```
+
+## Subagents (Claude Code)
+
+13 specialized agents live in `.claude/agents/`. Full catalog: `.claude/agents/README.md`. Agents are auto-discovered at session start. They propose patches/findings in their output; the main agent handles git ops after user review.
+
+| Agent | What it does | Model |
+|---|---|---|
+| `scraper-doctor` | Diagnose one broken scraper | sonnet |
+| `catalog-scout` | Research new companies + detect ATS | sonnet |
+| `security-auth` | Audit login/JWT/cookie code | opus |
+| `security-data-isolation` | Audit cross-user data leaks + RLS | opus |
+| `security-infra` | Audit npm/env/headers/limits | opus |
+| `change-reviewer` | Independent code review before push | opus |
+| `code-refactorer` | Behavior-preserving cleanup | sonnet |
+| `incident-triage` | Production incident root-cause | opus |
+| `debugger` | Fix one specific dev bug | sonnet |
+| `db-optimizer` | Postgres query/index tuning | opus |
+| `performance-engineer` | App-layer perf review | sonnet |
+| `threat-modeling-expert` | STRIDE on new feature surfaces | opus |
+| `spec-writer` | Feature idea → backlog table spec | sonnet |
+
+**Invoke style:** describe the task ("the Coinbase scraper is broken" → scraper-doctor) or name the agent explicitly. Six more agents identified but deferred until their trigger fires — see `.claude/agents/README.md` deferred section.
 
 ## Authentication
 
