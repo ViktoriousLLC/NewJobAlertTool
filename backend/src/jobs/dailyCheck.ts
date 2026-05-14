@@ -351,16 +351,19 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
         });
         console.log(`${company.name}: AUTO-RE-ENABLED via Monday probe (${jobs.length} jobs)`);
       }
-      await supabase
-        .from("companies")
-        .update({
-          last_checked_at: new Date().toISOString(),
-          last_check_status: checkStatus,
-          total_product_jobs: activeJobCount ?? 0,
-          consecutive_failure_count: 0,
-          auto_disabled: false,
-        })
-        .eq("id", company.id);
+      // Once a company returns >0 PMs, it's verified for life. Never flip back to
+      // false from a daily scrape — admin verification of legit zeros is preserved.
+      const updates: Record<string, unknown> = {
+        last_checked_at: new Date().toISOString(),
+        last_check_status: checkStatus,
+        total_product_jobs: activeJobCount ?? 0,
+        consecutive_failure_count: 0,
+        auto_disabled: false,
+      };
+      if ((activeJobCount ?? 0) > 0) {
+        updates.is_verified = true;
+      }
+      await supabase.from("companies").update(updates).eq("id", company.id);
 
       companyAlerts.set(company.id, {
         companyName: company.name,
@@ -644,6 +647,25 @@ async function sendConsolidatedAdminDigest(input: {
     }
   }
 
+  // Unverified zeros: every company currently at 0 PMs without admin sign-off.
+  // Silent-zero failures look identical to legitimate zeros at the scraper level,
+  // so this section forces every 0-PM company through human eyes once.
+  // Subscribed companies come first; suppress the row by setting is_verified_zero=true.
+  const { data: unverifiedZeroRows } = await supabase
+    .from("companies")
+    .select("name, subscriber_count, last_checked_at")
+    .eq("total_product_jobs", 0)
+    .eq("is_verified_zero", false)
+    .or("auto_disabled.is.null,auto_disabled.eq.false")
+    .order("subscriber_count", { ascending: false })
+    .order("name", { ascending: true });
+
+  const unverifiedZeros = (unverifiedZeroRows || []).map((c) => ({
+    name: c.name,
+    subscribers: c.subscriber_count ?? 0,
+    lastCheckedAt: c.last_checked_at,
+  }));
+
   // Monday-only: weekly health snapshot + past-7-days self-heal log + security check
   let weeklyHealth: { healthy: number; disabled: number; watchListCount: number } | undefined;
   let weeklyEvents:
@@ -685,6 +707,7 @@ async function sendConsolidatedAdminDigest(input: {
       watchList,
       autoDisabled: input.autoDisabled,
       subscribedZeroDrops,
+      unverifiedZeros,
       autoRemediated: input.autoRemediated,
       stealthRecovered: input.stealthRecovered,
       reEnabled: input.reEnabled,

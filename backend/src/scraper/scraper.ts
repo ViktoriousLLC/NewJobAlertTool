@@ -1062,27 +1062,20 @@ async function scrapeAshbyCareers(
     return [];
   }
 
-  const { teams, jobPostings } = data.data.jobBoard;
+  const { jobPostings } = data.data.jobBoard;
 
-  console.log(`${companyLabel}: Found ${jobPostings.length} total jobs across ${teams.length} teams`);
+  console.log(`${companyLabel}: Found ${jobPostings.length} total jobs`);
   if (stats) stats.totalScanned = jobPostings.length;
 
-  // Find Product Management team and related product teams
-  const productTeamIds = new Set<string>();
-  const productKeywords = ["product management", "product design", "product policy", "product partnerships"];
+  // Filter by title keywords, not team name. Modern companies embed PMs inside
+  // product-area teams (Growth, Payments, Platform, Kafka Cloud), so matching on
+  // a team named "Product Management" misses them. Same pattern as Greenhouse.
+  const productJobs = jobPostings.filter((job) => {
+    const lowerTitle = job.title.toLowerCase();
+    return PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
+  });
 
-  for (const team of teams) {
-    const lowerName = team.name.toLowerCase();
-    if (productKeywords.some((kw) => lowerName.includes(kw))) {
-      productTeamIds.add(team.id);
-      console.log(`${companyLabel}: Including team "${team.name}" (${team.id})`);
-    }
-  }
-
-  // Filter for product team jobs
-  const productJobs = jobPostings.filter((job) => productTeamIds.has(job.teamId));
-
-  console.log(`${companyLabel}: Found ${productJobs.length} product-related jobs`);
+  console.log(`${companyLabel}: Found ${productJobs.length} PM roles after title filter`);
 
   return productJobs.map((job) => {
     // Combine primary and secondary locations
