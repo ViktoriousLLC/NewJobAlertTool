@@ -2731,24 +2731,30 @@ async function scrapeShopifyCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> 
     return [];
   }
 
-  const enqueueMatch = html.match(
-    /window\.__reactRouterContext\.streamController\.enqueue\(([\s\S]*?)\);\s*<\/script>/
-  );
-  if (!enqueueMatch) {
-    console.warn("Shopify: Could not find streamController.enqueue() in HTML");
+  // Match every enqueue() call. Today there's one, but if Shopify ever chunks the
+  // stream we'd silently under-count by parsing only the first. Concat all chunks.
+  const enqueueRe = /window\.__reactRouterContext\.streamController\.enqueue\(([\s\S]*?)\);\s*<\/script>/g;
+  const chunks: unknown[][] = [];
+  let m: RegExpExecArray | null;
+  while ((m = enqueueRe.exec(html)) !== null) {
+    try {
+      const outerStr = JSON.parse(m[1]) as string;
+      const chunk = JSON.parse(outerStr) as unknown[];
+      if (Array.isArray(chunk)) chunks.push(chunk);
+    } catch (err) {
+      console.warn("Shopify: Failed to parse one RSC chunk:", err);
+    }
+  }
+  if (chunks.length === 0) {
+    console.warn("Shopify: Could not find any streamController.enqueue() chunks in HTML");
     return [];
   }
-
-  let arr: unknown[];
-  try {
-    const outerStr = JSON.parse(enqueueMatch[1]) as string;
-    arr = JSON.parse(outerStr) as unknown[];
-  } catch (err) {
-    console.warn("Shopify: Failed to parse RSC payload:", err);
-    return [];
+  if (chunks.length > 1) {
+    console.log(`Shopify: parsed ${chunks.length} RSC chunks`);
   }
-  if (!Array.isArray(arr) || arr.length === 0) {
-    console.warn("Shopify: RSC array is empty or unexpected shape");
+  const arr: unknown[] = chunks.flat();
+  if (arr.length === 0) {
+    console.warn("Shopify: RSC array is empty after merging chunks");
     return [];
   }
 
@@ -2776,7 +2782,7 @@ async function scrapeShopifyCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> 
   const workplaceObjKey = keyIdx["workplaceType"] !== undefined ? `_${keyIdx["workplaceType"]}` : null;
 
   function deref(ref: unknown): string | null {
-    if (typeof ref !== "number" || ref === -5 || ref >= arr.length) return null;
+    if (typeof ref !== "number" || ref < 0 || ref >= arr.length) return null;
     const v = arr[ref];
     return typeof v === "string" ? v : null;
   }
@@ -2853,18 +2859,27 @@ async function scrapePhenomCareers(
   const searchUrl = `${baseDomain}/us/en/search-results?keywords=product+manager`;
   console.log(`${companyLabel}: Phenom DDO scraper → ${searchUrl}`);
 
-  const res = await fetch(searchUrl, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    },
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) {
-    throw new Error(`${companyLabel}: Phenom returned HTTP ${res.status}`);
+  let html: string;
+  try {
+    const res = await fetch(searchUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      // Return [] instead of throwing so the self-healing tier runs on transient 5xx
+      // and a single bad day doesn't ratchet auto-disable.
+      console.warn(`${companyLabel}: Phenom returned HTTP ${res.status} — yielding to stealth fallback`);
+      return [];
+    }
+    html = await res.text();
+  } catch (err) {
+    console.warn(`${companyLabel}: Phenom fetch failed:`, err);
+    return [];
   }
-  const html = await res.text();
 
   const DDO_START = "phApp.ddo = ";
   const DDO_END = "; phApp.experimentData =";
