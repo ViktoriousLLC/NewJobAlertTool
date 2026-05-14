@@ -1117,4 +1117,93 @@ Added to `/api/cron/trigger`. Lets the admin request a Monday-style report on an
 - Defense / aerospace (Hadrian, Shield AI, Helsing, Saronic, Vannevar Labs)
 - Specific verticals: logistics, insurance tech, agtech, climate
 - East Coast tech if going for 500-1000 (NYC startups, Boston biotech, DC)
+
+---
+
+## 2026-05-14 — Claude Code Agent Framework + PR-Gated Deploys
+
+### Context
+
+Two related problems with how the project was being built:
+
+1. **Every Claude Code session started from zero specialist context.** Whether the task was a scraper fix, a security audit, a code review, or a feature spec, the main agent had to re-derive project rules and patterns every time. The CLAUDE.md gives it operational reference, but it doesn't give it role-specific instructions ("when reviewing code, do X; when auditing auth, do Y").
+
+2. **Direct push to `main` was risky.** A bad change would auto-deploy to production in ~60 seconds. The user wanted a gate — see the preview, click merge — without losing the autonomous workflow.
+
+### What was decided
+
+**Built a 13-agent Claude Code subagent portfolio at `.claude/agents/`:**
+
+Custom (5, project-specific knowledge):
+- `scraper-doctor` — diagnose one broken scraper; knows the 3-tier recovery, `CUSTOM_SCRAPER_HOSTS`, return-empty-vs-throw
+- `catalog-scout` — research new companies, detect ATS, output JSONL for bulk-add pipeline
+- `security-auth` — audit login/JWT/cookie surface; bakes in 2026-05-11 known-good baseline
+- `security-data-isolation` — audit per-route subscription checks + RLS policies
+- `security-infra` — audit npm/env/CORS/CSP/body limits; integrates with `security_snapshots` table
+
+Borrowed + trimmed (8, generic roles rewritten from scratch):
+- `change-reviewer` (forked from agency-agents/engineering-code-reviewer) — pre-push diff review with blocker/suggestion/nit format
+- `code-refactorer` (forked from iannuttall/code-refactorer) — behavior-preserving cleanup
+- `incident-triage` (forked from wshobson/devops-troubleshooter) — prod incident triage with Railway/Sentry/Supabase MCP playbook
+- `debugger` (forked from wshobson/debugger) — single-bug fix with `tasks/lessons.md` + Gotchas check
+- `db-optimizer` (forked from VoltAgent/postgres-pro) — Postgres-specific, knows existing indexes
+- `performance-engineer` (forked from wshobson/performance-engineer) — N+1, parallelism, caching
+- `threat-modeling-expert` (forked from wshobson/threat-modeling-expert) — STRIDE on new endpoints/tables; for Stripe Phase 1 prep
+- `spec-writer` (forked from iannuttall/prd-writer) — feature idea → backlog.md table format
+
+All borrowed agents were rewritten from scratch to remove external branding, author signatures, vendor name-drops (Trag, Bito, SonarQube, etc.), roleplay headers, and aspirational checklists for tools/processes not used.
+
+Six more agents identified during research but **deferred** with explicit triggers: `wshobson/payment-processing` plugin (Phase 1 kickoff), `experiment-tracker` (first A/B test), `growth-hacker` (referral push), `brand-landingpage` (next landing iteration), `seo-cannibalization-detector` + `content-marketer` (blog/SEO launch), `customer-support` (help inbox > 50/week).
+
+**Output discipline applied to every agent:** No git commits, pushes, or PR opens from any subagent. They return findings/patches as markdown in their response. The main agent handles git operations after user review.
+
+**PR-gated deploy workflow.** Turned on:
+- GitHub branch protection rule set on `main` (require PR, block force-push, block deletion)
+- Railway PR environments (Base = Production, Bot PR Environments on, Focused PR Environments on)
+- Vercel preview deploys (already on; verified Pull Request Comments enabled)
+
+Tested end-to-end with PR #1 (landing headline change — closed without merging, proving the safety net) and PR #2 (commit the agent files themselves — merged successfully).
+
+**Side-quest edits:**
+- Added 2 rules to global `~/.claude/CLAUDE.md` Core Principles: "wait for fourth occurrence before abstracting" and "surface scope creep as follow-ups, don't smuggle"
+- Added line to `docs/security-log.md` process notes: "a clean audit is suspicious — expect informational findings"
+- Adjusted `.gitignore` to use `.claude/*` + `!.claude/agents/` so agents are tracked but `settings*.json` stay ignored
+
+### Alternatives considered
+
+- **Install public agent collections as plugins (e.g., `claude plugin marketplace add wshobson/agents`).** Considered; rejected. Plugin installs bring 50+ irrelevant agents per collection and a marketplace runtime overhead. Cherry-picking and rewriting was cleaner.
+- **Use the existing built-in `/security-review` and `/review` slash commands instead of custom security agents.** Considered; rejected. Slash commands review the current diff against main — fine for incremental checks, but the 2026-05-11 audit pattern (3 parallel agents, line-by-line on a fixed scope) provably catches issues a single-pass scan misses.
+- **Skip the PR-gated workflow; keep direct push to main with branch protection off.** Considered; rejected after the user explicitly said they wanted a gate. The marginal cost is one click per merge; the benefit is preview-before-prod and one-click undo.
+- **Use staging Supabase project for Railway PR environments to isolate writes.** Considered; rejected for now. Production Supabase as base is fine for a solo project pre-monetization. Revisit when scaling team or going public.
+- **Build a `journey-historian` agent for product-development-journey.md updates.** Considered; rejected. The `savecc` rule + the inline phase template in CLAUDE.md cover this without needing a dedicated agent.
+
+### Key insights
+
+- **Public agents are uniformly bloated for solo projects.** Even the best (`wshobson/debugger` at 27 lines, `iannuttall/code-refactorer`) needed targeted trimming. Mid-tier ones (`wshobson/code-reviewer`, `VoltAgent/security-auditor`) needed 50-70% cut. The structural patterns are real value; the surface bloat (vendor name-drops, enterprise tools, roleplay) actively dilutes the agent's instruction budget. Borrow the bones, throw out the marketing.
+
+- **Specialized > generalized for review work.** The 2026-04-25 single-pass audit missed 11 issues the 2026-05-11 3-agent split caught. The same insight applies to the new portfolio: separate `security-auth`, `security-data-isolation`, and `security-infra` agents will outperform a single mega `security-audit` agent because each one has a finite checklist and reads its full scope.
+
+- **Output contracts beat freeform prose for agent reviews.** Every agent declares the exact markdown structure it returns (blocker/suggestion/nit, STRIDE matrix, backlog table, etc.). Reviewing a structured output is a 30-second scan; reviewing prose is a slog. The model matters less than the contract on the way out.
+
+- **PR-gated workflow doesn't actually slow you down.** The first test (PR #1) felt heavier than direct push, but the "close without merging" path saved a revert. The second test (PR #2, agent files) merged in seconds. Net friction per change is ~1 extra click; net safety is preview-before-prod for every change.
+
+- **Agents are useless without trigger discipline.** Having 13 agents doesn't help if the user keeps invoking the main agent for everything by habit. The win comes from internalizing the routing ("the Coinbase scraper is broken" → `scraper-doctor`, not free-form chat). The portfolio is built; using it is the next discipline.
+
+### Files / artifacts
+
+- `.claude/agents/*.md` — 13 agent files + README.md (committed in PR #2, merged 6066811)
+- `~/.claude/CLAUDE.md` — added 2 Core Principles rules
+- `docs/security-log.md` — added process note about clean audits
+- `.gitignore` — pattern updated for `.claude/agents/` tracking
+- GitHub repo: branch protection rule set on `main`
+- Railway: PR environments enabled with Production base
+- Vercel: previews on (default), PR Comments enabled
+
+### Next batch — open ideas
+
+- **Pull deferred agents when triggers fire**: payment-integration before Stripe Phase 1, experiment-tracker before first A/B test, etc.
+- **Re-evaluate public agent ecosystem every 6 months** — collections grow fast. Set a reminder.
+- **Routine: invoke `change-reviewer` on every non-trivial PR before merging.** Build the habit.
+- **Routine: quarterly security audit (3 parallel agents) appended to `docs/security-log.md`.** Calendar reminder.
+- **Phase 1 Stripe kickoff**: invoke `threat-modeling-expert` on the planned data flows BEFORE writing code, plus `spec-writer` for the phased backlog.
 - Public mid-caps in PM target work areas

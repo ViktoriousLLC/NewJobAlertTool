@@ -27,6 +27,7 @@ How a personal localhost script became a production multi-user SaaS, built entir
 | 17. Puppeteer Elimination + Catalog Expansion | 10 companies broke overnight, catalog was only 55 companies | Researched ATS for every company, built 5 new scraper types, expanded catalog to 126 (118 API-based), ran full security audit | When a dependency breaks, the fix isn't to patch the dependency. It's to ask whether you need it at all. Also: npm version ranges (^) in Docker builds are a time bomb. Pin exact versions. |
 | 18. Self-Healing Scraper Layer | Coinbase quietly deleted their public job board; one company breaks per month and I have to manually investigate each time | Three-tier auto-recovery (configured scraper → platform auto-detect → stealth browser fallback), auto-disable after 7 failures, Monday probe re-enables companies that come back online | The right fix for "this one company broke" is usually "build the recovery system that catches the next ten." Coinbase specifically can't be saved — but the architecture that handles it gracefully also handles every silent ATS migration that hasn't happened yet. |
 | 19. Less Noise, Tighter Security | Self-healing system was sending 3 admin emails a day, mostly success notifications I didn't need. Last security audit was a few weeks old and the docs were quietly out of sync with what the code actually did. | Consolidated 3 emails into 1 digest that fires only when something needs my attention. Ran 3 parallel security audits, shipped 11 fixes including a cookie security bug where the code contradicted its own documentation, a cross-user data leak on a read endpoint, and a published rate-limiter CVE. Added weekly npm-audit check to the Monday email. | A system that emails you about every success trains you to ignore the channel by the time something actually needs your attention. Also, your own documentation drifts from the code during refactors, which is the whole reason audits exist. Three specialized review agents found things one general pass would have missed. |
+| 20. Specialized AI Agents and PR-Gated Deploys | Every task in Claude Code started from zero context, so the assistant had to re-derive the project rules every time. And I was one careless push away from a bad change reaching production. | Built a portfolio of 13 specialized subagents that live in the repo. Five are custom and encode project-specific knowledge like the three-tier scraper recovery and the proven security audit pattern. Eight are forked from public collections and heavily trimmed. Also turned on GitHub branch protection plus Railway and Vercel preview environments, so every change goes through a pull request with a working preview before I can merge it. | The win from a roster of specialists is not the agents themselves. It is having a predictable output contract per task type, so reviewing the work is a 30-second scan instead of reading prose. Also, most public agents are written for enterprise teams and need 50 to 70 percent of their bloat removed before they fit a solo project. Borrow the bones, throw out the marketing. |
 
 ---
 
@@ -612,6 +613,36 @@ To prevent future drift, the Monday admin email now also runs npm audit on the b
 
 ---
 
+## Phase 20: Specialized AI Agents and PR-Gated Deploys
+
+**Goal:** Move from "ask Claude to do everything" to a roster of specialized agents that handle specific recurring tasks, and put a deploy gate in place so a bad change cannot land on users without me seeing a preview first.
+
+### What I Built
+
+For about a year, the way I built this product was simple. I opened a chat with Claude Code, described what I wanted, watched it work, then pushed to main and let production update itself. That worked, but it had two problems. First, every task started from zero context. Whether the work was reviewing my code before a push, auditing the auth flow, fixing a broken scraper, or writing a feature spec, Claude had to re-derive the project rules every time. Second, the same autonomy that made me fast also made me nervous. A single bad change going straight to production was one careless decision away.
+
+I spent a session restructuring both of those. The first half was building a portfolio of thirteen specialized subagents that live in the repo. Each one is a markdown file with focused instructions for a specific recurring job. Diagnose a broken scraper. Audit cross-user data leaks. Write a backlog spec. Run a threat model on a new feature. Review pending code before push. Five of the thirteen are custom and encode project-specific knowledge that no public agent could know. The other eight were forked from public collections after evaluating around seven hundred publicly available agents across four open-source repos. Public agents are mostly written for enterprise teams and reference tools I do not use, so the eight I borrowed got rewritten from scratch to keep only the load-bearing patterns and remove vendor name-drops, marketing taglines, and roleplay headers.
+
+The second half was the deploy gate. I turned on GitHub branch protection so the main branch only receives code through a pull request, and turned on Railway plus Vercel preview environments so every PR gets its own working sandbox URL before it can be merged. The workflow now is that I describe a task, Claude routes it to the right specialist agent, the agent proposes a patch, I review the patch, Claude opens a pull request on a feature branch, preview deploys spin up automatically, I click around the preview, and only then do I click merge. The merge button is the only step I cannot delegate. Everything else happens hands-free.
+
+### Key Decisions
+
+**Build custom for project knowledge, borrow for generic roles.** I evaluated four major public subagent collections totaling around seven hundred agents. The reusable ones were generic roles like code reviewer or database optimizer that any web app needs. The ones I needed to build from scratch encoded knowledge no public agent could have. The custom-scraper-hosts blocklist. The three-tier recovery model. The existing index list. The proven security audit pattern that caught eleven issues a single-pass review missed. I split the portfolio sixty/forty, eight borrowed and five custom. The tradeoff is that the eight borrowed agents needed rewriting to remove enterprise bloat, but starting from a battle-tested skeleton is faster than starting from a blank file.
+
+**PR-gated deploys instead of direct push to main.** Before this session, I pushed directly to main and watched production update sixty seconds later. After this session, every change goes through a pull request with a preview deploy attached. The tradeoff is that I now click merge once per change, which adds friction for small fixes. The benefit is that no change reaches users without me seeing a working preview first, and a bad change closes with one click instead of needing a revert. For a solo founder pre-monetization, the safety net is worth the click.
+
+**Agents propose, the main thread disposes.** Every specialist agent is restricted from running git commands. They return diagnoses, patches, and findings as markdown blocks in their response, but they never commit, push, or open pull requests themselves. The main thread, where I am talking to Claude, handles all git operations after I approve the proposal. The tradeoff is one extra review step per agent invocation, but it keeps risky autonomy on the main thread where I have visibility, instead of buried inside a subagent's tool calls.
+
+### What I Learned
+
+**Generic public agents are surprisingly bloated.** I expected to install plug-and-play agents from open-source collections and move on. The reality was that even the highest-quality public agents averaged around fifty to seventy percent bloat for my use case. Vendor name-drops for tools I do not use. Aspirational checklists like "achieve eighty percent code coverage" that do not apply to a solo project. And "you are Alex, a ten-year veteran" roleplay headers that waste the agent's instruction budget. The trimming work was real, but the structural patterns underneath were genuinely useful. Borrow the bones, throw out the marketing.
+
+**Predictable output contracts matter more than the underlying model.** Every agent in the portfolio declares the exact markdown structure it returns. The change reviewer uses a blocker, suggestion, and nit format. The threat modeler returns a STRIDE matrix and a data flow diagram. The spec writer outputs the same numbered table format the existing backlog uses. Once each agent has a predictable shape, reviewing their output is a thirty-second scan instead of reading prose. The model under the hood matters less than the contract on the way out.
+
+**The framework is only as good as the trigger.** Owning thirteen specialized agents is useless if I keep doing every task in the main thread out of habit. The win comes from internalizing the routing. When a company breaks, that is scraper doctor's job, not a free-form conversation. When something breaks in production, that is incident triage. When I want to add a feature, that is spec writer first, then code. The portfolio is built. Using it is the next discipline.
+
+---
+
 ## Summary of Concepts Learned
 
 | # | Concept | Where I Learned It |
@@ -656,3 +687,7 @@ To prevent future drift, the Monday admin email now also runs npm audit on the b
 | 38 | Documentation-vs-code drift as the real reason audits exist | HttpOnly cookie bug (Phase 19) |
 | 39 | Timing-safe secret comparison for shared-secret bearer tokens (cron, future Stripe webhooks) | Security hardening (Phase 19) |
 | 40 | Weekly automated dependency vulnerability surfacing via diff-against-snapshot | Monday digest security check (Phase 19) |
+| 41 | Specialized subagent portfolios with predictable output contracts | AI agent framework (Phase 20) |
+| 42 | PR-gated deploys with branch protection plus preview environments as a safety net | Deploy workflow rework (Phase 20) |
+| 43 | Public agent evaluation: borrow generic roles, build custom for project-specific knowledge | Multi-collection research (Phase 20) |
+| 44 | "Agents propose, main thread disposes" pattern for isolating risky operations | Agent safety design (Phase 20) |
