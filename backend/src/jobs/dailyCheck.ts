@@ -256,12 +256,17 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       // Get existing active jobs for this company
       const { data: existingJobs } = await supabase
         .from("seen_jobs")
-        .select("id, job_url_path, status")
+        .select("id, job_url_path, status, job_title, job_location")
         .eq("company_id", company.id);
 
-      const existingByPath = new Map<string, { id: string; status: string }>();
+      const existingByPath = new Map<string, { id: string; status: string; title: string; location: string }>();
       for (const j of existingJobs || []) {
-        existingByPath.set(j.job_url_path, { id: j.id, status: j.status });
+        existingByPath.set(j.job_url_path, {
+          id: j.id,
+          status: j.status,
+          title: j.job_title || "",
+          location: j.job_location || "",
+        });
       }
 
       const scrapedPaths = new Set(jobs.map((j) => j.urlPath));
@@ -295,21 +300,58 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
         newJobs.push(...toInsert.map((j) => ({ title: j.title, urlPath: j.urlPath })));
       }
 
-      // 2. Returned jobs: in DB as 'removed', back in scrape → UPDATE to 'active', treat as new
+      // 2. Returned jobs: in DB as 'removed' OR 'archived', back in scrape → flip to 'active'
+      // and refresh title/location (the listing may have been re-posted with edits).
+      // Without including 'archived' here, an old URL that comes back is silently dropped:
+      // it can't INSERT (already in seen_jobs UNIQUE), the 'removed' branch skips it, the
+      // refresh branch skips it (status !== 'active'). Observed at EA where URLs from Feb
+      // re-appeared in May with new titles/locations and never showed up in the catalog.
       const returnedJobs: { title: string; urlPath: string }[] = [];
       for (const job of jobs) {
         const existing = existingByPath.get(job.urlPath);
-        if (existing && existing.status === "removed") {
+        if (existing && (existing.status === "removed" || existing.status === "archived")) {
           await supabase
             .from("seen_jobs")
-            .update({ status: "active", status_changed_at: new Date().toISOString() })
+            .update({
+              status: "active",
+              status_changed_at: new Date().toISOString(),
+              job_title: job.title,
+              job_location: job.location,
+            })
             .eq("id", existing.id);
           returnedJobs.push({ title: job.title, urlPath: job.urlPath });
         }
       }
       if (returnedJobs.length > 0) {
-        console.log(`${company.name}: ${returnedJobs.length} jobs returned (re-activated)`);
+        console.log(`${company.name}: ${returnedJobs.length} job(s) returned (re-activated from removed/archived)`);
         newJobs.push(...returnedJobs);
+      }
+
+      // 2.5. Refresh stale title/location on currently-active jobs. EA renames jobs
+      // in-place (same URL, new title or new location — e.g., adding "- Cosmetics" or
+      // moving from Orlando → Redwood City). Without this, users see the old strings
+      // forever.
+      const toRefresh: { id: string; title: string; location: string }[] = [];
+      for (const job of jobs) {
+        const existing = existingByPath.get(job.urlPath);
+        if (
+          existing &&
+          existing.status === "active" &&
+          (existing.title !== job.title || existing.location !== job.location)
+        ) {
+          toRefresh.push({ id: existing.id, title: job.title, location: job.location });
+        }
+      }
+      if (toRefresh.length > 0) {
+        console.log(`${company.name}: refreshing title/location for ${toRefresh.length} active job(s)`);
+        await Promise.all(
+          toRefresh.map((r) =>
+            supabase
+              .from("seen_jobs")
+              .update({ job_title: r.title, job_location: r.location })
+              .eq("id", r.id)
+          )
+        );
       }
 
       // 3. Missing jobs: in DB as 'active', not in scrape → mark 'removed'
