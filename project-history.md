@@ -1207,3 +1207,79 @@ Tested end-to-end with PR #1 (landing headline change — closed without merging
 - **Routine: quarterly security audit (3 parallel agents) appended to `docs/security-log.md`.** Calendar reminder.
 - **Phase 1 Stripe kickoff**: invoke `threat-modeling-expert` on the planned data flows BEFORE writing code, plus `spec-writer` for the phased backlog.
 - Public mid-caps in PM target work areas
+
+---
+
+## 2026-05-14 (evening) — Zero-Jobs Audit Executed: 4 PRs, 3 New ATS Platforms, Catalog 220→216
+
+### Context
+
+The 2026-05-13 diagnostic found ~90 of 220 catalog companies showing 0 PMs. Investigation revealed a mix of legitimate-zero (Block, Palantir, xAI, Wiz, etc.) and silently-broken (Confluent's Ashby team filter dropping 5 PMs, AmEx's invisible Eightfold → Oracle HCM migration, Apple/Meta/Tesla/TikTok/Wayfair SPA-blocked, EA pagination, ~12 wrong-ATS-in-DB cases). The 8-step fix plan was locked in memory but not executed — the agent framework was being validated first.
+
+Tonight the plan executed end-to-end in one session, with one wrinkle the user injected mid-flight: prior-art research from a parallel session that flipped the plan for Meta (drop the build), TikTok (drop the build), corrected EA (simpler than expected), and reframed Apple (use known endpoints). After verifying the prior art against live curl tests, the conclusion was: prior-art is great for orientation but always re-verify before committing to the path. Apple's prior-art endpoints were actually stale; the agent's reverse-engineered ones worked.
+
+### What was decided
+
+**Four phased PRs, each independently reviewable and revertible.**
+
+- **PR #5 — Phase 1: safety net + Ashby fix.** Schema migration adds `is_verified` + `is_verified_zero` BOOLEAN columns on `companies` with partial index `idx_companies_unverified_zero`. Daily admin digest gains "Unverified zeros" section (capped at top 25 by subscriber count, "…and N more" footer). Ashby scraper at `scraper.ts:1062-1082` switched from team-name pre-filter to title-keyword filter mirroring the Greenhouse pattern at `:548`. `is_verified=true` flips one-way on any successful scrape returning >0 PMs (preserves admin verification). 21 manually-triaged legit-zeros backfilled (Block, Palantir, Wiz, xAI, Figure AI, HoYoverse, Khan Academy, Aptos Labs, Bungie, Calm, Imbue, Lattice, MasterClass, PlanetScale, FullStory, insitro, Modern Treasury, Pika, Statsig, Substack, Windsurf).
+
+- **PR #6 — Phase 2: Apple + EA + Meta/TikTok yield.** New `scrapeAppleCareers` (~130 lines). Two-step CSRF flow against `/api/v1/CSRFToken` + `/api/v1/search`. Reverse-engineered live: cookies (`jobs=`, `jssid=`, AWSALB stickiness) captured via denylist; payload requires mandatory `format` field (without it the API silently returns 0 records). Paginates up to 8 pages, early-exit on PM-hits collapse, accepts `stats` param. EA scraper fix is a one-line regex swap: `list-item-jobPostingLocation` selector was matching only 9/20 articles per page; switched to `<span class="list-item-location">` which is present on every article (recovers ~10 jobs per page from empty-location silent drops). Meta and TikTok get hostname guards returning `[]` so the stealth tier handles them — no Puppeteer launch wasted on a known-impossible scrape.
+
+- **PR #7 — Phase 3: PM_KEYWORDS expansion + Tesla/Wayfair yield.** Added `"product management"` to `PM_KEYWORDS`. Today's admin email showed AmEx at 1 PM after the Oracle HCM swap landed, despite the API returning 234 keyword matches. Root cause: AmEx (and JPMorgan, Oracle) put the function name in titles ("Senior Manager - Product Management", "Senior Associate-Digital Product Management") not the role name. Tesla (Akamai 403 + Workday 422 on every subdomain/board combination) and Wayfair (Workday HTTP 401 auth-gated tenant) got the Meta/TikTok yield-to-stealth treatment.
+
+- **PR #8 — Phase 4: Shopify + eBay.** New `scrapeShopifyCareers` parses Shopify's Remix SPA. Standard Ashby hosted API returns null for `shopify`. Shopify server-renders 84 jobs into a React Flight streaming payload via `window.__reactRouterContext.streamController.enqueue(...)`. The payload is a deduplicated JSON array where field names appear once as string literals and job objects reference them by index. Parser resolves key indices dynamically (so CDN redeploys don't break it). `matchAll` on enqueue() chunks handles future stream-chunking. New generic `scrapePhenomCareers(baseDomain, label, stats?)` + `scrapeEbayCareers` wrapper parses Phenom's inline DDO between `phApp.ddo = ` and `; phApp.experimentData =`. Acknowledged limitation: Phenom only server-renders 10 jobs per page; full pagination is client-side Vue. For eBay's totalHits=455 we capture 3-4 US PMs first-page. `stats.totalScanned = totalHits` prevents the self-healing tier from misclassifying as broken.
+
+**Catalog cleanup: hard-deleted 4 unrecoverables (0 subs, FK CASCADE):** Color Health (CareerPuck unsupported, healthcare-only postings), Allbirds (hiring contraction, ~3 company-wide openings), Solana Labs (Getro ATS unsupported), Splunk (now Cisco subsidiary, Phenom ATS, hard-delete chosen over Phenom port since 0 subs). Shopify suppressed pre-PR-8, then re-enabled when PR #8 landed.
+
+**DB swaps applied via Supabase MCP (live, no migrations):** AmEx eightfold→oracle_hcm (`egug.fa.us2/CX_1`), HubSpot greenhouse `hubspot`→`hubspotjobs`, DocuSign iCIMS `careers-docusign`→`uscareers-docusign`, Apple generic→apple, Tesla/Wayfair/Meta/TikTok generic→NULL with hostname guards, Sony Interactive Entertainment generic→greenhouse `sonyinteractiveentertainmentglobal` (2 US PMs confirmed), Pandora generic→iCIMS `careers-siriusxmradio.icims.com` (SiriusXM parent), Zendesk smartrecruiters→workday `zendesk.wd1/zendesk` (163 PM search results), 2K Games greenhouse `2kearlycareers`→`2k`, Kraken ashby `kraken`→`kraken.com` (7 PM-titled jobs), Magic ashby `magic`→`magic.dev` (correct config though 0 PMs today), Amgen workday boardPath `en-US`→`Careers`, BeiGene workday boardPath `en-US`→`BeiGene`, Bolt/Rippling cleared to NULL for re-discovery, Shopify→shopify, eBay NULL→phenom (`https://jobs.ebayinc.com`).
+
+**Verified next-day:** Apple landed 35 PMs (quality 93/100, in predicted range 30-60), Skydio 5, Confluent 4, Decagon 4, Whatnot 3, Zendesk 2, Kraken 2, Character.AI 2, 2K Games 1, BeiGene 1, Lemonade 1, Pinecone 1, Supabase 1.
+
+### Alternatives considered
+
+- **Single big PR vs phased PRs.** Considered combining all four phases into one PR. Rejected because (a) each phase has independent verification paths (different scraper APIs to curl-test), (b) the silent-zero safety net is foundational and worth landing first standalone so the rest builds on a known-clean base, (c) smaller PRs let `change-reviewer` give focused feedback per scope, (d) one revert button per phase is safer than one mega-revert.
+
+- **Build all scrapers serially in one session vs parallel agents.** Considered sequential build. Rejected: scraper-doctor + catalog-scout were designed for this. Parallel agents for Apple, EA, Meta, TikTok, ATS rediscovery (phase 2) and Shopify + eBay (phase 4) cut multi-hour work to minutes. The user's prior-art interjection mid-flight cancelled two of the phase-2 agents' work (Meta + TikTok dropped entirely), validating that agent output is "propose," not "ship." Net agent ROI: ~70% of agent output integrated, the rest correctly discarded.
+
+- **Trust agent's Apple reverse-engineering over user's prior art.** User mid-flight pointed at anon767/maangcrawler (the prior-art reference). Agent had already reverse-engineered `/api/v1/CSRFToken` + `/api/v1/search`. Live curl tested both: prior-art endpoints (`/api/csrfToken` + `/api/role/search`) returned 404 / 301-to-pagenotfound; agent's endpoints returned valid JSON with real results once the mandatory `format` field was added. Resolution: trust verified curl over cited prior-art when they conflict.
+
+- **Build the Shopify Ashby-embed scraper vs accept it as un-scrapable.** Considered marking Shopify permanently `is_verified_zero=true`. Rejected: Shopify is a major hiring company with 1 active subscriber. The agent found a clean parse path (React Flight RSC streaming) and verified live (84 jobs in payload). Worth the ~half-session cost.
+
+- **Build full Phenom Vue pagination for eBay vs accept the 10-job first-page cap.** Considered building a stealth-rendered Vue crawl for eBay (would capture all 150 US PMs instead of 3-4). Rejected for now: stealth-rendered Vue is brittle, slow, and the 10-job sample is enough to unblock auto-disable and surface real openings. Documented in code as a deliberate trade-off. If eBay subscribers complain, the path forward is clear: extend `scrapePhenomCareers` to optionally do a stealth follow-up for the remaining pages.
+
+- **Hard-delete Splunk vs keep suppressed for future Phenom port.** Considered keeping Splunk in catalog with `is_verified_zero=true` + `auto_disabled=true` so it'd light up when we built Phenom support. Rejected: Splunk has 0 subscribers and Phenom got built tonight (for eBay) but Splunk redirects to a Cisco-tenant Phenom that we'd need a separate DB row for. Hard-delete is reversible by re-adding; suppression-forever adds visual noise. Same logic for Solana Labs (Getro is still unsupported).
+
+- **Cisco/Splunk auto-unblock via the new generic `scrapePhenomCareers`.** Considered adding Cisco to the catalog as the first non-eBay Phenom user. Rejected: out of scope for this PR; Cisco wasn't in the audit list. Cisco is a 2-line DB add when there's actual user demand. Phenom scraper is generic-by-design for exactly this scenario.
+
+### Key insights
+
+- **The unverified-zeros section is what closes the silent-zero failure class.** A 0-PM scrape with `success` status is structurally indistinguishable from a broken scraper from `dailyCheck`'s perspective. The fix isn't "make the scraper smarter" — it's "force every 0-PM company through human verification once." `is_verified_zero=true` is admin's signature; `is_verified=true` is the system's signature when a scrape returns >0. Both are one-way ratchets relative to the scraper. The daily email noise during backlog triage is the intended UX, not a bug — silence is what got us into this mess.
+
+- **Prior art is for orientation, not blind trust.** Apple's anon767/maangcrawler reference at `/api/csrfToken` is stale (the API was moved to `/api/v1/CSRFToken`). The agent's reverse-engineering caught the current state. The right discipline is: cite prior art as a starting hypothesis, always verify with live curl before committing. Saved real time on eBay (strata-harvest's Phenom parser was usable as a template), lost a few minutes on Apple when the prior-art endpoints proved stale — net positive.
+
+- **Agents propose, main thread verifies, change-reviewer audits before merge.** This pattern caught 6 real ship-blockers tonight (Apple cookie allowlist too narrow → switched to denylist; Apple missing stats param → stealth would mis-trigger on legit-zero days; Meta hostname endsWith too loose → tightened; Shopify deref had negative-ref edge case → fixed; Shopify single-chunk regex risked silent under-count → matchAll; Phenom throw inconsistent with DDO-not-found branch → return [] for symmetric handling). 0 production regressions shipped. The cost is one extra agent invocation per PR; the benefit is high.
+
+- **`stats.totalScanned` is the linchpin of the 3-tier self-healing model.** Without it, a legit-zero day on Apple, Phenom, or any new scraper triggers stealth fallback unnecessarily (wasting a Puppeteer launch). Both Apple and Phenom write the API's reported total to `stats.totalScanned` so `dailyCheck` can distinguish "source said 0" (legit, don't retry) from "source threw or never responded" (broken, run tier 2/3). This was added to the model on 2026-05-11 as an "obvious in retrospect" infrastructure improvement; every new scraper since has paid it back.
+
+- **Hard-delete is reversible; permanent suppression is invisible.** For unrecoverables (Color Health on CareerPuck, Allbirds in hiring contraction, Solana on Getro, Splunk-via-Cisco on Phenom), hard-delete is cleaner than `is_verified_zero=true` + `auto_disabled=true`. The catalog visibly shrinks; if circumstances change, re-add via `/api/companies` admin endpoint. Suppression-forever just creates a slowly-growing pile of "things we gave up on" that nobody revisits.
+
+- **Catalog hygiene happens during recovery, not during steady-state.** This session deleted 4 companies because the audit forced a per-company decision: "fix or remove?" A company that's been at 0 PMs for months without subscribers had been invisible in the old admin email. The unverified-zeros section makes that decision unavoidable — which is the point. Expect the catalog to oscillate as scrapers break and companies get re-evaluated.
+
+### Files / artifacts
+
+- `backend/src/scraper/scraper.ts` — 3 new functions (Apple, Shopify, Phenom), 1 generic + 1 wrapper for Phenom, 4 new hostname guards (Apple, Meta, TikTok, Tesla, Wayfair, Shopify, eBay), 2 new switch cases (apple, shopify, phenom), Ashby title-filter swap, EA regex swap, PM_KEYWORDS += "product management"
+- `backend/src/jobs/dailyCheck.ts` — 7 new CUSTOM_SCRAPER_HOSTS entries (apple.com, metacareers.com, tiktok.com, tesla.com, wayfair.com, shopify.com, ebayinc.com); unverified-zeros query + handoff to admin digest; is_verified one-way ratchet on success
+- `backend/src/email/sendAlert.ts` — `AdminDigestInput.unverifiedZeros` field + render block, capped at 25 with overflow footer
+- Supabase migration `add_company_verification_columns` — is_verified + is_verified_zero columns + partial index idx_companies_unverified_zero
+- 4 merged PRs: #5 (phase 1), #6 (phase 2), #7 (phase 3), #8 (phase 4) — all squash-merged with branches deleted
+- Catalog: 220 → 216 companies (deleted Color Health, Allbirds, Solana Labs, Splunk)
+
+### Next batch — open ideas
+
+- **Eval set for step 8 (ground-truth check):** ~25 manually-counted companies as calibration set, then build the weekly Claude Code scheduled remote agent that visits each company's careers URL (JS-rendered) and diffs titles against our scraper's output at 90% threshold. The structural fix for "we are auditing ourselves" — independent second source.
+- **Stealth-rendered Vue follow-up for Phenom** if eBay subscribers grow and 3-4 first-page PMs isn't enough. Generic enough to apply to any Phenom tenant.
+- **CareerPuck scraper** if Color Health's category becomes important (low priority — only one company hit it).
+- **Getro scraper** if Solana Labs comes back into scope, or if other crypto/web3 catalog adds use Getro.
+- **Cisco as the second Phenom test.** Adds the generic scraper's first non-eBay user. ~2-line DB add when user wants it.
+- **The unverified-zeros backlog triage.** ~49 companies remain in the section after tonight's work. Each needs admin sign-off (is_verified_zero=true) or scraper investigation. Recurring weekly task until backlog drains.
