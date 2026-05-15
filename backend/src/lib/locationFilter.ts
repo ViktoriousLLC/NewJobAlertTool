@@ -13,6 +13,7 @@ const US_PATTERNS = [
   /Portland/i, /Denver/i, /Atlanta/i, /Miami/i, /Dallas/i, /Houston/i, /Phoenix/i,
   /San Diego/i, /Pittsburgh/i, /Raleigh/i, /Durham/i, /Nashville/i, /Minneapolis/i,
   /United States/i, /USA/i, /\bUS\b/, /Remote/i,
+  /\bNorth America\b/i,  // "Remote, North America" — typically US-eligible
 ];
 
 // Non-US location patterns — if ANY match, the job is definitely not US
@@ -63,6 +64,14 @@ const US_STATES = new Set([
 export function isUSLocation(location: string | null): boolean {
   if (!location || !location.trim()) return false; // Unknown/empty location — exclude by default (safer)
 
+  // EARLY SHORT-CIRCUIT: an explicit "United States" or "USA" mention always wins,
+  // even if the same string also names a non-US country (e.g., "United States or
+  // Canada, 100% remote"). Without this, NON_US_PATTERNS sees "Canada" first and
+  // rejects an otherwise US-eligible role. Observed at Sumo Logic 2026-05-15.
+  if (/\bUnited States\b/i.test(location) || /\bUSA\b/i.test(location)) {
+    return true;
+  }
+
   // Check for standardized "City, Region, CountryCode" format (Eightfold, etc.)
   // US locations end with ", US"; any other 2-letter code is non-US.
   // Split on pipe for multi-location strings (e.g., "Bengaluru, KA, IN | Hyderabad, TS, IN")
@@ -88,7 +97,7 @@ export function isUSLocation(location: string | null): boolean {
   }
 
   // Third check: matches a known US pattern
-  // e.g., "San Francisco, CA" or "Remote" or "United States"
+  // e.g., "San Francisco, CA" or "Remote" or "United States" or "North America"
   if (US_PATTERNS.some((pattern) => pattern.test(location))) {
     return true;
   }
