@@ -1154,118 +1154,115 @@ async function scrapeRedditCareers(): Promise<ScrapedJob[]> {
 }
 
 /**
- * EA (Electronic Arts) uses Avature ATS with server-rendered HTML and offset pagination.
- * Searches for "product manager" keyword, paginates through all results (20 per page),
- * extracts job title/URL/location from HTML attributes, then filters by PM_KEYWORDS.
+ * EA (Electronic Arts) — Avature ATS with server-rendered HTML pages of 20 jobs each.
+ *
+ * Parsing model: split the HTML by `<article` to get per-job chunks, then extract
+ * title (data-jobname), URL (first JobDetail href), and one or more location spans
+ * from within each chunk. This guarantees title↔URL↔location pair correctly within
+ * the same DOM block — the old approach ran three independent regexes over the
+ * whole page and zipped by index, which misaligned whenever any of the three counts
+ * drifted (a real failure mode after EA template tweaks).
+ *
+ * Pagination: EA removed the "of N results" banner from the markup, so the old
+ * total-driven pagination loop never ran (totalResults = 0 → no pages 2+ scraped).
+ * Now we paginate-until-empty: stop when a page returns zero NEW URLs OR fewer than
+ * perPage results.
  */
-async function scrapeEACareers(): Promise<ScrapedJob[]> {
+async function scrapeEACareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
   const baseUrl = "https://jobs.ea.com/en_US/careers/SearchJobs/product%20manager";
   const perPage = 20;
+  const MAX_PAGES = 20; // 400 results scanned max
   const allJobs: ScrapedJob[] = [];
   const seenUrls = new Set<string>();
-  let offset = 0;
-  let totalResults = 0;
 
   const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Accept: "text/html",
   };
 
-  // First page to get total count
-  const firstPageUrl = `${baseUrl}?jobRecordsPerPage=${perPage}&jobOffset=0`;
-  const firstRes = await fetch(firstPageUrl, { headers });
-  const firstHtml = await firstRes.text();
+  function parseArticles(html: string): ScrapedJob[] {
+    // chunks[0] is everything before the first <article>; real articles start at chunks[1].
+    const chunks = html.split(/<article\b/);
+    const jobs: ScrapedJob[] = [];
 
-  // Extract total results: "1-20 of 99 results"
-  const totalMatch = firstHtml.match(/of\s+(\d+)\s+results/);
-  if (totalMatch) {
-    totalResults = parseInt(totalMatch[1], 10);
-  }
+    for (let i = 1; i < chunks.length; i++) {
+      const chunk = chunks[i];
 
-  console.log(`EA: Found ${totalResults} total search results for "product manager"`);
-
-  function extractJobsFromHtml(html: string) {
-    // Extract job URLs: href="https://jobs.ea.com/en_US/careers/JobDetail/{slug}/{id}"
-    const urlRegex = /href="(https:\/\/jobs\.ea\.com\/en_US\/careers\/JobDetail\/[^"]+)"/g;
-    const urls: string[] = [];
-    let urlMatch;
-    while ((urlMatch = urlRegex.exec(html)) !== null) {
-      const url = urlMatch[1];
-      if (!urls.includes(url)) {
-        urls.push(url);
-      }
-    }
-
-    // Extract job titles: data-jobname="{title}"
-    const titleRegex = /data-jobname="([^"]*)"/g;
-    const titles: string[] = [];
-    let titleMatch;
-    while ((titleMatch = titleRegex.exec(html)) !== null) {
-      // Decode HTML entities
+      const titleMatch = chunk.match(/data-jobname="([^"]*)"/);
+      if (!titleMatch) continue;
       const title = titleMatch[1]
         .replace(/&amp;amp;/g, "&")
         .replace(/&amp;/g, "&")
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
         .replace(/&quot;/g, '"');
-      titles.push(title);
+
+      const urlMatch = chunk.match(
+        /href="(https:\/\/jobs\.ea\.com\/en_US\/careers\/JobDetail\/[^"]+)"/
+      );
+      if (!urlMatch) continue;
+      const url = urlMatch[1];
+
+      // A single article may have one or more location spans (multi-location jobs).
+      // Join them with " | " so the downstream US filter passes if any are US.
+      const locRegex = /<span class="list-item-location">([^<]*)<\/span>/g;
+      const locations: string[] = [];
+      let locMatch;
+      while ((locMatch = locRegex.exec(chunk)) !== null) {
+        locations.push(locMatch[1].trim());
+      }
+      const location = locations.join(" | ");
+
+      jobs.push({ title, location, urlPath: url });
     }
 
-    // Extract locations from the <span class="list-item-location"> element, which is present
-    // on every job article. The older list-item-jobPostingLocation → list-item-0 pattern only
-    // appeared on multi-location postings (~9/20 per page) and dropped 11 jobs/page to empty,
-    // which isUSLocation rejects.
-    const locRegex = /<span class="list-item-location">([^<]*)<\/span>/g;
-    const locations: string[] = [];
-    let locMatch;
-    while ((locMatch = locRegex.exec(html)) !== null) {
-      locations.push(locMatch[1].trim());
-    }
-
-    // Zip: titles and URLs should be 1:1 (same count), locations might have extras
-    const count = Math.min(urls.length, titles.length);
-    for (let i = 0; i < count; i++) {
-      const url = urls[i];
-      if (seenUrls.has(url)) continue;
-      seenUrls.add(url);
-      allJobs.push({
-        title: titles[i],
-        location: i < locations.length ? locations[i] : "",
-        urlPath: url,
-      });
-    }
+    return jobs;
   }
 
-  // Process first page
-  extractJobsFromHtml(firstHtml);
+  let offset = 0;
+  let totalScanned = 0;
 
-  // Paginate through remaining pages
-  offset = perPage;
-  while (offset < totalResults) {
+  for (let page = 0; page < MAX_PAGES; page++) {
     const pageUrl = `${baseUrl}?jobRecordsPerPage=${perPage}&jobOffset=${offset}`;
-    console.log(`EA: Fetching jobs at offset ${offset}...`);
+    console.log(`EA: fetching offset=${offset}`);
 
     const res = await fetch(pageUrl, { headers });
-    const html = await res.text();
-    const prevCount = allJobs.length;
-    extractJobsFromHtml(html);
+    if (!res.ok) {
+      console.warn(`EA: page at offset=${offset} returned HTTP ${res.status} — stopping pagination`);
+      break;
+    }
 
-    // Stop if no new jobs found (safety valve)
-    if (allJobs.length === prevCount) break;
+    const html = await res.text();
+    const pageJobs = parseArticles(html);
+    totalScanned += pageJobs.length;
+
+    let newThisPage = 0;
+    for (const job of pageJobs) {
+      if (seenUrls.has(job.urlPath)) continue;
+      seenUrls.add(job.urlPath);
+      allJobs.push(job);
+      newThisPage++;
+    }
+
+    // End conditions: page returned 0 new URLs (we've cycled) OR fewer than perPage results (last page).
+    if (newThisPage === 0) break;
+    if (pageJobs.length < perPage) break;
 
     offset += perPage;
-
-    // Respectful delay
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  // Filter for PM roles
+  if (stats) stats.totalScanned = totalScanned;
+
   const pmJobs = allJobs.filter((job) => {
     const lowerTitle = job.title.toLowerCase();
     return PM_KEYWORDS.some((kw) => lowerTitle.includes(kw));
   });
 
-  console.log(`EA: Scraped ${allJobs.length} jobs from search, ${pmJobs.length} after PM keyword filter`);
+  console.log(
+    `EA: scraped ${allJobs.length} jobs across ${Math.ceil(allJobs.length / perPage)} pages, ${pmJobs.length} PM-keyword matches`
+  );
   return pmJobs;
 }
 
@@ -3004,7 +3001,7 @@ export async function scrapeCompanyCareers(
   // Custom scrapers — bespoke logic, not ATS-backed
   if (hostname.includes("ea.com") || hostname.includes("jobs.ea.com")) {
     console.log("Detected EA careers page, using Avature HTML scraper");
-    return scrapeEACareers();
+    return scrapeEACareers(stats);
   }
   if (hostname.includes("atlassian.com")) {
     console.log("Detected Atlassian careers page, using API scraper");
