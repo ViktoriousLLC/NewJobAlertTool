@@ -405,14 +405,22 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
       return;
     }
 
-    // Detect ATS platform
+    // Detect ATS platform. Track HOW we found it so we can surface confidence
+    // to the user — "ats_known" = clean hostname/embed match, "ats_discovery" =
+    // we guessed via broadATSDiscovery, "url_discovery" = we tried common
+    // careers URL paths, "stealth_pending" = headed to the triage tier (not
+    // resolved synchronously here).
     let discoveredCareersUrl: string | undefined;
     let platformType: string | null = null;
     let platformConfig: Record<string, string> = {};
+    let detectionMethod: "ats_known" | "ats_discovery" | "url_discovery" | "none" = "none";
     try {
       const detection = await detectPlatform(careers_url);
       platformType = detection.platformType;
       platformConfig = detection.platformConfig;
+      if (platformType && platformType !== "generic") {
+        detectionMethod = "ats_known";
+      }
     } catch (err) {
       console.error("Platform detection failed during check:", err);
     }
@@ -429,6 +437,7 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
       res.json({
         status: "error",
         company_name: companyName,
+        detection_method: detectionMethod,
         error: `Scrape failed: ${err instanceof Error ? err.message : "unknown error"}`,
       });
       return;
@@ -450,6 +459,7 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
             try {
               rawJobs = await scrapeCompanyCareers(careers_url, platformType, platformConfig);
               console.log(`Check: Re-scrape found ${rawJobs.length} raw jobs`);
+              if (rawJobs.length > 0) detectionMethod = "ats_discovery";
             } catch (err) {
               console.error("Re-scrape after broad discovery failed:", err);
             }
@@ -470,17 +480,21 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
             platformType = urlDiscovery.platformType;
             platformConfig = urlDiscovery.platformConfig;
             discoveredCareersUrl = urlDiscovery.careers_url;
+            detectionMethod = "url_discovery";
           }
         } catch (err) {
           console.error("Common careers URL discovery failed:", err);
         }
       }
 
-      // If still 0 jobs after all fallbacks, return error
+      // If still 0 jobs after all fallbacks, return error.
+      // Future: queue to report-triage agent inbox so a paid user gets a
+      // deep-dive report instead of a hard "no". For now, surface as error.
       if (rawJobs.length === 0) {
         res.json({
           status: "error",
           company_name: companyName,
+          detection_method: "none",
           error: "No job listings found on this page. The URL might be wrong, or the page format isn't supported yet. You can report this using the help button (bottom-right) so we can add support.",
         });
         return;
@@ -497,11 +511,21 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
       location: j.location,
     }));
 
+    // Confidence reflects how we found this. "high" = a known ATS we
+    // routinely scrape. "medium" = we guessed an ATS and it validated.
+    // "experimental" = URL-pattern guess; results may be partial or stale.
+    const confidence: "high" | "medium" | "experimental" =
+      detectionMethod === "ats_known" ? "high" :
+      detectionMethod === "ats_discovery" ? "medium" :
+      "experimental";
+
     res.json({
       status: "preview",
       company_name: companyName,
       platform_type: platformType,
       platform_config: platformConfig,
+      detection_method: detectionMethod,
+      confidence,
       job_count: filteredJobs.length,
       total_jobs_found: rawJobs.length,
       sample_jobs: sampleJobs,
