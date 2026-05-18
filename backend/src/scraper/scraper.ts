@@ -2927,6 +2927,360 @@ async function scrapeEbayCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
   return scrapePhenomCareers("https://jobs.ebayinc.com", "eBay", stats);
 }
 
+/**
+ * Generic SAP SuccessFactors career portal scraper.
+ * Works for any SF tenant that exposes a server-rendered search page at
+ * {baseUrl}/search?q=product+manager&startrow=N (25 results/page, standard
+ * SF template). Confirmed: EY (careers.ey.com).
+ */
+async function scrapeSuccessFactorsCareers(
+  baseUrl: string,
+  companyLabel: string,
+  stats?: ScrapeStats
+): Promise<ScrapedJob[]> {
+  console.log(`${companyLabel}: SuccessFactors portal at ${baseUrl}`);
+  const allJobs: ScrapedJob[] = [];
+  const pageSize = 25;
+  const MAX_PAGES = 20;
+  let startRow = 0;
+  let scanned = 0;
+  const seen = new Set<string>();
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const url = `${baseUrl}/search?locale=en_US&q=product+manager${startRow > 0 ? `&startrow=${startRow}` : ""}`;
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      console.warn(`${companyLabel}: SuccessFactors returned ${res.status} — stopping pagination`);
+      break;
+    }
+    const html = await res.text();
+
+    const rowPattern = /<tr[^>]+class="data-row"[^>]*>([\s\S]*?)<\/tr>/g;
+    let rowMatch;
+    let rowsOnPage = 0;
+    while ((rowMatch = rowPattern.exec(html)) !== null) {
+      const row = rowMatch[1];
+      const titleMatch = row.match(/class="jobTitle-link"[^>]*>([\s\S]*?)<\/a>/);
+      const hrefMatch = row.match(/href="([^"]+)"/);
+      if (!titleMatch || !hrefMatch) continue;
+
+      const locMatch = row.match(/<span[^>]+class="jobLocation"[^>]*>([\s\S]*?)<\/span>/);
+      const locRaw = locMatch ? locMatch[1].replace(/<[^>]+>/g, "").trim() : "";
+      const location = locRaw.replace(/\+\d+\s*more[^,]*/gi, "").replace(/\s+/g, " ").trim();
+
+      const href = hrefMatch[1].startsWith("http") ? hrefMatch[1] : `${baseUrl}${hrefMatch[1]}`;
+      if (seen.has(href)) continue;
+      seen.add(href);
+
+      allJobs.push({
+        title: titleMatch[1].trim(),
+        location,
+        urlPath: href,
+      });
+      rowsOnPage++;
+    }
+    scanned += rowsOnPage;
+    if (rowsOnPage < pageSize) break;
+    startRow += pageSize;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  if (stats) stats.totalScanned = scanned;
+  console.log(`${companyLabel}: SuccessFactors yielded ${allJobs.length} jobs`);
+  return allJobs;
+}
+
+/**
+ * KPMG US careers — kpmguscareers.com is a custom WordPress site backed by a
+ * bespoke PHP search endpoint that returns JSON with HTML job listings.
+ * NOT a SuccessFactors instance (despite KPMG's SSO referencing SF for internal
+ * employees). Scraper is KPMG-specific.
+ */
+async function scrapeKPMGCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
+  console.log("KPMG: Scraping WordPress job board");
+  const BASE = "https://www.kpmguscareers.com";
+  const SEARCH_URL = `${BASE}/wp-content/themes/understrap-child-main/page-templates/google/get-jobs.php`;
+  const allJobs: ScrapedJob[] = [];
+  const seen = new Set<string>();
+  let scanned = 0;
+
+  for (let page = 1; page <= 20; page++) {
+    const url = `${SEARCH_URL}?ajax=1&keyword=product+manager&spage=${page}`;
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Referer: `${BASE}/job-search/`,
+        Accept: "application/json, text/javascript, */*",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      console.warn(`KPMG: get-jobs returned ${res.status} — stopping`);
+      break;
+    }
+    const data = (await res.json()) as {
+      postings?: { jobs?: string; size?: number };
+      pagination?: string;
+    };
+    if (!data.postings?.jobs) break;
+
+    const html = data.postings.jobs;
+    scanned += (html.match(/<a href="\/jobdetail\//g) || []).length;
+
+    const cardPattern = /<a href="(\/jobdetail\/\?jobId=[^"]+)"[^>]*>[\s\S]*?class="h5 text-dark-grey">([\s\S]*?)<\/div>[\s\S]*?class="text-xs text-dark-grey">([\s\S]*?)<\/div>/g;
+    let match;
+    let rowsOnPage = 0;
+    while ((match = cardPattern.exec(html)) !== null) {
+      const [, jobPath, titleRaw, locationRaw] = match;
+      const urlPath = `${BASE}${jobPath}`;
+      if (seen.has(urlPath)) continue;
+      seen.add(urlPath);
+
+      const locationFull = locationRaw.replace(/<[^>]+>/g, "").trim();
+      const pipeParts = locationFull.split("|");
+      const citiesPart = pipeParts.length > 1 ? pipeParts[1].trim() : locationFull;
+      const location = citiesPart.split(";")[0].trim();
+
+      allJobs.push({
+        title: titleRaw.replace(/<[^>]+>/g, "").trim(),
+        location,
+        urlPath,
+      });
+      rowsOnPage++;
+    }
+    if (rowsOnPage === 0) break;
+
+    const hasNextPage = data.pagination
+      ? new RegExp(`data-href="${page + 1}"`).test(data.pagination)
+      : false;
+    if (!hasNextPage) break;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  if (stats) stats.totalScanned = scanned;
+  console.log(`KPMG: Found ${allJobs.length} jobs`);
+  return allJobs;
+}
+
+/**
+ * Goldman Sachs "Higher" — proprietary Next.js SPA with an unauthenticated
+ * GraphQL backend at api-higher.gs.com. CF allows server-side POSTs through.
+ * Confirmed: 816 total jobs, ~61 US in first page.
+ */
+async function scrapeGoldmanSachsCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
+  console.log("Goldman Sachs: Higher GraphQL API");
+  const GS_GRAPHQL_URL = "https://api-higher.gs.com/gateway/api/v1/graphql";
+  const PAGE_SIZE = 100;
+  const allJobs: ScrapedJob[] = [];
+  let pageNumber = 0;
+  let totalCount = Infinity;
+
+  const QUERY = `
+    query GetRoles($searchQueryInput: RoleSearchQueryInput!) {
+      roleSearch(searchQueryInput: $searchQueryInput) {
+        totalCount
+        items {
+          roleId
+          jobTitle
+          locations { primary state country city }
+          status
+        }
+      }
+    }
+  `;
+
+  interface GSLoc { primary: boolean; state: string | null; country: string | null; city: string | null; }
+  interface GSItem { roleId: string; jobTitle: string; locations: GSLoc[]; status: string; }
+
+  while (allJobs.length < totalCount && pageNumber < 20) {
+    const res = await fetch(GS_GRAPHQL_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Origin: "https://higher.gs.com",
+        Referer: "https://higher.gs.com/results",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      },
+      body: JSON.stringify({
+        operationName: "GetRoles",
+        variables: {
+          searchQueryInput: {
+            page: { pageSize: PAGE_SIZE, pageNumber },
+            experiences: ["PROFESSIONAL", "EARLY_CAREER"],
+            searchTerm: "product manager",
+            filters: [],
+          },
+        },
+        query: QUERY,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      console.warn(`Goldman Sachs: GraphQL returned ${res.status} — stopping`);
+      break;
+    }
+    const data = (await res.json()) as {
+      data?: { roleSearch?: { totalCount: number; items: GSItem[] } };
+      errors?: Array<{ message: string }>;
+    };
+    if (data.errors?.length) {
+      console.warn(`Goldman Sachs: GraphQL error: ${data.errors[0].message}`);
+      break;
+    }
+    const roleSearch = data.data?.roleSearch;
+    if (!roleSearch) break;
+
+    totalCount = roleSearch.totalCount;
+    if (roleSearch.items.length === 0) break;
+
+    for (const item of roleSearch.items) {
+      if (item.status !== "POSTED") continue;
+      const primaryLoc = item.locations.find((l) => l.primary) ?? item.locations[0];
+      const location = primaryLoc
+        ? [primaryLoc.city, primaryLoc.state, primaryLoc.country].filter(Boolean).join(", ")
+        : "";
+      allJobs.push({
+        title: item.jobTitle,
+        location,
+        urlPath: `https://higher.gs.com/roles/${item.roleId}`,
+      });
+    }
+
+    pageNumber++;
+    if (allJobs.length >= totalCount) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  if (stats) stats.totalScanned = totalCount === Infinity ? allJobs.length : totalCount;
+  console.log(`Goldman Sachs: ${allJobs.length} jobs (${totalCount === Infinity ? "?" : totalCount} in index)`);
+  return allJobs;
+}
+
+/**
+ * Revolut self-hosted careers (Next.js SSG). CF challenges HTML at /careers
+ * but allows /_next/data/{buildId}/careers.json through. ~681 positions.
+ * The buildId rotates on each Revolut deploy → on 404 we return [] so the
+ * stealth tier can resniff the new buildId.
+ */
+async function scrapeRevolutCareers(buildId: string, stats?: ScrapeStats): Promise<ScrapedJob[]> {
+  const dataUrl = `https://www.revolut.com/_next/data/${buildId}/careers.json`;
+  interface RevolutLoc { name: string; type: string; country: string; }
+  interface RevolutPos { id: string; text: string; locations: RevolutLoc[]; team: string; }
+  let positions: RevolutPos[] = [];
+
+  try {
+    const res = await fetch(dataUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept: "application/json",
+        "x-nextjs-data": "1",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (res.status === 404) {
+      console.warn(`Revolut: _next/data 404 — buildId "${buildId}" is stale. Yield to stealth.`);
+      return [];
+    }
+    if (!res.ok) {
+      console.warn(`Revolut: HTTP ${res.status}`);
+      return [];
+    }
+    const data = (await res.json()) as { pageProps?: { positions?: RevolutPos[] } };
+    positions = data?.pageProps?.positions ?? [];
+  } catch (err) {
+    console.warn("Revolut: fetch failed:", err);
+    return [];
+  }
+
+  if (stats) stats.totalScanned = positions.length;
+  console.log(`Revolut: ${positions.length} positions from _next/data`);
+
+  const pmJobs: ScrapedJob[] = [];
+  for (const pos of positions) {
+    const title = (pos.text ?? "").trim();
+    const lowerTitle = title.toLowerCase();
+    if (!PM_KEYWORDS.some((kw) => lowerTitle.includes(kw))) continue;
+
+    const usLoc = pos.locations?.find((l) => l.country === "United States");
+    const location = usLoc ? usLoc.name : pos.locations?.[0]?.name ?? "";
+
+    pmJobs.push({
+      title,
+      location,
+      urlPath: `https://www.revolut.com/careers/position/${pos.id}`,
+    });
+  }
+
+  console.log(`Revolut: ${pmJobs.length} PM matches`);
+  return pmJobs;
+}
+
+/**
+ * Deel job board (jobs.deel.com/{slug}) — Next.js SPA. Use RSC: 1 header to
+ * get the React Server Components payload which contains all positions as
+ * JSON objects. Generic across Deel customers — Klarna confirmed (106 jobs).
+ */
+async function scrapeDeelCareers(orgSlug: string, label: string, stats?: ScrapeStats): Promise<ScrapedJob[]> {
+  let text: string;
+  try {
+    const res = await fetch(`https://jobs.deel.com/${orgSlug}`, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        RSC: "1",
+        Accept: "text/plain",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      console.warn(`Deel [${label}]: HTTP ${res.status}`);
+      return [];
+    }
+    text = await res.text();
+  } catch (err) {
+    console.warn(`Deel [${label}]: fetch failed:`, err);
+    return [];
+  }
+
+  const JOB_RE = /\{"id":"([0-9a-f-]{36})","jobId":"([0-9a-f-]{36})","title":"([^"]+)"[^}]{0,500}"jobLocations":\[([^\]]*)\]/g;
+  const allRaw: ScrapedJob[] = [];
+  let m: RegExpExecArray | null;
+  const seen = new Set<string>();
+
+  while ((m = JOB_RE.exec(text)) !== null) {
+    const listingId = m[1];
+    const title = m[3];
+    const locationsJson = m[4] ?? "";
+
+    if (seen.has(listingId)) continue;
+    seen.add(listingId);
+
+    const locMatch = locationsJson.match(/"name":"([^"]+)"/);
+    const location = locMatch ? locMatch[1] : "";
+
+    allRaw.push({
+      title: title.trim(),
+      location,
+      urlPath: `https://jobs.deel.com/${orgSlug}/${listingId}`,
+    });
+  }
+
+  if (stats) stats.totalScanned = allRaw.length;
+  console.log(`Deel [${label}]: Found ${allRaw.length} jobs via RSC`);
+  return allRaw;
+}
+
 
 export async function scrapeCompanyCareers(
   careersUrl: string,
@@ -2984,6 +3338,16 @@ export async function scrapeCompanyCareers(
       case "phenom":
         if (platformConfig.baseDomain) {
           return scrapePhenomCareers(platformConfig.baseDomain, label, stats);
+        }
+        break;
+      case "successfactors":
+        if (platformConfig.baseUrl) {
+          return scrapeSuccessFactorsCareers(platformConfig.baseUrl, label, stats);
+        }
+        break;
+      case "revolut":
+        if (platformConfig.buildId) {
+          return scrapeRevolutCareers(platformConfig.buildId, stats);
         }
         break;
       case "custom_api":
@@ -3056,6 +3420,19 @@ export async function scrapeCompanyCareers(
   if (hostname.includes("ebayinc.com")) {
     console.log("Detected eBay careers page (Phenom), using Phenom DDO scraper");
     return scrapeEbayCareers(stats);
+  }
+  if (hostname.includes("higher.gs.com") || hostname === "gs.com" || hostname.endsWith(".gs.com")) {
+    console.log("Detected Goldman Sachs careers page, using Higher GraphQL scraper");
+    return scrapeGoldmanSachsCareers(stats);
+  }
+  if (hostname === "jobs.deel.com") {
+    const deelSlug = new URL(careersUrl).pathname.replace(/^\//, "").split("/")[0];
+    console.log(`Detected Deel job board (slug=${deelSlug}), using RSC scraper`);
+    return scrapeDeelCareers(deelSlug, deelSlug, stats);
+  }
+  if (hostname.includes("kpmguscareers.com")) {
+    console.log("Detected KPMG careers page, using WordPress scraper");
+    return scrapeKPMGCareers(stats);
   }
 
   // ATS registry lookup — replaces per-company hostname checks for standard ATS platforms
