@@ -2549,6 +2549,15 @@ export function inferPlatformFromSniffedUrl(
       if (m && m[1]) return { platformType: "smartrecruiters", platformConfig: { company: m[1] } };
     }
 
+    // Revolut: www.revolut.com/_next/data/{buildId}/careers.json
+    // The buildId rotates on every Revolut deploy. The stealth tier sniffs the
+    // real URL after Puppeteer renders /careers, so this branch auto-recovers
+    // the new buildId for the next cron run.
+    if (host === "www.revolut.com") {
+      const m = path.match(/^\/_next\/data\/([A-Za-z0-9_-]+)\/careers\.json$/);
+      if (m && m[1]) return { platformType: "revolut", platformConfig: { buildId: m[1] } };
+    }
+
     return null;
   } catch {
     return null;
@@ -2585,7 +2594,11 @@ function extractJobsFromUnknownJson(root: unknown, baseUrl: string): ScrapedJob[
       // Is this an array of job-like objects?
       if (node.length >= 1 && typeof node[0] === "object") {
         const sample = node[0] as Record<string, unknown>;
-        const titleKey = ["title", "name", "jobTitle", "position", "displayName"].find((k) => typeof sample[k] === "string");
+        // "text" added 2026-05-18 for Revolut's positions array shape.
+        // Side-effect: any future sniffed JSON whose item has a "text" string field
+        // (e.g. button labels in some APIs) may produce false positives. Monitor
+        // for noise in the Monday self-heal log.
+        const titleKey = ["title", "name", "jobTitle", "position", "displayName", "text"].find((k) => typeof sample[k] === "string");
         const idKey = ["id", "jobId", "_id", "identifier", "slug", "absolute_url", "url", "applyUrl"].find((k) => sample[k] !== undefined);
         if (titleKey && idKey) {
           for (const item of node) {
