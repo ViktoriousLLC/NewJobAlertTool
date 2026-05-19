@@ -5,14 +5,11 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { apiFetch } from "@/lib/api";
 import { useToast } from "@/components/Toast";
-import { getBrandColor, getFaviconUrl, softenColor } from "@/lib/brandColors";
+import { getBrandColor, getFaviconUrl, getFaviconFallbackUrl, softenColor } from "@/lib/brandColors";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 const PAGE_SIZE = 50;
 
-// Industries: DB values (left) mapped to display labels (right). Healthcare
-// renamed to "Health-tech" in UI to make the consumer-health + medical-devices
-// scope clearer ("biotech" is the lab-research bucket).
 const INDUSTRIES: { id: string; label: string }[] = [
   { id: "tech", label: "Tech" },
   { id: "fintech", label: "Fintech" },
@@ -26,7 +23,6 @@ const INDUSTRIES: { id: string; label: string }[] = [
   { id: "healthcare", label: "Health-tech" },
 ];
 
-// Sorted junior → director (per user feedback: low-to-high seniority).
 type LevelId = "early" | "mid" | "director";
 const LEVELS: { id: LevelId; label: string }[] = [
   { id: "early", label: "Junior" },
@@ -40,9 +36,6 @@ const LEVEL_PILL: Record<LevelId, { bg: string; text: string }> = {
   director: { bg: "rgb(237 233 254)", text: "rgb(109 40 217)" },
 };
 
-// US regions for the location filter. Patterns matched in priority order
-// (cities first, then state names, then abbreviations) — state abbreviations
-// like "WA" are short and need a word-boundary anchor to avoid false matches.
 type RegionId = "west" | "northeast" | "midwest" | "south";
 const REGIONS: { id: RegionId; label: string; stateAbbrs: string[]; stateNames: string[]; cities: string[] }[] = [
   {
@@ -75,6 +68,13 @@ const REGIONS: { id: RegionId; label: string; stateAbbrs: string[]; stateNames: 
   },
 ];
 
+type SortId = "latest" | "oldest" | "company";
+const SORTS: { id: SortId; label: string }[] = [
+  { id: "latest", label: "Latest first" },
+  { id: "oldest", label: "Oldest first" },
+  { id: "company", label: "Company A → Z" },
+];
+
 function detectRegion(location: string | null | undefined): RegionId | null {
   if (!location) return null;
   const loc = location.toLowerCase();
@@ -86,7 +86,6 @@ function detectRegion(location: string | null | undefined): RegionId | null {
       if (loc.includes(name.toLowerCase())) return region.id;
     }
     for (const abbr of region.stateAbbrs) {
-      // Word-boundary match for 2-letter abbreviations
       const re = new RegExp(`\\b${abbr}\\b`);
       if (re.test(location)) return region.id;
     }
@@ -117,6 +116,12 @@ interface FeedResponse {
   offset: number;
 }
 
+interface CompanyOption {
+  id: string;
+  name: string;
+  industry: string;
+}
+
 function buildJobUrl(urlPath: string, careersUrl: string): string {
   if (urlPath.startsWith("http")) return urlPath;
   try {
@@ -129,13 +134,13 @@ function buildJobUrl(urlPath: string, careersUrl: string): string {
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   const minutes = Math.floor(ms / 60_000);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return `${days}d`;
   const months = Math.floor(days / 30);
-  return `${months}mo ago`;
+  return `${months}mo`;
 }
 
 export default function JobFeed() {
@@ -150,15 +155,19 @@ export default function JobFeed() {
 
   // Server-side filters
   const [industry, setIndustry] = useState<string | null>(null);
+  const [companyId, setCompanyId] = useState<string | null>(null);
   const [level, setLevel] = useState<LevelId | null>(null);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [includeClosed, setIncludeClosed] = useState(false);
+  const [sort, setSort] = useState<SortId>("latest");
 
-  // Client-side filters (location is computed from the location string,
-  // can't easily be done in SQL without parsing on the backend)
+  // Client-side filters
   const [region, setRegion] = useState<RegionId | null>(null);
   const [city, setCity] = useState("");
+
+  // Company list (for the cascading dropdown)
+  const [allCompanies, setAllCompanies] = useState<CompanyOption[]>([]);
 
   const [isAuthed, setIsAuthed] = useState<boolean>(false);
   const [subscribedCompanyIds, setSubscribedCompanyIds] = useState<Set<string>>(new Set());
@@ -169,6 +178,21 @@ export default function JobFeed() {
     return () => clearTimeout(t);
   }, [search]);
 
+  // Fetch the company list once for the dropdown.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_URL}/api/feed/companies`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: CompanyOption[]) => {
+        if (!cancelled) setAllCompanies(data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Session + subscriptions for the Track button state.
   useEffect(() => {
     let cancelled = false;
     supabase.auth.getSession().then(async ({ data }) => {
@@ -191,6 +215,14 @@ export default function JobFeed() {
     };
   }, []);
 
+  // Reset company selection when industry changes (cascading semantics).
+  useEffect(() => {
+    if (companyId) {
+      const c = allCompanies.find((x) => x.id === companyId);
+      if (industry && c && c.industry !== industry) setCompanyId(null);
+    }
+  }, [industry, companyId, allCompanies]);
+
   const fetchFeed = useCallback(
     async (opts: { reset: boolean; offsetOverride?: number }) => {
       if (opts.reset) setLoading(true);
@@ -199,7 +231,9 @@ export default function JobFeed() {
       const params = new URLSearchParams();
       params.set("limit", String(PAGE_SIZE));
       params.set("offset", String(opts.offsetOverride ?? (opts.reset ? 0 : offset)));
+      params.set("sort", sort);
       if (industry) params.set("industry", industry);
+      if (companyId) params.set("company", companyId);
       if (level) params.set("level", level);
       if (debouncedSearch) params.set("q", debouncedSearch);
       if (includeClosed) params.set("include_closed", "true");
@@ -224,16 +258,16 @@ export default function JobFeed() {
         setLoadingMore(false);
       }
     },
-    [industry, level, debouncedSearch, includeClosed, offset, showToast]
+    [industry, companyId, level, debouncedSearch, includeClosed, sort, offset, showToast]
   );
 
-  // Reset + refetch when server-side filters change
+  // Reset + refetch on server-side filter change
   useEffect(() => {
     fetchFeed({ reset: true, offsetOverride: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [industry, level, debouncedSearch, includeClosed]);
+  }, [industry, companyId, level, debouncedSearch, includeClosed, sort]);
 
-  // Apply client-side filters (region + city) on top of server data
+  // Client-side: region + city narrow further
   const cityLower = city.trim().toLowerCase();
   const visibleJobs = useMemo(() => {
     if (!region && !cityLower) return jobs;
@@ -244,28 +278,34 @@ export default function JobFeed() {
     });
   }, [jobs, region, cityLower]);
 
-  const handleTrack = async (companyId: string, companyName: string) => {
+  // Company dropdown options scoped to the current industry
+  const companyOptions = useMemo(() => {
+    if (!industry) return allCompanies;
+    return allCompanies.filter((c) => c.industry === industry);
+  }, [industry, allCompanies]);
+
+  const handleTrack = async (cid: string, companyName: string) => {
     if (!isAuthed) {
       router.push(`/login?next=${encodeURIComponent("/new-home")}`);
       return;
     }
-    if (subscribedCompanyIds.has(companyId)) return;
-    setTrackingInFlight((prev) => new Set(prev).add(companyId));
+    if (subscribedCompanyIds.has(cid)) return;
+    setTrackingInFlight((prev) => new Set(prev).add(cid));
     try {
       const res = await apiFetch("/api/subscriptions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ company_ids: [companyId] }),
+        body: JSON.stringify({ company_ids: [cid] }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setSubscribedCompanyIds((prev) => new Set(prev).add(companyId));
-      showToast(`Tracking ${companyName}. You'll get an email when they post new PM roles.`);
+      setSubscribedCompanyIds((prev) => new Set(prev).add(cid));
+      showToast(`Tracking ${companyName}. You'll get emails when they post new PM roles.`);
     } catch {
       showToast("Couldn't track this company. Please try again.");
     } finally {
       setTrackingInFlight((prev) => {
         const next = new Set(prev);
-        next.delete(companyId);
+        next.delete(cid);
         return next;
       });
     }
@@ -274,7 +314,6 @@ export default function JobFeed() {
   const hasMore = jobs.length < total;
   const clientFilteredOut = jobs.length - visibleJobs.length;
 
-  // -------- Render --------
   return (
     <div>
       {/* Header */}
@@ -287,39 +326,42 @@ export default function JobFeed() {
             "Loading…"
           ) : (
             <>
-              <span className="font-semibold text-[#1A1A2E]">{total.toLocaleString()}</span> active jobs across <span className="font-semibold text-[#1A1A2E]">243 companies</span> · updated daily at 14:00 UTC
+              <span className="font-semibold text-[#1A1A2E]">{total.toLocaleString()}</span> active jobs across <span className="font-semibold text-[#1A1A2E]">{allCompanies.length || 243}</span> companies · updated daily at 14:00 UTC
             </>
           )}
         </p>
       </div>
 
-      {/* Search — own line */}
+      {/* Filters */}
       <div className="mb-3">
-        <div className="relative max-w-[420px]">
-          <svg
-            className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Search */}
+          <div className="relative w-full sm:w-auto sm:max-w-[280px] sm:flex-1">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Search role title…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
             />
-          </svg>
-          <input
-            type="text"
-            placeholder="Search role title or company…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
-          />
+          </div>
+          {/* Sort dropdown */}
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortId)}
+            className="px-3 py-2 text-[12px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
+            aria-label="Sort"
+          >
+            {SORTS.map((s) => (
+              <option key={s.id} value={s.id}>Sort: {s.label}</option>
+            ))}
+          </select>
         </div>
       </div>
 
-      {/* Level row */}
       <FilterRow label="Level">
         {LEVELS.map((l) => (
           <Chip
@@ -333,11 +375,8 @@ export default function JobFeed() {
         ))}
       </FilterRow>
 
-      {/* Industry row */}
       <FilterRow label="Industry">
-        <Chip active={industry === null} onClick={() => setIndustry(null)} activeBg="#1A1A2E">
-          All
-        </Chip>
+        <Chip active={industry === null} onClick={() => setIndustry(null)} activeBg="#1A1A2E">All</Chip>
         {INDUSTRIES.map((ind) => (
           <Chip
             key={ind.id}
@@ -350,11 +389,34 @@ export default function JobFeed() {
         ))}
       </FilterRow>
 
-      {/* Location row */}
+      <FilterRow label="Company">
+        <select
+          value={companyId || ""}
+          onChange={(e) => setCompanyId(e.target.value || null)}
+          className="px-3 py-1 text-[12px] rounded-full border border-[#E5E7EB] bg-white text-[#1A1A2E] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all max-w-[240px]"
+          aria-label="Company"
+        >
+          <option value="">
+            {industry
+              ? `All ${INDUSTRIES.find((i) => i.id === industry)?.label || industry} companies (${companyOptions.length})`
+              : `All companies (${allCompanies.length})`}
+          </option>
+          {companyOptions.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        {companyId && (
+          <button
+            onClick={() => setCompanyId(null)}
+            className="text-[11px] text-stone-500 hover:text-stone-700 underline"
+          >
+            clear
+          </button>
+        )}
+      </FilterRow>
+
       <FilterRow label="Region">
-        <Chip active={region === null} onClick={() => setRegion(null)} activeBg="#1A1A2E">
-          All US
-        </Chip>
+        <Chip active={region === null} onClick={() => setRegion(null)} activeBg="#1A1A2E">All US</Chip>
         {REGIONS.map((r) => (
           <Chip
             key={r.id}
@@ -374,7 +436,6 @@ export default function JobFeed() {
         />
       </FilterRow>
 
-      {/* Closed-jobs toggle */}
       <div className="mb-5">
         <label className="inline-flex items-center gap-2 text-[12px] text-[#6B7280] cursor-pointer select-none">
           <input
@@ -383,11 +444,11 @@ export default function JobFeed() {
             onChange={(e) => setIncludeClosed(e.target.checked)}
             className="rounded border-stone-300 text-[#0EA5E9] focus:ring-[#0EA5E9]"
           />
-          Include closed jobs (filled or removed in the last 60 days)
+          Include closed jobs (removed in the last 60 days)
         </label>
       </div>
 
-      {/* Job list */}
+      {/* Table */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <div className="animate-pulse flex items-center gap-2 text-stone-500">Loading latest jobs…</div>
@@ -396,68 +457,64 @@ export default function JobFeed() {
         <div className="bg-white rounded-xl border border-stone-200 p-8 text-center">
           <p className="text-stone-600">
             {jobs.length === 0
-              ? "No jobs match these filters. Try clearing the industry, level, or search."
+              ? "No jobs match these filters. Try clearing the industry, company, or search."
               : `${clientFilteredOut} jobs hidden by the region/city filter. Clear or change region to see more.`}
           </p>
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
-          <ul className="divide-y divide-stone-100">
-            {visibleJobs.map((job) => {
-              const isSubscribed = subscribedCompanyIds.has(job.company.id);
-              const isTracking = trackingInFlight.has(job.company.id);
-              const brandColor = getBrandColor(job.company.name);
-              const softBg = softenColor(brandColor, 0.92);
-              const favicon = getFaviconUrl(job.company.name, job.company.careers_url);
-              const industryLabel = INDUSTRIES.find((i) => i.id === job.company.industry)?.label || job.company.industry;
-              const isClosed = job.status === "removed";
-
-              return (
-                <li
-                  key={job.id}
-                  className={`px-4 sm:px-5 py-3.5 hover:bg-[#F8FAFC] transition-colors ${isClosed ? "opacity-60" : ""}`}
-                >
-                  <div className="flex items-start gap-3">
-                    <div className="shrink-0 mt-0.5">
-                      <div
-                        className="w-9 h-9 rounded-lg flex items-center justify-center overflow-hidden border"
-                        style={{ backgroundColor: softBg, borderColor: softenColor(brandColor, 0.75) }}
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={favicon}
-                          alt=""
-                          width={20}
-                          height={20}
-                          className="rounded"
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.display = "none";
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                        <span className="font-semibold text-[14px] text-[#1A1A2E]">{job.company.name}</span>
-                        <span className="text-[11px] text-stone-400 uppercase tracking-wide">{industryLabel}</span>
-                        {isClosed && (
-                          <span className="text-[11px] text-red-500 uppercase tracking-wide font-semibold">closed</span>
-                        )}
-                        <span className="text-[12px] text-stone-400 ml-auto">{timeAgo(job.firstSeenAt)}</span>
-                      </div>
-                      <a
-                        href={buildJobUrl(job.urlPath, job.company.careers_url)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block mt-0.5 text-[15px] text-[#0EA5E9] hover:underline font-medium leading-snug"
-                      >
-                        {job.title}
-                      </a>
-                      <div className="flex flex-wrap items-center gap-2 mt-1.5 text-[12px] text-stone-500">
-                        {job.level && (
+          <div className="overflow-x-auto">
+            <table className="w-full table-fixed min-w-[800px]">
+              <colgroup>
+                <col className="w-[18%]" />
+                <col className="w-[36%]" />
+                <col className="w-[20%]" />
+                <col className="w-[8%]" />
+                <col className="w-[8%]" />
+                <col className="w-[10%]" />
+              </colgroup>
+              <thead>
+                <tr className="border-b border-stone-200 bg-[#F8FAFC]">
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Company</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Title</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Location</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Level</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Posted</th>
+                  <th className="text-right px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Track</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-stone-100">
+                {visibleJobs.map((job) => {
+                  const isSubscribed = subscribedCompanyIds.has(job.company.id);
+                  const isTracking = trackingInFlight.has(job.company.id);
+                  const isClosed = job.status === "removed";
+                  return (
+                    <tr
+                      key={job.id}
+                      className={`hover:bg-[#F8FAFC] transition-colors ${isClosed ? "opacity-60" : ""}`}
+                    >
+                      <td className="px-4 py-3">
+                        <CompanyCell company={job.company} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <a
+                          href={buildJobUrl(job.urlPath, job.company.careers_url)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[14px] text-[#0EA5E9] hover:underline font-medium"
+                          title={job.title}
+                        >
+                          {job.title}
+                          {isClosed && <span className="ml-2 text-[10px] text-red-500 uppercase tracking-wide font-semibold">closed</span>}
+                        </a>
+                      </td>
+                      <td className="px-4 py-3 text-[13px] text-stone-600 truncate" title={job.location || ""}>
+                        {job.location || <span className="text-stone-300">—</span>}
+                      </td>
+                      <td className="px-4 py-3">
+                        {job.level ? (
                           <span
-                            className="px-1.5 py-0.5 rounded text-[11px] font-semibold"
+                            className="px-1.5 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap"
                             style={{
                               backgroundColor: LEVEL_PILL[job.level].bg,
                               color: LEVEL_PILL[job.level].text,
@@ -465,61 +522,34 @@ export default function JobFeed() {
                           >
                             {LEVELS.find((l) => l.id === job.level)?.label}
                           </span>
+                        ) : (
+                          <span className="text-stone-300">—</span>
                         )}
-                        {job.location && (
-                          <span className="inline-flex items-center gap-1">
-                            <svg
-                              className="w-3 h-3 shrink-0"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
-                              />
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
-                              />
-                            </svg>
-                            {job.location}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="shrink-0 flex items-center gap-2 ml-2">
-                      <button
-                        onClick={() => handleTrack(job.company.id, job.company.name)}
-                        disabled={isTracking || isSubscribed}
-                        className={`text-[12px] font-semibold px-2.5 py-1 rounded-md border transition-colors whitespace-nowrap ${
-                          isSubscribed
-                            ? "border-green-200 bg-green-50 text-green-700 cursor-default"
-                            : isTracking
-                            ? "border-stone-200 bg-stone-50 text-stone-400 cursor-wait"
-                            : "border-[#E5E7EB] bg-white text-[#6B7280] hover:bg-[#F8FAFC] hover:text-[#1A1A2E]"
-                        }`}
-                        title={
-                          isSubscribed
-                            ? `You're tracking ${job.company.name}`
-                            : isAuthed
-                            ? `Track ${job.company.name}`
-                            : "Sign in to track this company"
-                        }
-                      >
-                        {isSubscribed ? "✓ Tracking" : isTracking ? "…" : "+ Track"}
-                      </button>
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+                      </td>
+                      <td className="px-4 py-3 text-[12px] text-stone-500 whitespace-nowrap">
+                        {timeAgo(job.firstSeenAt)} ago
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => handleTrack(job.company.id, job.company.name)}
+                          disabled={isTracking || isSubscribed}
+                          className={`text-[12px] font-semibold px-2.5 py-1 rounded-md border transition-colors whitespace-nowrap ${
+                            isSubscribed
+                              ? "border-green-200 bg-green-50 text-green-700 cursor-default"
+                              : isTracking
+                              ? "border-stone-200 bg-stone-50 text-stone-400 cursor-wait"
+                              : "border-[#E5E7EB] bg-white text-[#6B7280] hover:bg-[#F8FAFC] hover:text-[#1A1A2E]"
+                          }`}
+                        >
+                          {isSubscribed ? "✓" : isTracking ? "…" : "+ Track"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
           {hasMore && (
             <div className="px-4 py-3 border-t border-stone-100 text-center">
               <button
@@ -537,7 +567,55 @@ export default function JobFeed() {
   );
 }
 
-// -------- Small helpers (inline rather than a separate file — single use) --------
+// ------------------------------------------------------------
+// Company cell with tiered logo fallback. Background is always the
+// brand-colored chip with the first letter, so even when both CDNs fail
+// the user sees a visual identifier. Image (DuckDuckGo first, Google
+// second) loads on top via two onError swaps.
+// ------------------------------------------------------------
+function CompanyCell({ company }: { company: { id: string; name: string; careers_url: string; industry: string } }) {
+  const brand = getBrandColor(company.name);
+  const softBg = softenColor(brand, 0.82);
+  const primaryUrl = getFaviconUrl(company.name, company.careers_url);
+  const fallbackUrl = getFaviconFallbackUrl(company.name, company.careers_url);
+  const initial = company.name.trim().charAt(0).toUpperCase();
+  const industryLabel = INDUSTRIES.find((i) => i.id === company.industry)?.label || company.industry;
+
+  return (
+    <div className="flex items-center gap-2.5 min-w-0">
+      <div
+        className="relative shrink-0 w-7 h-7 rounded-md flex items-center justify-center overflow-hidden border"
+        style={{ backgroundColor: softBg, borderColor: softenColor(brand, 0.65) }}
+      >
+        {/* Always-visible chip background */}
+        <span className="text-[11px] font-bold" style={{ color: brand }}>{initial}</span>
+        {/* Logo image floats on top; on error swaps source, then disappears */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={primaryUrl}
+          alt=""
+          width={28}
+          height={28}
+          className="absolute inset-0 w-full h-full object-cover"
+          referrerPolicy="no-referrer"
+          onError={(e) => {
+            const img = e.currentTarget as HTMLImageElement & { dataset: DOMStringMap };
+            if (img.dataset.fallback !== "1") {
+              img.dataset.fallback = "1";
+              img.src = fallbackUrl;
+            } else {
+              img.style.display = "none";
+            }
+          }}
+        />
+      </div>
+      <div className="min-w-0">
+        <div className="text-[13px] font-bold text-[#1A1A2E] truncate" title={company.name}>{company.name}</div>
+        <div className="text-[10px] text-stone-400 uppercase tracking-wide truncate">{industryLabel}</div>
+      </div>
+    </div>
+  );
+}
 
 function FilterRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -563,9 +641,7 @@ function Chip({
     <button
       onClick={onClick}
       className={`px-3 py-1 text-[12px] font-medium rounded-full border transition-colors ${
-        active
-          ? "border-transparent text-white"
-          : "bg-white border-[#E5E7EB] text-[#6B7280] hover:bg-[#F8FAFC]"
+        active ? "border-transparent text-white" : "bg-white border-[#E5E7EB] text-[#6B7280] hover:bg-[#F8FAFC]"
       }`}
       style={active && activeBg ? { backgroundColor: activeBg } : undefined}
     >
