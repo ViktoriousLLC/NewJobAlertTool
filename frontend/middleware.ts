@@ -35,23 +35,34 @@ export async function middleware(request: NextRequest) {
 
   const user = session?.user ?? null;
 
-  // If authenticated and on login page, redirect to dashboard.
-  // Honor the ?next= param when it's a safe same-origin relative path so
-  // /login?next=/new-home actually lands the user back on /new-home after
-  // sign-in. Anything that doesn't start with "/" (or starts with "//", which
-  // is protocol-relative) falls back to "/" — prevents open-redirect abuse.
+  // Helper: a NextResponse.redirect(...) is a fresh response and does NOT
+  // inherit the cookies that Supabase's setAll callback already wrote onto
+  // supabaseResponse. If we return a bare redirect, the refreshed session
+  // cookies never reach the browser → next request the middleware sees no
+  // user → user gets bounced to /login. This is the documented Supabase
+  // SSR pitfall ("browser and server go out of sync, session terminates
+  // prematurely"). Always route redirects through this helper so the
+  // refreshed cookies ride along.
+  function redirectPreservingSession(url: URL) {
+    const redirect = NextResponse.redirect(url);
+    supabaseResponse.cookies.getAll().forEach((cookie) => {
+      redirect.cookies.set(cookie);
+    });
+    return redirect;
+  }
+
+  // If authenticated and on login page, redirect to ?next= if safe, else /.
   if (user && request.nextUrl.pathname.startsWith("/login")) {
     const url = request.nextUrl.clone();
     const next = request.nextUrl.searchParams.get("next");
     const safeNext = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
     url.pathname = safeNext;
     url.search = "";
-    return NextResponse.redirect(url);
+    return redirectPreservingSession(url);
   }
 
-  // If no user and not on a public route, redirect to login.
-  // /new-home is the parallel preview of the job-first feed — public so
-  // unauth visitors can browse and convert via Track-button → login flow.
+  // If no user and not on a public route, redirect to login (and remember
+  // where they came from via ?next=).
   if (
     !user &&
     request.nextUrl.pathname !== "/" &&
@@ -63,11 +74,8 @@ export async function middleware(request: NextRequest) {
   ) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
-    // Preserve where the user was trying to go so the post-login redirect
-    // above can send them back. Without this, signing in from a deep link
-    // dumps you on / regardless of intent.
     url.searchParams.set("next", request.nextUrl.pathname + request.nextUrl.search);
-    return NextResponse.redirect(url);
+    return redirectPreservingSession(url);
   }
 
   return supabaseResponse;
