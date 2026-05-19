@@ -72,7 +72,8 @@ const RECOMMENDATION_SENIORITY_RANK: Record<"director" | "mid" | "early", number
 function pickRecommendations(
   userCompanyIds: string[],
   allCompanies: CompanyWithIndustry[],
-  jobsByCompany: Map<string, RecentJobRow[]>
+  jobsByCompany: Map<string, RecentJobRow[]>,
+  recentlyShownCompanyIds: Set<string>
 ): RecommendedCompany[] {
   if (userCompanyIds.length === 0) return [];
 
@@ -106,17 +107,13 @@ function pickRecommendations(
   const recommendations: RecommendedCompany[] = [];
   const usedCompanyIds = new Set<string>();
 
-  // Rotation: pool top-8 candidates per slot, cycle which `count` appear
-  // based on day-of-month so the email feels fresh even when the underlying
-  // top-job-posters don't change. Day 1 picks slice [0..count); Day 2 picks
-  // [1..count+1); wraps mod pool size. Deterministic — same companies for
-  // every user on a given day, no per-user RNG state needed.
-  const POOL_SIZE = 8;
-  const dayOfMonth = new Date().getUTCDate();
-
+  // Rotation: skip companies featured in the last 7 days (tracked in
+  // recommendation_history). No fixed pool — each day's eligible set is
+  // "all unsubscribed companies in industry, minus recently-shown,
+  // ranked by job count." First-pass picks the top by ranking; if the
+  // unseen pool runs out, allow recently-shown re-fills so the section
+  // doesn't go empty for tiny industries.
   for (const { industry, count } of allocation) {
-    // Pool: companies in this industry the user does NOT track, that posted
-    // PM jobs in the past 7 days (after per-company seniority filtering).
     const allRanked = allCompanies
       .filter((c) => c.industry === industry)
       .filter((c) => !subscribedSet.has(c.id) && !usedCompanyIds.has(c.id))
@@ -135,12 +132,14 @@ function pickRecommendations(
       .filter((entry) => entry.jobs.length > 0)
       .sort((a, b) => b.jobs.length - a.jobs.length);
 
-    const pool = allRanked.slice(0, POOL_SIZE);
-    const candidates: typeof pool = [];
-    if (pool.length > 0) {
-      const start = (dayOfMonth - 1) % pool.length;
-      for (let i = 0; i < count && i < pool.length; i++) {
-        candidates.push(pool[(start + i) % pool.length]);
+    const unseen = allRanked.filter((e) => !recentlyShownCompanyIds.has(e.company.id));
+    const candidates: typeof allRanked = unseen.slice(0, count);
+    if (candidates.length < count) {
+      // Fallback: backfill from recently-shown so the slot isn't empty
+      const seenPool = allRanked.filter((e) => recentlyShownCompanyIds.has(e.company.id));
+      for (const entry of seenPool) {
+        if (candidates.length >= count) break;
+        if (!candidates.includes(entry)) candidates.push(entry);
       }
     }
 
@@ -395,16 +394,17 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       // Get existing active jobs for this company
       const { data: existingJobs } = await supabase
         .from("seen_jobs")
-        .select("id, job_url_path, status, job_title, job_location")
+        .select("id, job_url_path, status, job_title, job_location, last_removed_at")
         .eq("company_id", company.id);
 
-      const existingByPath = new Map<string, { id: string; status: string; title: string; location: string }>();
+      const existingByPath = new Map<string, { id: string; status: string; title: string; location: string; lastRemovedAt: string | null }>();
       for (const j of existingJobs || []) {
         existingByPath.set(j.job_url_path, {
           id: j.id,
           status: j.status,
           title: j.job_title || "",
           location: j.job_location || "",
+          lastRemovedAt: j.last_removed_at || null,
         });
       }
 
@@ -452,7 +452,16 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       // it can't INSERT (already in seen_jobs UNIQUE), the 'removed' branch skips it, the
       // refresh branch skips it (status !== 'active'). Observed at EA where URLs from Feb
       // re-appeared in May with new titles/locations and never showed up in the catalog.
+      // 2-week return rule (PR adding last_removed_at):
+      // A job that's been absent <14d is almost certainly scraper jitter —
+      // don't treat its return as "new" in the email.
+      // A job absent >=14d is plausibly a real re-post by the company —
+      // count it as new so the user sees it.
+      const RETURN_REPOST_DAYS = 14;
+      const REPOST_THRESHOLD_MS = RETURN_REPOST_DAYS * 24 * 60 * 60 * 1000;
+      const nowMs = Date.now();
       const returnedJobs: { title: string; urlPath: string }[] = [];
+      const realReposts: { title: string; urlPath: string }[] = [];
       for (const job of jobs) {
         const existing = existingByPath.get(job.urlPath);
         if (existing && (existing.status === "removed" || existing.status === "archived")) {
@@ -466,17 +475,26 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
             })
             .eq("id", existing.id);
           returnedJobs.push({ title: job.title, urlPath: job.urlPath });
+          // Decide if it qualifies as a real re-post for the email
+          if (existing.lastRemovedAt) {
+            const removedMs = new Date(existing.lastRemovedAt).getTime();
+            if (Number.isFinite(removedMs) && (nowMs - removedMs) >= REPOST_THRESHOLD_MS) {
+              realReposts.push({ title: job.title, urlPath: job.urlPath });
+            }
+          }
+          // No last_removed_at → legacy data without the timestamp; skip from
+          // email (conservative — better to miss than to spam). Future data
+          // populated by the removal-marking step below will give us proper signal.
         }
       }
       if (returnedJobs.length > 0) {
-        // Note: deliberately NOT pushing to `newJobs`. Scraper instability
-        // (jobs disappearing then reappearing) was causing months-old roles
-        // to flag as "new today" in the daily email — diagnosed 2026-05-19
-        // when an OpenAI role first seen 2026-02-26 showed up in today's
-        // "5 new at OpenAI" list. Users see returned jobs in the /new-home
-        // feed (status=active there); they shouldn't pollute the email's
-        // "what's actually new" framing.
-        console.log(`${company.name}: ${returnedJobs.length} job(s) returned (re-activated, NOT included in email's "new")`);
+        console.log(`${company.name}: ${returnedJobs.length} job(s) returned (${realReposts.length} as real re-posts ≥${RETURN_REPOST_DAYS}d absent)`);
+      }
+      if (realReposts.length > 0) {
+        const alertable = realReposts.filter((j) =>
+          passesSeniorityThreshold(j.title, company.min_relevant_seniority)
+        );
+        newJobs.push(...alertable);
       }
 
       // 2.5. Refresh stale title/location on currently-active jobs. EA renames jobs
@@ -507,15 +525,19 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       }
 
       // 3. Missing jobs: in DB as 'active', not in scrape → mark 'removed'
+      //    Also stamp last_removed_at so the 2-week return rule above can
+      //    distinguish real re-posts from scraper jitter when this job
+      //    eventually comes back.
       if (!scrapeReturnedZero) {
         const toRemove = (existingJobs || []).filter(
           (j) => j.status === "active" && !scrapedPaths.has(j.job_url_path)
         );
         if (toRemove.length > 0) {
           const removeIds = toRemove.map((j) => j.id);
+          const nowIso = new Date().toISOString();
           await supabase
             .from("seen_jobs")
-            .update({ status: "removed", status_changed_at: new Date().toISOString() })
+            .update({ status: "removed", status_changed_at: nowIso, last_removed_at: nowIso })
             .in("id", removeIds);
           console.log(`${company.name}: ${toRemove.length} jobs marked as removed`);
         }
@@ -732,12 +754,13 @@ async function sendPerUserAlerts(
 
   const isMonday = new Date().getUTCDay() === 1;
 
-  // Recommendation data (PR #1b): fetched once for the whole batch, reused
-  // per-user. Picks from the pool of companies the user does NOT subscribe
-  // to that posted PM jobs in the past 7 days.
+  // Recommendation data: fetched once for the whole batch, reused per-user.
+  // Picks from the pool of companies the user does NOT subscribe to that
+  // posted PM jobs in the past 7 days. Recently-shown companies (last 7d)
+  // are excluded so the email feels fresh each day.
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const [allCompaniesResult, recentJobsResult] = await Promise.all([
+  const [allCompaniesResult, recentJobsResult, recentShownResult] = await Promise.all([
     supabase
       .from("companies")
       .select("id, name, careers_url, industry, min_relevant_seniority")
@@ -749,7 +772,16 @@ async function sendPerUserAlerts(
       .eq("status", "active")
       .gte("first_seen_at", sevenDaysAgo.toISOString())
       .order("first_seen_at", { ascending: false }),
+    supabase
+      .from("recommendation_history")
+      .select("company_id")
+      .gte("shown_date", new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10)),
   ]);
+
+  const recentlyShownIds = new Set<string>();
+  for (const row of recentShownResult.data || []) {
+    recentlyShownIds.add(row.company_id as string);
+  }
   const allCompaniesWithIndustry: CompanyWithIndustry[] = (allCompaniesResult.data || []).map((c) => ({
     id: c.id as string,
     name: c.name as string,
@@ -770,6 +802,10 @@ async function sendPerUserAlerts(
 
   // Collect all email payloads first, then batch-send via Resend batch API
   const emailPayloads: EmailPayload[] = [];
+  // Track which companies got recommended in this batch so we can record
+  // them in recommendation_history at the end (rotation will exclude them
+  // for the next 7 days).
+  const recommendedThisRun = new Map<string, string | null>(); // companyId -> industry
 
   for (const user of users) {
     if (!user.email) continue;
@@ -790,14 +826,19 @@ async function sendPerUserAlerts(
     const userCompanyIds = userSubsMap.get(user.id) || [];
     if (userCompanyIds.length === 0) continue;
 
-    // Compute recommendations for this user from the cached pool. Done once
-    // per user, reused for both daily and weekly emails. Returns [] if the
-    // user has zero subscriptions or no candidate companies exist.
+    // Compute recommendations for this user. Reused for daily + weekly.
     const recommendations = pickRecommendations(
       userCompanyIds,
       allCompaniesWithIndustry,
-      recentJobsByCompany
+      recentJobsByCompany,
+      recentlyShownIds
     );
+
+    // Record what got recommended so the next 7 days' rotation excludes them.
+    for (const rec of recommendations) {
+      const companyRow = allCompaniesWithIndustry.find((c) => c.name === rec.companyName);
+      if (companyRow) recommendedThisRun.set(companyRow.id, rec.industry);
+    }
 
     if (freq === "weekly") {
       // Weekly digest: fetch jobs from the past 7 days for this user's subscriptions
@@ -825,6 +866,25 @@ async function sendPerUserAlerts(
   console.log(`Sending ${emailPayloads.length} alert emails via batch API...`);
   const sendResult = await sendBatchAlerts(emailPayloads);
   console.log(`Per-user alerts: ${sendResult.sent} sent, ${sendResult.failed} failed`);
+
+  // Record today's recommendations + age out old history (>30d).
+  // Wrapped in try so a history-table failure can't block the cron from
+  // returning the email send result.
+  try {
+    if (recommendedThisRun.size > 0) {
+      const today = new Date().toISOString().slice(0, 10);
+      const rows = Array.from(recommendedThisRun.entries()).map(([company_id, industry]) => ({
+        company_id,
+        shown_date: today,
+        industry,
+      }));
+      await supabase.from("recommendation_history").insert(rows);
+    }
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    await supabase.from("recommendation_history").delete().lt("shown_date", thirtyDaysAgo);
+  } catch (err) {
+    console.error("recommendation_history write/cleanup failed (non-fatal):", err);
+  }
 
   // Email-send failures are surfaced in the admin digest (built at end of run).
   return sendResult;
