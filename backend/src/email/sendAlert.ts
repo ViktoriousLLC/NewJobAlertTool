@@ -366,6 +366,16 @@ export interface AdminDigestInput {
 export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
   if (!process.env.RESEND_API_KEY) return;
 
+  // Kill switch for the admin digest. Set SUPPRESS_ADMIN_DIGEST=true on
+  // Railway to silence this email entirely — useful when a noisy migration
+  // is in progress, or when transitioning to a different reporting layer
+  // (e.g., a future LLM-driven curated push). Default off so legacy
+  // behavior is preserved.
+  if (process.env.SUPPRESS_ADMIN_DIGEST === "true") {
+    console.log("Admin digest: suppressed by SUPPRESS_ADMIN_DIGEST env var");
+    return;
+  }
+
   const hasActionItems =
     input.failedCompanies.length > 0 ||
     input.watchList.length > 0 ||
