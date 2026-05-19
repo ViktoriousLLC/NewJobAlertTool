@@ -6,8 +6,22 @@
 - **DO NOT leave manual steps for the user.** If it can be done via API, CLI, or script — do it yourself.
 - **Push code, deploy, clean DB, re-add companies — all autonomously.** Full access granted.
 - **Execute end-to-end** including deployment and verification. Come back with proof it works, not "next steps."
-- **Never ask before pushing — to a feature branch.** `main` is branch-protected (added 2026-05-14). Push to `claude/<slug>` branches and open PRs with `gh pr create`. The user merges via GitHub.
+- **Never ask before pushing — to a feature branch.** `main` is branch-protected. Push to `claude/<slug>` branches and open PRs with `gh pr create`. The user merges via GitHub.
 - **Session start health check:** At the start of every conversation, query the `companies` table for scrape failures (`last_check_status` containing 'error' or 'quality: 0/100'). If any exist, investigate and fix them immediately before doing anything else. Don't report failures — fix them, push, and show proof.
+
+## Sidecar Docs (READ BEFORE EDITING)
+
+These folders have a `.md` sidecar next to the code. **You MUST `Read` the sidecar before any `Edit`, `Write`, or new file in that folder, once per session.** Not optional. Not "if relevant." A PreToolUse hook in `.claude/settings.json` enforces this and will block the tool call if you skip it.
+
+| When you touch this folder | First read this sidecar |
+|---|---|
+| `backend/src/scraper/` | `backend/src/scraper/SCRAPER.md` |
+| `backend/src/middleware/` | `backend/src/middleware/AUTH.md` |
+| `backend/src/routes/` | `backend/src/routes/ROUTES.md` |
+| `backend/src/jobs/` | `backend/src/jobs/JOBS.md` |
+| `frontend/src/components/` | `frontend/src/components/COMPONENTS.md` |
+
+The sidecars hold subsystem detail (gotchas, platform-specific notes, historical fixes) that doesn't belong in this global file.
 
 ## Architecture
 
@@ -23,7 +37,7 @@
 
 ## Deployment
 
-`main` is branch-protected (GitHub rule set, added 2026-05-14). Direct push to `main` is rejected. Every change goes through a PR.
+`main` is branch-protected. Direct push to `main` is rejected. Every change goes through a PR.
 
 **Workflow:**
 1. Create feature branch: `git checkout -b claude/<slug>`
@@ -41,9 +55,9 @@
 curl -s "https://api.<your-domain>/api/health"   # verify backend after merge
 ```
 
-## Subagents (Claude Code)
+## Subagents
 
-13 specialized agents live in `.claude/agents/`. Full catalog: `.claude/agents/README.md`. Agents are auto-discovered at session start. They propose patches/findings in their output; the main agent handles git ops after user review.
+13 specialized agents in `.claude/agents/`. Full catalog: `.claude/agents/README.md`. Auto-discovered at session start.
 
 | Agent | What it does | Model |
 |---|---|---|
@@ -61,215 +75,38 @@ curl -s "https://api.<your-domain>/api/health"   # verify backend after merge
 | `threat-modeling-expert` | STRIDE on new feature surfaces | opus |
 | `spec-writer` | Feature idea → backlog table spec | sonnet |
 
-**Invoke style:** describe the task ("the Coinbase scraper is broken" → scraper-doctor) or name the agent explicitly. Six more agents identified but deferred until their trigger fires — see `.claude/agents/README.md` deferred section.
+Agents propose patches/findings; the main agent handles git ops after user review.
 
-## Authentication
+## API Endpoints (top-level)
 
-- **Magic link** (no passwords): email → `/auth/confirm` verifies `token_hash` via `verifyOtp()` → JWT in HttpOnly cookies
-- **Legacy PKCE** fallback at `/auth/callback` — same-browser only
-- **Email template** (Supabase Dashboard): `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=magiclink`
-- **Token flow**: Browser can't read HttpOnly cookies → `apiFetch` calls `/api/auth/token` server route → caches in memory
-- **Backend auth**: `requireAuth` middleware does local JWT verification via `SUPABASE_JWT_SECRET` (~0ms), fallback to Supabase API (~150ms)
-- **Data scoping**: Companies are shared catalog. Users subscribe via `user_subscriptions`. Dashboard/jobs filtered by subscription.
-- **Protected routes**: Middleware redirects to `/login` except `/`, `/auth/callback`, `/auth/confirm`, `/privacy`
-- **Env vars needed**: `SUPABASE_ANON_KEY` + `SUPABASE_SERVICE_KEY` (must be `service_role`, NOT `anon`)
-
-## API Endpoints
-
-All routes require `Authorization: Bearer <token>` unless noted.
+All routes require `Authorization: Bearer <token>` unless noted. See `backend/src/routes/ROUTES.md` for body shapes, validation rules, and the full reference.
 
 ```
-# Companies (user-scoped via subscriptions)
-GET    /api/companies                    — User's subscribed companies
-GET    /api/companies/{id}               — Company + jobs + next_company
-POST   /api/companies/check              — Preview scrape (no DB write). Body: {careers_url, feedback?}
-POST   /api/companies                    — Add company (auto-subscribe, 10/user limit). Body: {name, careers_url, jobs?, platform_type?, platform_config?}
-DELETE /api/companies/{id}               — Unsubscribe only. Admin: ?hard=true deletes from catalog.
-
-# Catalog / Subscriptions
-GET    /api/catalog                      — All companies (no user filter)
-GET    /api/subscriptions                — User's subscribed company IDs
-POST   /api/subscriptions                — Subscribe. Body: {company_ids: []}
-DELETE /api/subscriptions/{companyId}    — Unsubscribe
-
-# Jobs / Favorites
-GET    /api/jobs                         — Active jobs across subscribed companies
-GET    /api/favorites                    — User's favorited job IDs
-POST   /api/favorites/{jobId}            — Star a job
-DELETE /api/favorites/{jobId}            — Unstar
-
-# Preferences / Help / Issues
-GET    /api/preferences                  — Get email prefs (creates default if none)
-PUT    /api/preferences                  — Body: {email_frequency: "daily|weekly|off"}
-POST   /api/help                         — Feedback email + DB. Body: {issue_type, message, page_url}
-POST   /api/issues                       — Scrape issue. Body: {company_id, issue_type, description}
-
-# Compensation (levels.fyi, 3-tier cache: memory 1hr → DB 24hr → live fetch)
-GET    /api/compensation                 — Batch comp for subscribed companies
-GET    /api/compensation/{companyName}   — Single company comp
-
-# Admin (requires ADMIN_EMAIL match)
-GET    /api/admin/stats                  — Users, companies, jobs, errors
-GET    /api/admin/issues                 — Scrape issues + help submissions
-GET    /api/admin/companies              — All companies for management (with hard-delete)
-GET    /api/admin/users                  — User list + subs + email prefs
-
-# Cron (requires Authorization: Bearer <CRON_SECRET>)
-GET    /api/cron/trigger                 — Must await runDailyCheck() — Railway kills idle processes
-         Optional: ?skipEmails=true      — Skips per-user alerts (for safe manual re-runs)
-         Optional: ?forceMondayDigest=true — Forces the Monday-style weekly digest (system health + 7-day self-heal log + npm-audit) on any day. Use with skipEmails for on-demand admin reports.
+GET    /api/companies, /api/companies/{id}, /api/catalog, /api/jobs
+POST   /api/companies/check, /api/companies, /api/subscriptions, /api/favorites/{jobId}, /api/help, /api/issues
+DELETE /api/companies/{id}, /api/subscriptions/{companyId}, /api/favorites/{jobId}
+GET    /api/preferences, PUT /api/preferences
+GET    /api/compensation, /api/compensation/{companyName}
+GET    /api/admin/* (requires ADMIN_EMAIL)
+GET    /api/cron/trigger (requires CRON_SECRET; see JOBS.md)
 ```
 
 ## Database Schema
 
-| Table | Key columns | Notes |
-|-------|------------|-------|
-| `companies` | id, name, careers_url, platform_type, platform_config (jsonb), total_product_jobs, subscriber_count, is_active, last_checked_at, last_check_status, levelsfyi_slug | Shared catalog. `is_active` = subscriber_count > 0. Scraper checks ALL companies regardless. CASCADE deletes jobs. |
-| `seen_jobs` | id, company_id (FK CASCADE), job_url_path, job_title, job_location, first_seen_at, is_baseline, job_level, status, status_changed_at | Status: active → removed → archived (60 days). Unique on (company_id, job_url_path). |
-| `user_subscriptions` | id, user_id, company_id (FK CASCADE) | UNIQUE(user_id, company_id). Links users to tracked companies. |
-| `user_job_favorites` | id, user_id, seen_job_id (FK CASCADE) | UNIQUE(user_id, seen_job_id). Star icons on jobs pages. |
-| `user_new_company_submissions` | id, user_id, company_id | Rate limit: 10/user, admin bypass. |
-| `user_preferences` | id, user_id (UNIQUE), email_frequency | daily/weekly/off. |
-| `comp_cache` | id, company_slug (UNIQUE), data (jsonb), fetched_at | levels.fyi cache, 24hr TTL. No RLS. |
-| `scrape_issues` | id, company_id (FK CASCADE), user_id, issue_type, description | wrong_jobs/missing_jobs/bad_locations/other. |
-| `help_submissions` | id, user_id, user_email, issue_type, message, page_url | Index on created_at DESC. |
-| `scraper_events` | id, company_id, company_name, event_type, details (jsonb), created_at | Audit log of self-healing actions: stealth_recovery, auto_remediation, auto_disabled, auto_re_enabled. Queried by Monday weekly digest. |
-| `security_snapshots` | id, snapshot_date, total_vulns, by_severity (jsonb), vuln_fingerprints (jsonb) | Weekly npm audit snapshot. Monday cron writes new row, diffs against previous to surface new/resolved vulns in admin digest. |
+| Table | Notes |
+|---|---|
+| `companies` | Shared catalog. `is_active` = subscriber_count > 0. `auto_disabled` + `consecutive_failure_count` for self-healing. `is_verified` + `is_verified_zero` to close silent-zero gap. CASCADE deletes jobs. |
+| `seen_jobs` | Status: active → removed → archived (60 days). Unique on (company_id, job_url_path). |
+| `user_subscriptions` | Links users to tracked companies. UNIQUE(user_id, company_id). |
+| `user_job_favorites` | Star icons on jobs pages. UNIQUE(user_id, seen_job_id). |
+| `user_new_company_submissions` | Rate limit: 10/user, admin bypass. |
+| `user_preferences` | email_frequency: daily/weekly/off. |
+| `comp_cache` | levels.fyi cache, 24hr TTL. No RLS. |
+| `scrape_issues`, `help_submissions` | Bug-reporting tables. |
+| `scraper_events` | Audit log of self-healing actions. See JOBS.md. |
+| `security_snapshots` | Weekly npm audit snapshot. See JOBS.md. |
 
-**Self-healing columns on `companies`** (added 2026-05-08): `consecutive_failure_count INTEGER DEFAULT 0` (resets to 0 on success, increments on each catch-block failure) and `auto_disabled BOOLEAN DEFAULT FALSE` (set true at 7+ consecutive failures, cron loop skips). Partial index `idx_companies_consecutive_failures` on `consecutive_failure_count > 0`.
-
-**Silent-zero verification columns on `companies`** (added 2026-05-14): `is_verified BOOLEAN NOT NULL DEFAULT FALSE` (flipped TRUE one-way by `dailyCheck.ts` on any scrape returning >0 PMs — preserves admin verification) and `is_verified_zero BOOLEAN NOT NULL DEFAULT FALSE` (admin manually confirms a company genuinely has no PMs). Partial index `idx_companies_unverified_zero` on `(subscriber_count DESC, name) WHERE total_product_jobs = 0 AND is_verified_zero = FALSE AND (auto_disabled = FALSE OR auto_disabled IS NULL)` powers the daily admin-digest "Unverified zeros" section. Designed to close the silent-zero failure class — a 0-PM scrape result is now treated as needing verification, not assumed legitimate.
-
-**Key indexes**: `(company_id, job_url_path)` unique, `(company_id, is_baseline, first_seen_at)`, `(company_id, status)`, `(status, first_seen_at DESC)`, `(is_active)`.
-
-## Scraper Architecture
-
-**File**: `backend/src/scraper/scraper.ts`
-
-**Routing order** (as of 2026-03-07 — hostname checks run BEFORE Puppeteer launch):
-1. `platform_type` switch (if company has it set in DB) → direct to ATS scraper
-2. Hostname checks for custom scrapers (EA, Atlassian, Netflix, Stripe, Uber, Google)
-3. ATS registry lookup (`atsRegistry.ts`) — hostname → known ATS mapping
-4. Direct ATS URL checks (jobs.lever.co, jobs.ashbyhq.com, *.myworkdayjobs.com, eightfold.ai, jobs.smartrecruiters.com, *.icims.com)
-5. **Only then**: `puppeteer.launch()` for truly generic/unknown companies (~6 currently)
-
-| Platform | Detection | Examples |
-|----------|-----------|---------|
-| Greenhouse | API: `api.greenhouse.io/v1/boards/{board}/jobs` | DoorDash, Discord, Reddit, Instacart, Figma, Airbnb, a16z, Twitch, Datadog, LinkedIn, HubSpot (`hubspotjobs`), 2K Games (`2k`), Sony Interactive Entertainment (`sonyinteractiveentertainmentglobal`) |
-| Lever | API: `api.lever.co/v0/postings/{handle}` | Auto-detected from jobs.lever.co |
-| Ashby | GraphQL API (title-keyword filter, not team-name) | OpenAI, Anthropic, auto-detected from jobs.ashbyhq.com. Kraken uses `kraken.com` orgName (not `kraken`); Magic uses `magic.dev`. |
-| Workday | JSON API | Slack, Salesforce, Zendesk (`zendesk.wd1/zendesk`), Amgen (`amgen.wd1/Careers`), BeiGene (`beigene.wd5/BeiGene`), auto-detected from *.myworkdayjobs.com |
-| Eightfold | API | PayPal, Microsoft (custom domain: apply.careers.microsoft.com) |
-| Custom API | Per-company | Atlassian, Uber, Netflix, Amazon |
-| iCIMS REST API | JSON: `{base}/api/jobs?keywords=` | Rivian, Costco, DocuSign (`uscareers-docusign`), Pandora (`careers-siriusxmradio` — SiriusXM parent) |
-| Oracle HCM | REST API: `recruitingCEJobRequisitions` | JPMorgan Chase, Oracle, American Express (`egug.fa.us2/CX_1`) |
-| TalentBrew | HTML-in-JSON parser | Intuit (jobs.intuit.com) |
-| **Apple** (added 2026-05-14) | REST API: `/api/v1/CSRFToken` → `/api/v1/search` | Apple (`jobs.apple.com`). Two-step CSRF; body requires mandatory `format` field. |
-| **Shopify** (added 2026-05-14) | React Router v7 RSC streaming payload in HTML | Shopify (`shopify.com/careers`). Uses Ashby in embedded mode; the hosted Ashby API at `jobs.ashbyhq.com/shopify` returns null. Parses `window.__reactRouterContext.streamController.enqueue(...)` deduplicated JSON array with dynamic key-index resolution. |
-| **Phenom** (added 2026-05-14) | Server-rendered DDO: `phApp.ddo["eagerLoadRefineSearch"]` | eBay (`jobs.ebayinc.com`, tenant EBAEBAUS), BCG (`careers.bcg.com`, added 2026-05-18). Generic `scrapePhenomCareers(baseDomain, label, stats)` — future Phenom companies need only a DB row, no code. **10-job server-render cap** (all further pagination is client-side Vue). |
-| **SAP SuccessFactors** (added 2026-05-18) | Server-rendered HTML: `{baseUrl}/search?q=product+manager&startrow=N` (25 results/page) | EY (`careers.ey.com`), Ametek (`jobs.ametek.com`). Generic `scrapeSuccessFactorsCareers(baseUrl, label, stats)` parses `<tr class="data-row">` rows; title in `.jobTitle-link`, location in `.jobLocation` span. |
-| **Goldman Sachs "Higher"** (added 2026-05-18) | Unauthenticated GraphQL at `api-higher.gs.com/gateway/api/v1/graphql` | Goldman Sachs only. `GetRoles` query, 100/page, returns 816+ jobs (~35 US PMs verified). Cloudflare allows server-side POSTs through. Custom (`higher.gs.com` hostname guard). |
-| **KPMG WordPress** (added 2026-05-18) | KPMG-only WordPress + PHP search endpoint at `/wp-content/themes/.../get-jobs.php` | KPMG (`kpmguscareers.com`). Returns JSON with HTML fragments. NOT SuccessFactors despite SSO references. **Verified 0 US PM yield** (KPMG only hires consulting/SAP titles, none match PM filter — marked `is_verified_zero=true`). |
-| **Deel job-boards** (added 2026-05-18) | RSC: 1 header → React Server Components stream | Klarna (`jobs.deel.com/klarna`). Generic `scrapeDeelCareers(orgSlug, label, stats)` for any Deel customer. Regex-parses JSON job objects from RSC stream. **Klarna verified 0 US PM yield** (106-job board is entirely Stockholm/London/Milan; US locations are Columbus OH ops only). |
-| **Revolut Next.js** (added 2026-05-18) | `/_next/data/{buildId}/careers.json` (Cloudflare bypass) | Revolut only. buildId rotates each deploy → on 404 returns `[]` so stealth tier rescues + `inferPlatformFromSniffedUrl` auto-updates the new buildId via the URL pattern match. |
-| Stealth tier (yield to) | hostname guard returns `[]` from `scrapeCompanyCareers` | Meta, TikTok, Tesla, Wayfair — all actively block server-side requests (Akamai 403, FB session-gating, Stargate gateway 2012, Workday 401/422). |
-| Puppeteer | HTML scraping (120s timeout) | Google, fallback for unknown |
-
-**ATS registry** (`atsRegistry.ts`): Single source of truth mapping hostnames → ATS platform + config. Used by both `detectPlatform.ts` and `scraper.ts`.
-
-**Platform auto-detection** (`detectPlatform.ts`): Known hostnames → direct ATS URLs → HTML embed detection → Puppeteer SPA render → speculative Greenhouse/Lever API probes → generic fallback. Cached in `companies.platform_type` + `platform_config`.
-
-**broadATSDiscovery guard**: `CUSTOM_SCRAPER_HOSTS` blocklist in `dailyCheck.ts` prevents broadATSDiscovery from overwriting custom scraper companies. Current list: `ea.com`, `atlassian.com`, `netflix.net`, `netflix.com`, `uber.com`, `google.com`, `amazon.jobs`, `intuit.com`, `rivian.com`, `costco.com`, `coinbase.com`, `apple.com`, `metacareers.com`, `tiktok.com`, `tesla.com`, `wayfair.com`, `shopify.com`, `ebayinc.com`, `higher.gs.com`, `gs.com`, `jobs.deel.com`, `kpmguscareers.com`, `revolut.com`, `bcg.com`, `careers.ey.com`.
-
-**Post-scrape validation** (`validateScrape.ts`): Two-pass filtering: (1) PM_KEYWORDS (17 keywords), (2) US location filter via `isUSLocation()` from `lib/locationFilter.ts`. Non-US jobs never enter the DB. Also flags zero results/vague locations/dupes, returns quality score + `nonUsFilteredCount`. Company-specific extra exclusions (`COMPANY_EXTRA_EXCLUSIONS`) filter out non-PM program manager variants (TPMs, business PMs, etc.) even when company extra keywords match.
-
-**Daily quality eval** (`dailyEval.ts`, simplified 2026-04-26): Runs after scraping, before emails. Only flags actionable issues: sudden spikes/drops (>100%/50% change AND >10 absolute), zero jobs for subscribed companies, first-scrape results. Removed noisy checks: absurd job counts, high non-US ratio, low quality scores. Sends admin email with per-company scorecard (issues at top, clean at bottom). Critical issues also go to Sentry.
-
-**Company name detection** (`detectCompanyName.ts`): 40+ known hosts, ATS slug fallback, generic hostname fallback.
-
-**Scrape failure alerting** (upgraded 2026-03-20): Admin email now shows two sections: green "Auto-fixed" (platform changes the cron self-healed) and red "Still needs attention" (actual failures). Only sends email if there's something to report. Sentry captures each failure with company/phase tags. If >25% of companies fail, cron returns HTTP 500.
-
-**Auto-remediation** (added 2026-03-19): When ANY company (not just generic) returns 0 raw jobs, cron runs `broadATSDiscovery` to detect platform changes. If a new platform is found and produces results, auto-updates the DB and logs to Sentry. Still guarded by `CUSTOM_SCRAPER_HOSTS` blocklist.
-
-**Three-tier self-healing recovery** (added 2026-05-08, refined 2026-05-11): When any company's source returns 0 raw jobs (NOT just 0 PMs), the cron runs three recovery tiers in order:
-1. **Configured platform scraper** (existing) — uses `platform_type` from DB. Filter-heavy scrapers (Greenhouse/Workday/Ashby) write their pre-PM-filter count to a `ScrapeStats` out-param so we distinguish "source returned 0" (try recovery) from "source returned 50 but 0 PMs" (no recovery needed).
-2. **broadATSDiscovery** (existing) — auto-detects new ATS, updates DB. Skipped for `CUSTOM_SCRAPER_HOSTS`
-3. **`stealthFallbackScrape`** (in `scraper.ts`) — generic last-resort using `puppeteer-extra` + `puppeteer-extra-plugin-stealth`. Sniffs all JSON XHR responses for arrays of objects with title+id-like fields, falls back to DOM extraction. Returns the sniffed URL plus the jobs. **Layer 1 auto-fix** (added 2026-05-11): `inferPlatformFromSniffedUrl()` tries to map the sniffed URL to a known ATS pattern (Greenhouse, Lever, Ashby, SmartRecruiters). If matched, auto-updates `platform_type` + `platform_config` so the next run hits the API directly and skips stealth entirely.
-
-**Auto-disable** (added 2026-05-08): Companies that fail 7 consecutive days are auto-disabled — `auto_disabled=true` and skipped from cron. Threshold = `AUTO_DISABLE_THRESHOLD` constant in `dailyCheck.ts`. Successful scrape resets `consecutive_failure_count=0` and `auto_disabled=false`. To manually re-enable: `UPDATE companies SET auto_disabled = false, consecutive_failure_count = 0 WHERE name = '...';`
-
-**Monday watch-list probe** (added 2026-05-08): Every Monday UTC (`PROBE_DAY_OF_WEEK = 1`), the cron retries each auto-disabled company once. Successful probe → automatic re-enable + green "Watch-list re-enabled" section in admin email. Failed probe → counter stays at threshold, doesn't ratchet higher.
-
-**Stealth Puppeteer dependencies**: `puppeteer-extra@3.3.6` + `puppeteer-extra-plugin-stealth@2.11.2` (both pinned, see `backend/package.json`). Stealth plugin spoofs `navigator.webdriver`, window.chrome runtime, permissions API, and other headless-Chrome tells.
-
-**Double-filtering gotcha**: Most scrapers (Greenhouse, Workday, Lever, etc.) filter by PM_KEYWORDS internally before returning results. Then `validateScrapeResults` filters again. This means `rawJobs.length === 0` can mean "no PM jobs" (legit) OR "scraper broken" -- can't distinguish at the `dailyCheck` level. Actual scraper failures throw exceptions caught by the `catch` block.
-
-**Key rules**:
-- After adding/fixing a scraper, always delete + re-add the company to flush stale data
-- Stripe scraper takes ~2-3 min (Puppeteer pagination + detail pages)
-- To fix broken scraper: identify platform → add handler in `scrapeCompanyCareers()` → push → delete + re-add company
-- Never let broadATSDiscovery run on custom scraper companies — it can overwrite platform_type with a false ATS match
-
-## Key Files
-
-### Backend
-- `src/scraper/scraper.ts` — All scraper logic (hostname routing before Puppeteer launch)
-- `src/scraper/atsRegistry.ts` — Shared ATS hostname → platform mapping (single source of truth)
-- `src/scraper/detectPlatform.ts` — ATS platform auto-detection
-- `src/scraper/detectCompanyName.ts` — Company name from URL
-- `src/scraper/validateScrape.ts` — Post-scrape quality validation + US location filtering
-- `src/scraper/dailyEval.ts` — Daily quality evaluation (per-company scorecard)
-- `src/lib/locationFilter.ts` — US location detection (isUSLocation + NON_US_PATTERNS)
-- `src/jobs/dailyCheck.ts` — Daily cron: scrape all companies, quality eval, per-user email alerts, job status tracking
-- `src/routes/companies.ts` — Companies CRUD (subscription-scoped, check-then-add)
-- `src/routes/admin.ts` — Admin API: stats, issues, companies management, users
-- `src/routes/subscriptions.ts` — Subscribe/unsubscribe
-- `src/routes/catalog.ts` — Shared company catalog
-- `src/routes/compensation.ts` — levels.fyi comp data
-- `src/middleware/auth.ts` — JWT verification (userId + userEmail)
-- `src/lib/constants.ts` — ADMIN_EMAIL (env var, fallback hardcoded)
-- `src/lib/levelsFyi.ts` — Comp data fetcher + 3-tier cache
-- `src/lib/classifyLevel.ts` — Job level: early/mid/director
-- `src/index.ts` — Express entry point
-
-### Frontend
-- `src/app/page.tsx` — Auth-gated: LandingPage (unauth) or Dashboard (auth)
-- `src/app/company/[id]/page.tsx` — Company detail + jobs + saved inactive section
-- `src/app/jobs/page.tsx` — All Jobs flat table
-- `src/app/admin/page.tsx` — Admin: stats, errors, reports, companies management (hard-delete), users
-- `src/app/settings/page.tsx` — Email preferences
-- `src/app/login/page.tsx` — Magic link login
-- `src/app/auth/confirm/route.ts` — Token-hash verification (cross-device)
-- `src/app/auth/callback/route.ts` — PKCE exchange (legacy)
-- `src/components/LandingPage.tsx` — Above-fold (Nav + Hero) + shared utils
-- `src/components/LandingBelowFold.tsx` — Below-fold (sections 3-10), lazy-loaded
-- `src/components/AddCompanyModal.tsx` — Catalog browse + check-then-add (4 states: input → checking → preview → retry)
-- `src/components/NavBar.tsx` — Sticky nav, active route detection
-- `src/lib/api.ts` — Authenticated fetch (attaches JWT, caches token via /api/auth/token)
-- `src/lib/jobFilters.ts` — `isUSLocation()`, job level labels
-- `src/lib/brandColors.ts` — Brand color map, `softenColor()`, `getFaviconUrl()`
-- `middleware.ts` — Route protection
-
-### Scripts / Config
-- `cron/index.js` — Railway cron trigger
-- `scripts/reset-test-user.sql` — Test account wipe
-- `scripts/phase6-cleanup.sql` — Drop legacy favorites + companies.user_id
-- `docs/specs/NEWPMJOBS-LANDING-SPEC.md` — Landing page spec
-
-## Email
-
-- **Daily/weekly alerts**: Per-user, filtered by subscriptions + preferences. Batch send via `resend.batch.send()` (100/call, 1s delay).
-- **From**: `alerts@newpmjobs.com` (API), `noreply@newpmjobs.com` (magic links via SMTP)
-- **Resend limits**: Free = 100 emails/day, 3K/month, 2 req/s. SMTP + API share quota.
-- **API key**: Only in Railway env vars. Empty locally.
-- Failure notifications sent to ADMIN_EMAIL after cron if email batches fail.
-- **Consolidated admin digest** (added 2026-05-11, expanded 2026-05-12): `sendAdminDigest()` replaces three previous admin emails (failures, quality report, batch-send failures) with one. Daily: fires ONLY if action items present (failed scrapes, watch list, auto-disabled, subscribed company dropped to 0, email send failures). **Monday AND Tuesday (UTC)**: always fires with system health + past-7-days self-heal log queried from `scraper_events` table + npm-audit security check (`runSecurityCheck()` in `backend/src/jobs/securityCheck.ts`) showing new/resolved vulns vs the previous week's `security_snapshots` row. Two-day window gives admin a chance to review the weekly report if Monday gets buried. Security check diff queries snapshots ≥6 days old so both Mon and Tue show real week-over-week deltas. Most days = no admin email.
-
-## Delete Semantics
-
-- **Dashboard "Remove"** = unsubscribe only. Updates subscriber_count and is_active.
-- **Companies with 0 subscribers** stay in catalog, keep getting scraped.
-- **Admin hard-delete** (`DELETE /api/companies/{id}?hard=true`) from admin page — cascades to jobs, subscriptions, etc.
+Indexes, exact column lists, and partial-index details live in the migrations + JOBS.md/ROUTES.md sidecars as needed.
 
 ## Performance Rules
 
@@ -280,94 +117,27 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 4. Check if new WHERE/ORDER BY columns need indexes
 5. Don't re-fetch data already available — pass via props/context
 
-## Security
+## Security (cross-cutting)
 
-- **Headers** in `frontend/next.config.ts`: X-Frame-Options DENY, nosniff, HSTS, CSP (dynamic from env vars)
-- **CSP connect-src**: self, backend API, Supabase HTTPS+WSS, PostHog, Sentry
-- **Input validation**: UUID regex on IDs, HTTPS-only URLs, LinkedIn blocked, SSRF protection (no private IPs)
-- **Auth hardening**: Open redirect prevention on `/auth/confirm`, HTML-escaped user input in emails, PII removed from logs
-- **JWT verification** (`backend/src/middleware/auth.ts`): HS256 pinned, validates `audience: "authenticated"` and `issuer: <supabase-url>/auth/v1`. Fails closed at boot in production if `SUPABASE_JWT_SECRET` missing. Sentry warning fires when local-verify fails and code falls back to Supabase API.
-- **Cookies are HttpOnly** (`frontend/middleware.ts`, `auth/confirm`, `auth/callback`): Supabase defaults preserved. Browser JS reads tokens via `/api/auth/token` server route — never directly. **Do NOT override `httpOnly: false` on cookie set calls.**
-- **Cron / shared-secret bearer tokens**: Use `safeCompareSecret()` in `backend/src/index.ts` (constant-time `crypto.timingSafeEqual` with length equalization). Applied to `/api/cron/trigger` and `/api/admin/add-company`. Reuse for future Stripe/Twilio webhook signature verification.
-- **Body limits**: `express.json({ limit: "256kb" })` globally. Per-route caps: `/api/help.message` ≤ 5000, `/api/issues.description` ≤ 5000.
-- **Data isolation**: Every read endpoint on user-scoped or subscription-gated data MUST check the requester's subscription before returning. Pattern: load `user_subscriptions` for `req.userId`, return 403 if target not in list. Applies to `GET /api/companies/:id`, `POST /api/favorites/:jobId`, `POST /api/issues`. **Never trust client-supplied user_id; always derive from JWT.**
-- **PostHog**: User ID hashed with SHA-256 (no raw emails)
-- **DNS**: DMARC + DKIM + SPF configured
-- **Security log**: `docs/security-log.md` (gitignored) — running record of audits, fixes, deferred items. Append to it after every audit. Includes "why didn't last audit catch this" answer.
-- **Audit framework**: Three parallel specialized review agents (auth flow / data isolation / infra + monetization-readiness), NOT one general pass. See `docs/security-log.md` "Process notes" section.
+- **Headers** in `frontend/next.config.ts`. **CSP** dynamic from env vars.
+- **Input validation**: UUID regex on IDs, HTTPS-only URLs, LinkedIn blocked, SSRF protection (no private IPs).
+- **JWT verification**: HS256 pinned, validates audience + issuer. Fails closed at boot in prod if `SUPABASE_JWT_SECRET` missing. See AUTH.md.
+- **Cookies HttpOnly enforced** — see AUTH.md for the `/api/auth/token` bridge pattern. Do not override.
+- **Cron / shared-secret tokens**: use `safeCompareSecret()` (constant-time). Reuse for future Stripe/Twilio webhook signature verification.
+- **Body limits**: 256kb global. Per-route caps documented in ROUTES.md.
+- **Data isolation**: every user-scoped read endpoint MUST check subscription before returning. Pattern in ROUTES.md.
+- **Never trust client-supplied `user_id` or `platform_config`** — both derive server-side.
+- **Security log**: `docs/security-log.md` (gitignored) — running record of audits, fixes, deferred items.
+- **Audit framework**: three parallel review agents (auth flow / data isolation / infra), not one general pass.
 
-## Gotchas
+## Cross-cutting Gotchas
 
-- **Supabase DDL**: Cannot run CREATE/ALTER TABLE via supabase-js. Use SQL Editor in dashboard.
-- **SUPABASE_SERVICE_KEY**: Must be `service_role` key. Anon key causes empty results for user-scoped queries.
-- **HttpOnly cookies**: Browser JS can't read them. Use `/api/auth/token` server route.
-- **CORS + www**: Backend CORS must allow both root and www origins. Code auto-adds www variant from FRONTEND_URL.
-- **Supabase redirect URLs**: Need all 4 (root + www) x (callback + confirm).
+- **Supabase DDL**: Cannot run CREATE/ALTER TABLE via supabase-js. Use SQL Editor in dashboard or MCP `apply_migration`.
 - **NEXT_PUBLIC_ env vars**: Baked at build time. Must redeploy after changing in Vercel.
-- **NEXT_PUBLIC_ADMIN_EMAIL**: Required in Vercel for admin button to appear.
-- **Vercel project name**: `new-job-alert-tool` (not `frontend`). `vercel link --yes` auto-creates — verify with `vercel project ls`.
 - **Cloudflare proxy**: Must be OFF (grey cloud) for Vercel/Railway custom domains.
-- **Cron endpoint**: Must `await runDailyCheck()` — Railway auto-sleep kills fire-and-forget.
-- **Railway Cron only**: No in-process schedulers (node-cron) — causes duplicate runs.
-- **Duplicate companies**: Dedup by URL domain, not name. ATS URLs use hostname/slug key.
-- **PM_KEYWORDS false negatives**: Some companies use non-standard titles (e.g., "Product Growth"). Check if 0 PM roles but company has jobs.
-- **Salesforce trap**: `careers.salesforce.com` redirects to marketing page. Use Workday URL directly: `salesforce.wd12.myworkdayjobs.com/External_Career_Site`.
-- **Stale scraper data**: After changing a scraper, delete + re-add the company.
+- **Vercel project name**: `new-job-alert-tool` (not `frontend`).
 - **Windows sleep**: Use `powershell -command "Start-Sleep -Seconds N"` (not `timeout`).
 - **Git CRLF**: `git config core.autocrlf input` to suppress warnings.
-- **Test account**: Gmail + alias. Reset: `scripts/reset-test-user.sql`.
 - **Local .env**: Placeholder keys only. Production keys on Railway.
-- **broadATSDiscovery overwrite**: Can silently change a custom scraper company's `platform_type` if a matching ATS board exists (e.g., Greenhouse board "stripe"). Guarded by `CUSTOM_SCRAPER_HOSTS` blocklist in `dailyCheck.ts`. Never remove this guard.
-- **Local CRON_SECRET mismatch**: The local `.env` CRON_SECRET doesn't match Railway production. Can't trigger manual cron from local — use Railway dashboard or wait for scheduled run.
-- **ATS API null responses**: External APIs (Ashby, Greenhouse, etc.) can return null payloads on transient failures even with HTTP 200. Always null-check before destructuring API response objects.
-- **Eightfold custom domains**: Microsoft uses `apply.careers.microsoft.com` (not `*.eightfold.ai`). Domain extraction must handle both: eightfold subdomains (`paypal.eightfold.ai` → `paypal.com`) and custom domains (`apply.careers.microsoft.com` → `microsoft.com`). The API also sometimes returns 200 with HTML "Not Found" instead of JSON.
-- **Anthropic moved from Ashby to Greenhouse** (2026-03-19): Ashby GraphQL returns `jobBoard: null`. Greenhouse board token is `anthropic`. Added to `atsRegistry.ts`.
-- **Scrapers pre-filter by PM_KEYWORDS**: Most ATS scrapers return only PM-matching jobs, not all jobs. This means `rawJobs.length === 0` is ambiguous -- could be "no PM roles" or "broken API". Don't use raw job count to detect failures.
-- **Backend US location filtering (added 2026-03-22)**: `validateScrapeResults` now filters non-US jobs via `isUSLocation()` in `lib/locationFilter.ts`. Non-US jobs never enter `seen_jobs` table. Frontend `isUSLocation` toggle in `jobFilters.ts` is now redundant but kept for backward compatibility. If a location doesn't match any US or non-US pattern, it defaults to excluded (safer).
-- **NON_US_PATTERNS coverage**: 60+ patterns for India, UK, Germany, France, Canada, Australia, Singapore, Japan, China, Ireland, Netherlands, Israel, Brazil, Mexico, Sweden, Switzerland, Spain, Italy, Poland, South Korea, Taiwan, Philippines, Vietnam, Thailand, Malaysia, Indonesia, Nigeria, Kenya, plus EMEA/APAC/LATAM region codes. Add new countries as needed to `lib/locationFilter.ts`.
-- **Microsoft TPM inflation (fixed 2026-04-01)**: Microsoft's "program manager" exception was bypassing ALL hard exclusions, letting TPMs, business PMs, customer experience PMs through. `COMPANY_EXTRA_EXCLUSIONS` in `validateScrape.ts` now rejects non-product PM variants while keeping pure Program Manager/Product Manager titles. Cut Microsoft from 123 to ~75 jobs.
-- **US state abbreviations vs country codes (fixed 2026-04-23)**: The April 1 fix for "ON,CA" (Ontario, Canada) rejected ALL 2-letter codes != "US", including US state abbreviations. "San Francisco, CA" was treated as Canada. Fix: `US_STATES` set in `locationFilter.ts` exempts state abbreviations from the country code check. Canadian provinces handled via explicit `NON_US_PATTERNS` (ON,CA; BC,CA; etc.). This bug silently rejected US jobs for ~3 weeks.
-- **Puppeteer mass failure (fixed 2026-04-21)**: All 10 Puppeteer-dependent companies crashed with `posix_spawn` error (Chrome binary issue in `:latest` Docker image). Migrated 7 to API scrapers: Datadog/LinkedIn (Greenhouse), Amazon (custom JSON API), Rivian/Costco (iCIMS REST API), Intuit (TalentBrew HTML parser), Zerodha (custom REST API). Pinned Docker image to `24.2.0` for remaining 3 (Google, eBay, Ametek).
-- **iCIMS API keyword search inconsistency**: iCIMS `q=` param doesn't filter at Rivian (returns all 668 jobs). Use `keywords=` param instead (works for Costco: 9 results). Different iCIMS instances behave differently.
-- **Docker `:latest` tag drift**: `ghcr.io/puppeteer/puppeteer:latest` pulled a broken Chrome build. Always pin Docker base images to a specific version.
-- **Puppeteer version must match Docker image**: Docker image `24.2.0` bundles Chrome for puppeteer 24.2.0. If package.json has `^24.2.0`, npm installs 24.36.1 which wants Chrome 144 (not in image). Must pin exact: `"puppeteer": "24.2.0"` (no caret).
-- **Oracle HCM API**: Uses `recruitingCEJobRequisitions` REST endpoint. Requires `tenantUrl` (e.g. `https://jpmc.fa.oraclecloud.com`) and `siteNumber` (e.g. `CX_1001`). Returns all keyword matches, not just PM titles.
-- **Phase 6 migration complete (2026-04-22)**: Dropped legacy `favorites` table and `companies.user_id` column. Both replaced months ago by `user_job_favorites` and `user_subscriptions`.
-- **Empty locations default to excluded (fixed 2026-04-22)**: `isUSLocation("")` now returns `false`. Previously returned `true`, which included jobs with no location data.
-- **Oregon pattern case-sensitive (fixed 2026-04-22)**: `/\bOR\b/` (no `i` flag). Was matching the English word "or" in locations like "Bangalore or Remote".
-- **Coinbase deleted public Greenhouse board (2026-05-08)**: `boards-api.greenhouse.io/v1/boards/coinbase/*` returns 404 on every endpoint (jobs, embed/jobs, embed/departments). Coinbase migrated to a custom SPA at `coinbase.com/careers/positions` (server-redirects to `/careers`) that fetches `/api/v2/careers` from `api.coinbase.com`. The internal API returns HTTP 400 even from inside a stealth-rendered Puppeteer SPA with proper X-CB-* headers — server-side rejection of public scraping. Custom scraper at `scrapeCoinbaseCareers` returns `[]` on capture failure so the `stealthFallbackScrape` tier gets a chance. Will land in auto-disable after 7 days unless Coinbase reopens the API. May coincide with their public layoff announcement (hiring freeze).
-- **Throw vs return [] in custom scrapers**: Tier-1 scrapers that throw bypass tiers 2 and 3. To let auto-healing run, return `[]` instead of throwing for known/expected failures. Reserve exceptions for genuinely unexpected errors.
-- **Stealth fallback won't run if Tier 1 throws**: `dailyCheck` checks `rawJobs.length === 0` to trigger the stealth tier. If the configured scraper throws, the catch block fires and stealth fallback is skipped. Pattern: `try { ... return jobs } catch { console.warn; return [] }` for scrapers prone to non-fatal failures.
-- **Silent zero failure class (closed 2026-05-14)**: A 0-PM scrape with `last_check_status='success'` looks identical to "company genuinely has 0 PMs" and "scraper is silently broken." Phase 1 of the zero-jobs audit closed this gap by adding `is_verified` + `is_verified_zero` columns. Every 0-PM company appears in the daily admin-digest "Unverified zeros" section until admin manually marks `is_verified_zero=true` (legit) or the scraper recovers (is_verified flips true on next successful >0 result). NEVER mark `is_verified_zero=true` just to clear the email — always confirm legit-zero first.
-- **PM_KEYWORDS function-name vs role-name (fixed 2026-05-14)**: AmEx, JPMorgan, Oracle (Oracle HCM tenants) put the function name in titles ("Senior Manager - Product Management", "Senior Associate-Digital Product Management") not the role name. The literal "product manager" filter missed them. Added "product management" to PM_KEYWORDS — recovered AmEx 1 → 234 keyword matches (then US-filtered).
-- **Ashby team-name filter bug (fixed 2026-05-14)**: `scrapeAshbyCareers` previously kept jobs only from teams literally named "Product Management" / "Product Design" / etc. Modern companies embed PMs in product-area teams (Growth, Payments, Platform, Kafka Cloud). Switched to title-keyword filter mirroring `scrapeGreenhouseCareers` at `:548`. Recovered ~30 PMs across ~17 Ashby companies including Confluent, Whatnot, Skydio, Decagon, Linear, Character.AI, Lemonade, Pinecone, Quora, Supabase.
-- **Edge-blocked / auth-gated companies (Meta, TikTok, Tesla, Wayfair)**: Akamai 403, FB session-gating, Stargate gateway X-GW-Code:2012, Workday HTTP 401/422. Hostname guards in `scraper.ts` return `[]` immediately so stealth tier handles them — avoids burning Puppeteer launch on a known-impossible scrape. All in `CUSTOM_SCRAPER_HOSTS` so broadATSDiscovery can't overwrite.
-- **Apple REST API (added 2026-05-14)**: Two-step CSRF flow: GET `/api/v1/CSRFToken` returns `X-Apple-CSRF-Token` + `jobs=` + `jssid=` cookies + AWSALB stickiness cookies. POST `/api/v1/search` requires mandatory `format: {longDate, mediumDate}` field — without it the API silently returns `{searchResults:[], totalRecords:0}`. Use a cookie-name denylist (drop only `s_*, _ga, _gid, geo, pxsid, dssf, dssid`) not allowlist — keeps ALB stickiness for mid-pagination session continuity. Verified live with 35 PMs landed in first cron.
-- **Shopify Ashby-embed (added 2026-05-14)**: Standard Ashby hosted board API at `jobs.ashbyhq.com/api/non-user-graphql` returns `jobBoard: null` for `shopify`. Shopify's Remix SPA at `shopify.com/careers` server-renders 84 jobs into a React Flight (RSC) streaming payload at `window.__reactRouterContext.streamController.enqueue(...)`. Payload is a deduplicated JSON array where field names appear once as strings and job objects reference them by index (`{_<keyIdx>: <valueIdx>}`). Parser resolves indices dynamically by scanning the array. Use `matchAll` on the enqueue regex in case Shopify chunks the stream later. Falls back to `[]` gracefully if format changes.
-- **Phenom People (added 2026-05-14)**: Used by eBay (tenant EBAEBAUS at `jobs.ebayinc.com`). Generic `scrapePhenomCareers(baseDomain, label, stats?)` parses the inline DDO between `phApp.ddo = ` and `; phApp.experimentData =`, reads `eagerLoadRefineSearch.data.jobs` (server pre-renders exactly 10 jobs). All further pagination is client-side Vue — **10-job server-render cap is acknowledged in code**. `stats.totalScanned = totalHits` (455 for eBay) so the self-healing tier knows the source is live, not broken. Returns `[]` on transient 5xx to avoid auto-disable ratchet.
-- **Prior-art research is a habit, not optional (added 2026-05-14)**: Before building a custom scraper / integration / parser from scratch, spend 5-15 min searching GitHub for OSS implementations (MIT/Apache/BSD only). Apple's prior-art (anon767/maangcrawler) was stale (`/api/csrfToken` 404s today) — agent's curl-verified `/api/v1/CSRFToken` was the truth. eBay/Phenom's prior-art (andrewcrenshaw/strata-harvest) was usable as a Python-to-TS port template. The win is calibrating "is this fully reverse-engineerable" vs "is there a working template to start from." See `feedback_prior_art_research` memory.
-- **Splunk acquired by Cisco**: Splunk's careers now redirect to `careers.cisco.com/global/en/splunk`, which uses Phenom People. Splunk hard-deleted from catalog 2026-05-14. To re-add, build a Phenom DB entry pointing at Cisco's Phenom instance (we have the `phenom` scraper generic).
-- **Consulting industry verdict (2026-05-18)**: All of MBB + Big-4 *except* BCG use Avature. McKinsey, Bain, and Deloitte are confirmed permanently unscrapeable — Avature is login-gated SPA, robots.txt disallows, even Puppeteer needs an auth session. BCG escaped via Phenom (`careers.bcg.com`, added). EY uses SAP SuccessFactors (added). KPMG uses a bespoke WordPress + PHP search endpoint (added, but verified 0 US PM yield — consulting titles only). PwC + Accenture use Workday (added earlier). Net consulting coverage: 5/8.
-- **Honest scraper verification before catalog-add (2026-05-18)**: Habit established — when a new scraper ships, spawn `catalog-scout` agent to simulate it against live data with our actual PM_KEYWORDS + HARD_EXCLUSIONS + US filter, and report real-after-filter yield. Tonight discovered: KPMG (0 yield, all consulting titles), Klarna (0 yield, all Stockholm/London). Both marked `is_verified_zero=true` despite scrapers working. The lesson: "endpoint returns 200" ≠ "delivers user value."
-- **Common Crawl harvest pipeline exists but deprioritized (2026-05-17)**: `backend/src/scripts/common-crawl-harvest.js` queries CC's CDX for known ATS hostnames (Greenhouse, Lever, Ashby, SmartRecruiters), validates each candidate, outputs JSONL → `harvest-to-sql.js`. Tested with 1352 validated candidates. Found the audience mismatch: PMs job-hunt for recognizable brands in target verticals (banking/biotech/consulting/big-tech), not random long-tail SaaS. Pipeline kept for future use; current strategy = targeted curation per vertical (see `docs/backlog.md` "Catalog Growth Strategy").
-- **Revolut buildId auto-refresh pattern (2026-05-18)**: Revolut's Cloudflare blocks raw HTML but `/_next/data/{buildId}/careers.json` bypasses CF cleanly. buildId rotates per deploy. The `scrapeRevolutCareers` returns `[]` on 404 → stealth tier intercepts the live URL → `inferPlatformFromSniffedUrl` matches the Revolut pattern → DB auto-updates platform_config.buildId. **Note**: required adding `"text"` to `extractJobsFromUnknownJson` titleKey list (Revolut positions use `{id, text, locations[]}`); has cross-company false-positive risk on other JSON whose items have a `text` field. Monitor Monday digest for noise.
-- **iCIMS template variation (2026-05-18)**: Rivian + Costco return JSON at `/api/jobs`. DocuSign + Joby Aviation return HTML SPA at `/api/jobs` (different iCIMS template). The Puppeteer-based `scrapeICIMSCareers` handles the HTML variant; the REST one handles JSON. If a new iCIMS company returns HTML from `/api/jobs`, it's the SPA variant — try the Puppeteer scraper instead.
 
-## Check-Then-Add Flow
-
-States: `input` → `checking` → `preview` → `retry`
-
-1. User enters URL only (name auto-detected)
-2. `POST /api/companies/check` scrapes without saving → returns preview
-3. User confirms → `POST /api/companies` with pre-checked data (skips re-scrape)
-4. "No, Try Again" → retry with feedback → "Cancel" files feedback via `/api/help`
-5. URL match → offers to subscribe to existing company
-
-## Landing Page
-
-Fixed overlay at `/` for unauthenticated visitors. 10 sections: Nav → Hero → Problem → How It Works → Product Screens → Latest Jobs → Comp Callout → Stats → CTA → Footer.
-
-- Code-split: above-fold `LandingPage.tsx` + lazy `LandingBelowFold.tsx`
-- Pre-computed `COMPANY_COLORS` map, deferred PostHog init
-- Desktop Lighthouse: 100. Mobile: ~72-77 (React DOM bottleneck).
-- Spec: `docs/specs/NEWPMJOBS-LANDING-SPEC.md`
+Subsystem-specific gotchas live in the corresponding sidecar. Don't add them here.
