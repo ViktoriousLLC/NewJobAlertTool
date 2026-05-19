@@ -49,15 +49,22 @@ const REGION_PATTERNS: Record<string, { cities: string[]; stateNames: string[]; 
 function buildRegionOrClause(region: string): string {
   const r = REGION_PATTERNS[region];
   if (!r) return "";
-  const escape = (s: string) => s.replace(/[\\,()]/g, "\\$&");
+  // PostgREST OR delimiter is comma, and string values containing commas
+  // OR parens MUST be wrapped in double-quotes or PostgREST treats them
+  // as part of the OR-separator/group syntax — that's what malformed the
+  // first version of this clause. Wrap every value defensively.
+  const quoteValue = (v: string) => `"${v.replace(/"/g, '\\"')}"`;
   const parts: string[] = [];
-  for (const city of r.cities) parts.push(`job_location.ilike.%${escape(city)}%`);
-  for (const name of r.stateNames) parts.push(`job_location.ilike.%${escape(name)}%`);
-  // State abbreviations: match ", XX" (city, state) and ", XX," (city, state, country)
-  // — avoids 2-letter false matches in random words.
+  for (const city of r.cities) {
+    parts.push(`job_location.ilike.${quoteValue(`%${city}%`)}`);
+  }
+  for (const name of r.stateNames) {
+    parts.push(`job_location.ilike.${quoteValue(`%${name}%`)}`);
+  }
+  // State abbreviations anchored with ", " prefix (matches "City, XX" and
+  // "City, XX, US"). The comma is the reason these need quoting.
   for (const abbr of r.stateAbbrs) {
-    parts.push(`job_location.ilike.%, ${abbr}%`);
-    parts.push(`job_location.ilike.%, ${abbr},%`);
+    parts.push(`job_location.ilike.${quoteValue(`%, ${abbr}%`)}`);
   }
   return parts.join(",");
 }
