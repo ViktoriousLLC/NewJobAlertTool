@@ -148,14 +148,13 @@ router.get("/", async (req: Request, res: Response) => {
     if (sort === "oldest") {
       query = query.order("first_seen_at", { ascending: true });
     } else if (sort === "company") {
-      // Sort by company name then date so all of one company's jobs cluster.
-      // `referencedTable` is the v2 name (replaced `foreignTable`); both used
-      // to work but newer PostgREST silently ignored foreignTable for nested
-      // sorts, which is why /api/feed?sort=company was returning the default
-      // date-desc order in production.
-      query = query
-        .order("name", { referencedTable: "companies", ascending: true })
-        .order("first_seen_at", { ascending: false });
+      // PostgREST silently ignores foreign-table order under our setup
+      // (tried both `foreignTable` and `referencedTable` options, neither
+      // honored). Falling back to a fetch-and-sort-in-Node approach for
+      // this sort mode — see the SORT_COMPANY_CAP / Node slice block below.
+      // Still order by first_seen_at as a deterministic secondary so the
+      // chunk we fetch is reproducible.
+      query = query.order("first_seen_at", { ascending: false });
     } else {
       query = query.order("first_seen_at", { ascending: false });
     }
@@ -192,7 +191,16 @@ router.get("/", async (req: Request, res: Response) => {
       query = query.ilike("job_location", `%${cityFilter.replace(/[%_]/g, "\\$&")}%`);
     }
 
-    query = query.range(offset, offset + limit - 1);
+    // sort=company: fetch the whole filtered result set (capped) and sort
+    // in Node since PostgREST is silently ignoring foreign-table order in
+    // our setup. Cap matches the practical upper bound of one filter query
+    // — well under the ~5k jobs we'd ever have post-filter.
+    const SORT_COMPANY_CAP = 5000;
+    if (sort === "company") {
+      query = query.range(0, SORT_COMPANY_CAP - 1);
+    } else {
+      query = query.range(offset, offset + limit - 1);
+    }
 
     const { data, count, error } = await query;
     if (error) throw error;
@@ -209,7 +217,7 @@ router.get("/", async (req: Request, res: Response) => {
     };
 
     const rows = (data as unknown as JoinedRow[]) || [];
-    const jobs = rows.map((row) => ({
+    let jobs = rows.map((row) => ({
       id: row.id,
       title: row.job_title,
       location: row.job_location,
@@ -220,9 +228,22 @@ router.get("/", async (req: Request, res: Response) => {
       company: row.companies,
     }));
 
+    let totalForResponse = count ?? jobs.length;
+
+    if (sort === "company") {
+      // Sort by company name ASC, ties broken by newest first within a company.
+      jobs.sort((a, b) => {
+        const cmp = a.company.name.localeCompare(b.company.name);
+        if (cmp !== 0) return cmp;
+        return new Date(b.firstSeenAt).getTime() - new Date(a.firstSeenAt).getTime();
+      });
+      totalForResponse = jobs.length;
+      jobs = jobs.slice(offset, offset + limit);
+    }
+
     res.json({
       jobs,
-      total: count ?? jobs.length,
+      total: totalForResponse,
       limit,
       offset,
       filters: { industry, level, q, includeClosed, companyId, sort, region, city: cityFilter },
