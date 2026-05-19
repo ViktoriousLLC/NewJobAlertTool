@@ -11,6 +11,7 @@ import compensationRouter from "./routes/compensation";
 import jobsRouter from "./routes/jobs";
 import subscriptionsRouter from "./routes/subscriptions";
 import catalogRouter from "./routes/catalog";
+import feedRouter from "./routes/feed";
 import preferencesRouter from "./routes/preferences";
 import adminRouter from "./routes/admin";
 import { runDailyCheck } from "./jobs/dailyCheck";
@@ -99,6 +100,10 @@ app.use("/api/compensation", requireAuth, compensationRouter);
 app.use("/api/jobs", requireAuth, jobsRouter);
 app.use("/api/subscriptions", requireAuth, subscriptionsRouter);
 app.use("/api/catalog", requireAuth, catalogRouter);
+// Public feed — drives the job-first landing page. NO requireAuth.
+// Read-only catalog data; the Track action goes through auth-protected
+// /api/subscriptions instead.
+app.use("/api/feed", feedRouter);
 app.use("/api/preferences", requireAuth, preferencesRouter);
 app.use("/api/admin", requireAuth, adminRouter);
 
