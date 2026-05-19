@@ -708,6 +708,20 @@ async function sendConsolidatedAdminDigest(input: {
     lastCheckedAt: c.last_checked_at,
   }));
 
+  // ---- Analysis layer (PR #19) ----------------------------------------------
+  // For every company that landed in an action-required section, pull the past
+  // 7 days of scraper_events + their current health columns. We use these to
+  // (a) render a per-company "trend" annotation in the email (so the admin sees
+  // "3rd consecutive failure" not just "failed today"), and (b) detect
+  // cross-cutting patterns (e.g. "3 failures today are all on Ashby — possible
+  // platform-wide regression").
+  const { perCompanyTrends, crossCuttingPatterns } = await buildDigestAnalysis({
+    failedCompanies: input.failedCompanies,
+    watchList,
+    subscribedZeroDrops,
+    unverifiedZeros: unverifiedZeros.slice(0, 25), // cap to bound the IN query
+  });
+
   // Monday-only: weekly health snapshot + past-7-days self-heal log + security check
   let weeklyHealth: { healthy: number; disabled: number; watchListCount: number } | undefined;
   let weeklyEvents:
@@ -758,10 +772,140 @@ async function sendConsolidatedAdminDigest(input: {
       weeklyHealth,
       weeklyEvents,
       securityFindings,
+      perCompanyTrends,
+      crossCuttingPatterns,
     });
   } catch (err) {
     console.error("Failed to send admin digest:", err);
   }
+}
+
+/**
+ * Build the per-company trend annotations + cross-cutting pattern detections
+ * that the admin digest renders alongside its raw lists. Two DB queries total
+ * (scraper_events + companies, both narrowed by IN clause to the flagged set)
+ * so DB load is bounded regardless of how many companies are in the catalog.
+ */
+async function buildDigestAnalysis(input: {
+  failedCompanies: { name: string }[];
+  watchList: { name: string }[];
+  subscribedZeroDrops: { name: string }[];
+  unverifiedZeros: { name: string }[];
+}): Promise<{
+  perCompanyTrends: Map<string, string>;
+  crossCuttingPatterns: { kind: string; description: string; companies: string[] }[];
+}> {
+  const flaggedSet = new Set<string>();
+  for (const c of input.failedCompanies) flaggedSet.add(c.name);
+  for (const c of input.watchList) flaggedSet.add(c.name);
+  for (const c of input.subscribedZeroDrops) flaggedSet.add(c.name);
+  for (const c of input.unverifiedZeros) flaggedSet.add(c.name);
+
+  const perCompanyTrends = new Map<string, string>();
+  const crossCuttingPatterns: { kind: string; description: string; companies: string[] }[] = [];
+  if (flaggedSet.size === 0) return { perCompanyTrends, crossCuttingPatterns };
+
+  const flaggedNames = Array.from(flaggedSet);
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+  const [eventsResult, companiesResult] = await Promise.all([
+    supabase
+      .from("scraper_events")
+      .select("company_name, event_type, created_at")
+      .in("company_name", flaggedNames)
+      .gte("created_at", sevenDaysAgo.toISOString()),
+    supabase
+      .from("companies")
+      .select("name, consecutive_failure_count, platform_type, total_product_jobs, last_check_status")
+      .in("name", flaggedNames),
+  ]);
+
+  const events = eventsResult.data || [];
+  const companyRows = companiesResult.data || [];
+  const companyByName = new Map(companyRows.map((c) => [c.name, c]));
+
+  // Group events per company per type for annotation building.
+  const eventsByCompany = new Map<string, Map<string, number>>();
+  for (const ev of events) {
+    const m = eventsByCompany.get(ev.company_name) || new Map<string, number>();
+    m.set(ev.event_type, (m.get(ev.event_type) || 0) + 1);
+    eventsByCompany.set(ev.company_name, m);
+  }
+
+  // ---- Per-company trend annotations ----
+  for (const name of flaggedNames) {
+    const company = companyByName.get(name);
+    const evCounts = eventsByCompany.get(name) || new Map<string, number>();
+    const parts: string[] = [];
+
+    const streak = company?.consecutive_failure_count ?? 0;
+    if (streak >= 2) {
+      parts.push(`day ${streak} of failure streak`);
+    } else if (streak === 1) {
+      parts.push("first failure today");
+    }
+
+    const stealth = evCounts.get("stealth_recovery") || 0;
+    if (stealth > 0) parts.push(`stealth recovered ${stealth}× this week`);
+    const remediated = evCounts.get("auto_remediation") || 0;
+    if (remediated > 0) parts.push(`auto-fixed ${remediated}× this week`);
+    const disabled = evCounts.get("auto_disabled") || 0;
+    if (disabled > 0) parts.push(`auto-disabled this week`);
+    const reEnabled = evCounts.get("auto_re_enabled") || 0;
+    if (reEnabled > 0) parts.push(`re-enabled this week`);
+
+    if (parts.length > 0) {
+      perCompanyTrends.set(name, parts.join(" · "));
+    } else if (streak === 0 && company?.total_product_jobs === 0) {
+      // Unverified zero with no failure activity — boring background row.
+      perCompanyTrends.set(name, "no recent self-heal activity");
+    }
+  }
+
+  // ---- Cross-cutting patterns ----
+  // Pattern 1: ≥3 of today's failures share a platform_type. Likely a
+  // platform-wide regression (e.g., Ashby GraphQL endpoint dropped, all our
+  // Ashby companies fail simultaneously). Worth surfacing so admin doesn't
+  // chase each one separately.
+  const failedPlatformGroups = new Map<string, string[]>();
+  for (const f of input.failedCompanies) {
+    const platform = companyByName.get(f.name)?.platform_type;
+    if (!platform || platform === "generic") continue;
+    const list = failedPlatformGroups.get(platform) || [];
+    list.push(f.name);
+    failedPlatformGroups.set(platform, list);
+  }
+  for (const [platform, companies] of failedPlatformGroups) {
+    if (companies.length >= 3) {
+      crossCuttingPatterns.push({
+        kind: "platform_failure_cluster",
+        description: `${companies.length} failed scrapes today are all on ${platform}. Possible platform-wide regression — check the platform's status before chasing each company.`,
+        companies,
+      });
+    }
+  }
+  // Pattern 2: ≥5 unverified zeros share a platform_type. Could mean the
+  // platform-specific filter (e.g., Ashby title-keyword) is over-filtering.
+  const zeroPlatformGroups = new Map<string, string[]>();
+  for (const z of input.unverifiedZeros) {
+    const platform = companyByName.get(z.name)?.platform_type;
+    if (!platform || platform === "generic") continue;
+    const list = zeroPlatformGroups.get(platform) || [];
+    list.push(z.name);
+    zeroPlatformGroups.set(platform, list);
+  }
+  for (const [platform, companies] of zeroPlatformGroups) {
+    if (companies.length >= 5) {
+      crossCuttingPatterns.push({
+        kind: "platform_zero_cluster",
+        description: `${companies.length} unverified-zero companies share platform ${platform}. Could mean the ${platform} filter is over-rejecting — sanity-check the scraper's filtering logic.`,
+        companies,
+      });
+    }
+  }
+
+  return { perCompanyTrends, crossCuttingPatterns };
 }
 
 /**
