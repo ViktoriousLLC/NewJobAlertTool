@@ -70,6 +70,27 @@ Removed noisy checks (absurd job counts, high non-US ratio, low quality scores).
 - `scraper_events` — `id, company_id, company_name, event_type (auto_remediation|stealth_recovery|auto_disabled|auto_re_enabled), details (jsonb), created_at`. Audit log of self-healing actions. Queried by weekly digest.
 - `security_snapshots` — `id, snapshot_date, total_vulns, by_severity (jsonb), vuln_fingerprints (jsonb)`. Weekly npm audit snapshot.
 
+## Per-company Seniority Filter
+
+`companies.min_relevant_seniority` (added 2026-05-19) filters which PM jobs from a given company appear in the **daily alert email + the recommendation section**. Jobs still land in `seen_jobs` and the public feed (filtered by the same threshold there too).
+
+| Value | Effect |
+|---|---|
+| NULL | Show all PM jobs (default) |
+| `early` | Same as NULL (show all) |
+| `mid` | Skip junior/early-level jobs |
+| `director` | Only show director+ jobs |
+
+Initial backfill: FAANG-tier brands (Google, Meta, Apple, Amazon, Microsoft, Netflix, LinkedIn, Salesforce, Adobe, NVIDIA, Oracle) set to `mid`. Adjust per-company:
+
+```sql
+UPDATE companies SET min_relevant_seniority = 'mid' WHERE name = 'X';
+UPDATE companies SET min_relevant_seniority = 'director' WHERE name = 'Y';
+UPDATE companies SET min_relevant_seniority = NULL WHERE name = 'Z';
+```
+
+Jobs with no detected `job_level` pass through every threshold — preferring over-show on classification misses.
+
 ## Gotchas
 
 - **Cron endpoint**: Must `await runDailyCheck()` — Railway auto-sleep kills fire-and-forget.
