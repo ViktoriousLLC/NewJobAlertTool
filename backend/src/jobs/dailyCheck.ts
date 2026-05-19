@@ -3,7 +3,7 @@ import { supabase } from "../lib/supabase";
 import { scrapeCompanyCareers, stealthFallbackScrape, inferPlatformFromSniffedUrl, ScrapeStats } from "../scraper/scraper";
 import { validateScrapeResults } from "../scraper/validateScrape";
 import { broadATSDiscovery } from "../scraper/detectPlatform";
-import { sendBatchAlerts, buildAlertEmailPayload, sendAdminDigest, NewJobAlert, EmailPayload, BatchSendResult } from "../email/sendAlert";
+import { sendBatchAlerts, buildAlertEmailPayload, sendAdminDigest, NewJobAlert, EmailPayload, BatchSendResult, RecommendedCompany } from "../email/sendAlert";
 import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
 import { CompanyQualityData } from "../scraper/dailyEval";
@@ -33,6 +33,99 @@ async function logScraperEvent(
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// ---- Recommendation engine (PR #1b) -----------------------------------------
+// Per-user "Companies you may find interesting" picker for alert emails.
+// Pure function: takes the user's subscriptions + a cached catalog snapshot
+// and returns 3 recommendations drawn from industries the user shows
+// affinity for. Behavior:
+//   - >=40% subs in one industry  →  3 from that industry
+//   - else if top 2 cover >=60%   →  2 + 1 split across those industries
+//   - else                        →  1 + 1 + 1 across top 3 industries
+// Within an industry: prefer companies with the most new PM jobs this week
+// (excluding ones the user already subscribes to). Within a company: pick
+// the 2 most-senior roles (director > mid > early > unknown).
+
+type CompanyWithIndustry = { id: string; name: string; careersUrl: string; industry: string };
+type RecentJobRow = { title: string; urlPath: string; level: "early" | "mid" | "director" | null };
+
+const SENIORITY_RANK: Record<"director" | "mid" | "early", number> = { director: 0, mid: 1, early: 2 };
+
+function pickRecommendations(
+  userCompanyIds: string[],
+  allCompanies: CompanyWithIndustry[],
+  jobsByCompany: Map<string, RecentJobRow[]>
+): RecommendedCompany[] {
+  if (userCompanyIds.length === 0) return [];
+
+  const subscribedSet = new Set(userCompanyIds);
+  const userCompanies = allCompanies.filter((c) => subscribedSet.has(c.id));
+  if (userCompanies.length === 0) return [];
+
+  // Industry distribution of the user's subscriptions.
+  const industryCounts = new Map<string, number>();
+  for (const c of userCompanies) {
+    industryCounts.set(c.industry, (industryCounts.get(c.industry) || 0) + 1);
+  }
+  const sorted = Array.from(industryCounts.entries()).sort((a, b) => b[1] - a[1]);
+  const totalSubs = userCompanies.length;
+
+  // Allocate the 3 recommendation slots based on dominance.
+  let allocation: { industry: string; count: number }[] = [];
+  const topPct = sorted[0][1] / totalSubs;
+  const topTwoPct = sorted.length >= 2 ? (sorted[0][1] + sorted[1][1]) / totalSubs : topPct;
+  if (topPct >= 0.4) {
+    allocation = [{ industry: sorted[0][0], count: 3 }];
+  } else if (sorted.length >= 2 && topTwoPct >= 0.6) {
+    allocation = [
+      { industry: sorted[0][0], count: 2 },
+      { industry: sorted[1][0], count: 1 },
+    ];
+  } else {
+    allocation = sorted.slice(0, 3).map((s) => ({ industry: s[0], count: 1 }));
+  }
+
+  const recommendations: RecommendedCompany[] = [];
+  const usedCompanyIds = new Set<string>();
+
+  for (const { industry, count } of allocation) {
+    // Pool: companies in this industry the user does NOT track, that posted
+    // PM jobs in the past 7 days.
+    const candidates = allCompanies
+      .filter((c) => c.industry === industry)
+      .filter((c) => !subscribedSet.has(c.id) && !usedCompanyIds.has(c.id))
+      .map((c) => ({ company: c, jobs: jobsByCompany.get(c.id) || [] }))
+      .filter((entry) => entry.jobs.length > 0)
+      .sort((a, b) => b.jobs.length - a.jobs.length);
+
+    for (let i = 0; i < count && i < candidates.length; i++) {
+      const { company, jobs } = candidates[i];
+      usedCompanyIds.add(company.id);
+
+      // Top 2 by seniority. Tie-break by recency (first_seen_at sort was
+      // applied at fetch time, so the array is already most-recent-first).
+      const topJobs = [...jobs]
+        .sort((a, b) => {
+          const ra = a.level ? SENIORITY_RANK[a.level] : 3;
+          const rb = b.level ? SENIORITY_RANK[b.level] : 3;
+          return ra - rb;
+        })
+        .slice(0, 2)
+        .map((j) => ({ title: j.title, urlPath: j.urlPath }));
+
+      recommendations.push({
+        companyName: company.name,
+        careersUrl: company.careersUrl,
+        industry: company.industry,
+        totalNewThisWeek: jobs.length,
+        topRoles: topJobs,
+      });
+    }
+  }
+
+  return recommendations;
+}
+// -----------------------------------------------------------------------------
 
 // Overlap guard: prevent concurrent daily check runs
 let dailyCheckRunning = false;
@@ -580,6 +673,41 @@ async function sendPerUserAlerts(
 
   const isMonday = new Date().getUTCDay() === 1;
 
+  // Recommendation data (PR #1b): fetched once for the whole batch, reused
+  // per-user. Picks from the pool of companies the user does NOT subscribe
+  // to that posted PM jobs in the past 7 days.
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const [allCompaniesResult, recentJobsResult] = await Promise.all([
+    supabase
+      .from("companies")
+      .select("id, name, careers_url, industry")
+      .not("industry", "is", null),
+    supabase
+      .from("seen_jobs")
+      .select("company_id, job_title, job_url_path, job_level, first_seen_at")
+      .eq("is_baseline", false)
+      .eq("status", "active")
+      .gte("first_seen_at", sevenDaysAgo.toISOString())
+      .order("first_seen_at", { ascending: false }),
+  ]);
+  const allCompaniesWithIndustry: CompanyWithIndustry[] = (allCompaniesResult.data || []).map((c) => ({
+    id: c.id as string,
+    name: c.name as string,
+    careersUrl: c.careers_url as string,
+    industry: c.industry as string,
+  }));
+  const recentJobsByCompany = new Map<string, RecentJobRow[]>();
+  for (const row of recentJobsResult.data || []) {
+    const list = recentJobsByCompany.get(row.company_id) || [];
+    list.push({
+      title: row.job_title,
+      urlPath: row.job_url_path,
+      level: (row.job_level as RecentJobRow["level"]) ?? null,
+    });
+    recentJobsByCompany.set(row.company_id, list);
+  }
+
   // Collect all email payloads first, then batch-send via Resend batch API
   const emailPayloads: EmailPayload[] = [];
 
@@ -602,12 +730,21 @@ async function sendPerUserAlerts(
     const userCompanyIds = userSubsMap.get(user.id) || [];
     if (userCompanyIds.length === 0) continue;
 
+    // Compute recommendations for this user from the cached pool. Done once
+    // per user, reused for both daily and weekly emails. Returns [] if the
+    // user has zero subscriptions or no candidate companies exist.
+    const recommendations = pickRecommendations(
+      userCompanyIds,
+      allCompaniesWithIndustry,
+      recentJobsByCompany
+    );
+
     if (freq === "weekly") {
       // Weekly digest: fetch jobs from the past 7 days for this user's subscriptions
       const weeklyAlerts = await getWeeklyAlerts(userCompanyIds);
       if (weeklyAlerts.length === 0) continue;
 
-      emailPayloads.push(buildAlertEmailPayload(user.email, weeklyAlerts, "weekly"));
+      emailPayloads.push(buildAlertEmailPayload(user.email, weeklyAlerts, "weekly", recommendations));
     } else {
       // Daily: use today's scrape results
       const userAlerts: NewJobAlert[] = [];
@@ -620,7 +757,7 @@ async function sendPerUserAlerts(
 
       if (userAlerts.length === 0) continue;
 
-      emailPayloads.push(buildAlertEmailPayload(user.email, userAlerts, "daily"));
+      emailPayloads.push(buildAlertEmailPayload(user.email, userAlerts, "daily", recommendations));
     }
   }
 
