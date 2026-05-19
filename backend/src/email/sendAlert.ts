@@ -6,6 +6,20 @@ export interface NewJobAlert {
   newJobs: { title: string; urlPath: string }[];
 }
 
+/**
+ * Discovery hook surfaced at the bottom of each alert email. Picks 3
+ * companies the user does NOT subscribe to, drawn from industries the user
+ * has shown interest in via their existing subscriptions. Built in
+ * dailyCheck.ts:pickRecommendations.
+ */
+export interface RecommendedCompany {
+  companyName: string;
+  careersUrl: string;
+  industry: string;
+  totalNewThisWeek: number;
+  topRoles: { title: string; urlPath: string }[];
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -40,7 +54,80 @@ function getCompanyLogoUrl(companyName: string, careersUrl: string): string {
   }
 }
 
-function buildAlertHtml(alerts: NewJobAlert[], now: string, period: "daily" | "weekly" = "daily"): string {
+function buildRecommendationsSection(recommendations: RecommendedCompany[], font: string): string {
+  if (recommendations.length === 0) return "";
+
+  let cards = "";
+  for (const rec of recommendations) {
+    const logoUrl = getCompanyLogoUrl(rec.companyName, rec.careersUrl);
+    const remaining = rec.totalNewThisWeek - rec.topRoles.length;
+
+    let roleRows = "";
+    for (const role of rec.topRoles) {
+      const roleUrl = role.urlPath.startsWith("http")
+        ? role.urlPath
+        : new URL(role.urlPath, rec.careersUrl).href;
+      roleRows += `
+                              <tr>
+                                <td style="padding:6px 0;font-size:14px;line-height:1.4;font-family:${font};">
+                                  <a href="${escapeHtml(roleUrl)}" target="_blank" style="color:#0EA5E9;text-decoration:none;">${escapeHtml(role.title)}</a>
+                                </td>
+                              </tr>`;
+    }
+
+    const moreLine = remaining > 0
+      ? `<tr><td style="padding:4px 0 0 0;font-size:12px;color:#a8a29e;font-family:${font};">+ ${remaining} more new role${remaining === 1 ? "" : "s"} this week</td></tr>`
+      : "";
+
+    cards += `
+                          <tr>
+                            <td style="padding:0 0 12px 0;">
+                              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FFFCF7;border:1px solid #F3E8D2;border-radius:8px;">
+                                <tr>
+                                  <td style="padding:14px 18px 4px 18px;">
+                                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                                      <tr>
+                                        <td style="font-size:15px;font-weight:700;color:#1A1A2E;font-family:${font};">
+                                          <img src="${escapeHtml(logoUrl)}" alt="" width="18" height="18" style="vertical-align:middle;margin-right:8px;border-radius:4px;" />
+                                          ${escapeHtml(rec.companyName)}
+                                          <span style="font-weight:400;color:#a8a29e;font-size:12px;margin-left:6px;">· ${escapeHtml(rec.industry)}</span>
+                                        </td>
+                                        <td align="right" style="font-size:12px;color:#78716c;font-family:${font};">
+                                          ${rec.totalNewThisWeek} new this week
+                                        </td>
+                                      </tr>
+                                    </table>
+                                  </td>
+                                </tr>
+                                <tr>
+                                  <td style="padding:6px 18px 14px 18px;">
+                                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${roleRows}${moreLine}</table>
+                                  </td>
+                                </tr>
+                              </table>
+                            </td>
+                          </tr>`;
+  }
+
+  const totalRecJobs = recommendations.reduce((sum, r) => sum + r.totalNewThisWeek, 0);
+  const totalRecCompanies = recommendations.length;
+
+  return `
+                          <tr>
+                            <td style="padding:24px 0 12px 0;border-top:1px solid #e7e5e4;">
+                              <h3 style="margin:0 0 4px 0;font-size:15px;font-weight:700;color:#1A1A2E;font-family:${font};">Companies you may find interesting</h3>
+                              <p style="margin:0 0 12px 0;font-size:13px;color:#78716c;font-family:${font};">Based on the industries you already track.</p>
+                            </td>
+                          </tr>
+                          ${cards}
+                          <tr>
+                            <td style="padding:4px 0 0 0;font-size:12px;color:#a8a29e;font-family:${font};">
+                              ${totalRecCompanies} compan${totalRecCompanies === 1 ? "y" : "ies"} · ${totalRecJobs} new role${totalRecJobs === 1 ? "" : "s"} this week
+                            </td>
+                          </tr>`;
+}
+
+function buildAlertHtml(alerts: NewJobAlert[], now: string, period: "daily" | "weekly" = "daily", recommendations: RecommendedCompany[] = []): string {
   const sorted = [...alerts].sort(
     (a, b) => b.newJobs.length - a.newJobs.length
   );
@@ -117,6 +204,12 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string, period: "daily" | "w
                           </tr>`;
   }
 
+  // Recommendations (PR #1b): 3 companies the user does NOT subscribe to,
+  // drawn from industries they already track. Renders only when the per-user
+  // builder in dailyCheck.ts provides any. Always sits after the alert cards
+  // and before the no-new-jobs tail so it's the email's discovery hook.
+  const recsSection = buildRecommendationsSection(recommendations, font);
+
   // No-new-jobs list
   let noNewSection = "";
   if (noNewJobs.length > 0) {
@@ -174,6 +267,7 @@ function buildAlertHtml(alerts: NewJobAlert[], now: string, period: "daily" | "w
             <td>
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                 ${companySections}
+                ${recsSection}
                 ${noNewSection}
               </table>
             </td>
@@ -218,7 +312,8 @@ export interface EmailPayload {
 export function buildAlertEmailPayload(
   userEmail: string,
   alerts: NewJobAlert[],
-  period: "daily" | "weekly" = "daily"
+  period: "daily" | "weekly" = "daily",
+  recommendations: RecommendedCompany[] = []
 ): EmailPayload {
   const sorted = [...alerts].sort(
     (a, b) => b.newJobs.length - a.newJobs.length
@@ -232,7 +327,7 @@ export function buildAlertEmailPayload(
     day: "numeric",
   });
 
-  const html = buildAlertHtml(alerts, now, period);
+  const html = buildAlertHtml(alerts, now, period, recommendations);
 
   const subject = period === "weekly"
     ? `Weekly PM Digest: ${totalNewJobs} new job${totalNewJobs === 1 ? "" : "s"} this week`
