@@ -122,5 +122,18 @@ function extractFaviconDomain(companyName: string, careersUrl: string): string {
 
 export function getFaviconUrl(companyName: string, careersUrl: string): string {
   const domain = extractFaviconDomain(companyName, careersUrl);
+  // Primary: DuckDuckGo's free icon CDN — better uptime than Google's favicon
+  // service in our measurement, no rate limit, no API key. Real PNG/ICO output.
+  return `https://icons.duckduckgo.com/ip3/${domain}.ico`;
+}
+
+/**
+ * Backup favicon URL — fed into <img>'s onError fallback chain. Returns
+ * Google's favicon service. Behind the entire chain, the colored brand
+ * chip with a letter is always rendered, so even when both CDNs fail the
+ * UI shows something meaningful.
+ */
+export function getFaviconFallbackUrl(companyName: string, careersUrl: string): string {
+  const domain = extractFaviconDomain(companyName, careersUrl);
   return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
 }

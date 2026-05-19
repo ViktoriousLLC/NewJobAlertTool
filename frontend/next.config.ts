@@ -15,7 +15,7 @@ const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https://www.google.com",
+  "img-src 'self' data: https://www.google.com https://icons.duckduckgo.com",
   "font-src 'self'",
   `connect-src 'self' ${apiOrigin} ${supabaseUrl} ${supabaseWss} https://us.i.posthog.com https://us-assets.i.posthog.com https://o4510870199730176.ingest.us.sentry.io`,
   "frame-src 'none'",
