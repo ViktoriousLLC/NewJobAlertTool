@@ -49,22 +49,36 @@ const REGION_PATTERNS: Record<string, { cities: string[]; stateNames: string[]; 
 function buildRegionOrClause(region: string): string {
   const r = REGION_PATTERNS[region];
   if (!r) return "";
-  // PostgREST OR delimiter is comma, and string values containing commas
-  // OR parens MUST be wrapped in double-quotes or PostgREST treats them
-  // as part of the OR-separator/group syntax — that's what malformed the
-  // first version of this clause. Wrap every value defensively.
+  // PostgREST OR delimiter is comma; values containing commas or parens MUST
+  // be wrapped in double-quotes. Wrap every value defensively.
   const quoteValue = (v: string) => `"${v.replace(/"/g, '\\"')}"`;
   const parts: string[] = [];
+
+  // Cities + full state names are unique words → ilike is safe.
   for (const city of r.cities) {
     parts.push(`job_location.ilike.${quoteValue(`%${city}%`)}`);
   }
   for (const name of r.stateNames) {
     parts.push(`job_location.ilike.${quoteValue(`%${name}%`)}`);
   }
-  // State abbreviations anchored with ", " prefix (matches "City, XX" and
-  // "City, XX, US"). The comma is the reason these need quoting.
+
+  // 2-letter state abbreviations have TWO false-positive problems:
+  //   - case-insensitive: "%, NE%" hits ", New Jersey" / ", New York" because
+  //     "New" begins with case-insensitive "Ne"
+  //   - country-code collision: ", IN" is Indiana but also India (e.g. EY's
+  //     "Kochi, KL, IN, 682313")
+  // Fix: use case-sensitive `like` AND require an explicit US country anchor.
+  // Covers "City, XX, US" and "City, XX, USA" and "City, XX, United States"
+  // and the bare "XX, United States" head-of-string case from Oracle HCM.
+  // Trade-off: misses the rare "Chicago, IL" with no country marker. Backlog
+  // item: derive region at scrape time into a real column.
   for (const abbr of r.stateAbbrs) {
-    parts.push(`job_location.ilike.${quoteValue(`%, ${abbr}%`)}`);
+    parts.push(`job_location.like.${quoteValue(`%, ${abbr}, US%`)}`);
+    parts.push(`job_location.like.${quoteValue(`%, ${abbr}, USA%`)}`);
+    parts.push(`job_location.like.${quoteValue(`%, ${abbr}, United States%`)}`);
+    parts.push(`job_location.like.${quoteValue(`${abbr}, US%`)}`);
+    parts.push(`job_location.like.${quoteValue(`${abbr}, USA%`)}`);
+    parts.push(`job_location.like.${quoteValue(`${abbr}, United States%`)}`);
   }
   return parts.join(",");
 }
