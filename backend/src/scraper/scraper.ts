@@ -20,6 +20,60 @@ export interface ScrapeStats {
   totalScanned: number;
 }
 
+/**
+ * Canonical Windows Chrome/120 User-Agent. Used for all server-side scraper
+ * fetches except: Apple (Mac UA at jobs.apple.com), Goldman/Revolut (Chrome/124
+ * — intentional fingerprint match for those specific APIs).
+ */
+const SCRAPER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+/**
+ * Known ATS hosts whose URL paths embed the company slug (e.g.
+ * api.greenhouse.io/v1/boards/{slug}). For these, a cross-domain sniff is
+ * legitimate — inferPlatformFromSniffedUrl re-anchors the data to the right
+ * company via the slug. For non-ATS hosts, a cross-domain sniff usually means
+ * a redirect to a parent/acquired company's careers page, and the sniffed
+ * jobs do not belong to the company we're scraping.
+ */
+const KNOWN_ATS_SNIFF_HOSTS = new Set([
+  "api.greenhouse.io",
+  "boards-api.greenhouse.io",
+  "api.lever.co",
+  "api.ashbyhq.com",
+  "api.smartrecruiters.com",
+]);
+
+/**
+ * Returns true if the sniffed URL is on a different registrable domain than
+ * the company's careers URL AND isn't a known ATS host. Used by
+ * stealthFallbackScrape to reject buckets that belong to a parent company.
+ *
+ * Example: careersUrl=https://neon.com/careers, sniffedUrl=https://www.databricks.com/...
+ *   → true (Databricks acquired Neon; careers page redirected; their data is
+ *   not Neon's data).
+ *
+ * Example: careersUrl=https://jobs.shopify.com, sniffedUrl=https://api.greenhouse.io/v1/boards/shopify/...
+ *   → false (Greenhouse host, slug=shopify embedded in path — legitimate ATS sniff).
+ */
+function isCrossCompanySniff(careersUrl: string, sniffedUrl: string): boolean {
+  try {
+    const careersHost = new URL(careersUrl).hostname.replace(/^www\./, "");
+    const sniffedHost = new URL(sniffedUrl).hostname.replace(/^www\./, "");
+    if (careersHost === sniffedHost) return false;
+    // Same registrable domain (eTLD+1 approximation — last 2 labels).
+    const careersBase = careersHost.split(".").slice(-2).join(".");
+    const sniffedBase = sniffedHost.split(".").slice(-2).join(".");
+    if (careersBase === sniffedBase) return false;
+    // Known ATS hosts re-anchor via slug in path.
+    if (KNOWN_ATS_SNIFF_HOSTS.has(sniffedHost)) return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 const JOB_URL_RE =
   /\/jobs\/[a-z0-9][\w-]{1,}|\/job\/[a-z0-9][\w-]{1,}|\/positions\/[a-z0-9][\w-]{1,}|\/position\/[a-z0-9][\w-]{1,}|\/careers\/[a-z0-9][\w-]{1,}|\/openings\/[a-z0-9][\w-]{1,}|\/roles\/[a-z0-9][\w-]{1,}|\/postings\/[a-z0-9][\w-]{1,}/;
 
@@ -647,7 +701,7 @@ async function scrapeStripeCareers(): Promise<ScrapedJob[]> {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      SCRAPER_UA
     );
 
     const productJobs: { title: string; url: string }[] = [];
@@ -848,7 +902,7 @@ async function scrapeWorkdayCareers(
       const resp = await fetch(detailUrl, {
         headers: {
           "Accept": "application/json",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "User-Agent": SCRAPER_UA,
         },
       });
       if (!resp.ok) return "";
@@ -875,7 +929,7 @@ async function scrapeWorkdayCareers(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "User-Agent": SCRAPER_UA,
           "Accept": "application/json",
         },
         body: JSON.stringify({
@@ -1050,7 +1104,7 @@ async function scrapeAshbyCareers(
       headers: {
         "Content-Type": "application/json",
         "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          SCRAPER_UA,
       },
       body: JSON.stringify(query),
     }
@@ -1177,7 +1231,7 @@ async function scrapeEACareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
 
   const headers = {
     "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      SCRAPER_UA,
     Accept: "text/html",
   };
 
@@ -1436,7 +1490,7 @@ async function scrapeNetflixCareers(careersUrl: string): Promise<ScrapedJob[]> {
 
   const initialResponse = await fetch(`${baseApiUrl}?${params.toString()}`, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "User-Agent": SCRAPER_UA,
       "Accept": "application/json",
     },
   });
@@ -1548,7 +1602,7 @@ async function scrapeEightfoldCareers(careersUrl: string): Promise<ScrapedJob[]>
       const res = await fetch(apiUrl.toString(), {
         headers: {
           "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            SCRAPER_UA,
         },
       });
 
@@ -1637,7 +1691,7 @@ async function scrapeSmartRecruitersCareers(
 
     const response = await fetch(apiUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": SCRAPER_UA,
         Accept: "application/json",
       },
       signal: AbortSignal.timeout(15000),
@@ -1986,7 +2040,7 @@ async function scrapeICIMSCareers(
   try {
     const page = await browser.newPage();
     await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      SCRAPER_UA
     );
 
     await page.goto(baseUrl, { waitUntil: "networkidle2", timeout: 60000 });
@@ -2086,7 +2140,7 @@ async function scrapeLeverCareers(
     `https://api.lever.co/v0/postings/${handle}?mode=json`,
     {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": SCRAPER_UA,
         Accept: "application/json",
       },
     }
@@ -2156,7 +2210,7 @@ async function scrapeGoogleCareers(careersUrl: string): Promise<ScrapedJob[]> {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      SCRAPER_UA
     );
 
     const allJobs: ScrapedJob[] = [];
@@ -2330,7 +2384,7 @@ async function scrapeCoinbaseCareers(): Promise<ScrapedJob[]> {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      SCRAPER_UA
     );
     await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
 
@@ -2427,9 +2481,7 @@ export async function stealthFallbackScrape(careersUrl: string, companyName: str
 
   try {
     const page = await browser.newPage();
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    );
+    await page.setUserAgent(SCRAPER_UA);
     await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
 
     type Bucket = { url: string; jobs: ScrapedJob[] };
@@ -2442,6 +2494,16 @@ export async function stealthFallbackScrape(careersUrl: string, companyName: str
       if (!/career|position|job|opening|posting|department|recruit|board/i.test(url)) return;
       const ct = (res.headers()["content-type"] || "").toLowerCase();
       if (!ct.includes("json")) return;
+      // Cross-company guard: if the sniffed URL is on a different registrable
+      // domain than the company's careers_url, the data probably belongs to a
+      // parent/acquired company (e.g. Neon's careers page redirected to
+      // databricks.com after acquisition, attributing all 19 Databricks PM jobs
+      // to Neon). Known ATS hosts are allowed because their URL path embeds
+      // the company slug, so inferPlatformFromSniffedUrl will re-anchor it.
+      if (isCrossCompanySniff(careersUrl, url)) {
+        console.warn(`StealthFallback[${companyName}]: skipping cross-company sniff ${url}`);
+        return;
+      }
       try {
         const json = await res.json();
         const extracted = extractJobsFromUnknownJson(json, careersUrl);
@@ -2594,13 +2656,14 @@ function extractJobsFromUnknownJson(root: unknown, baseUrl: string): ScrapedJob[
       // Is this an array of job-like objects?
       if (node.length >= 1 && typeof node[0] === "object") {
         const sample = node[0] as Record<string, unknown>;
-        // "text" added 2026-05-18 for Revolut's positions array shape.
-        // Side-effect: any future sniffed JSON whose item has a "text" string field
-        // (e.g. button labels in some APIs) may produce false positives. Monitor
-        // for noise in the Monday self-heal log.
         const titleKey = ["title", "name", "jobTitle", "position", "displayName", "text"].find((k) => typeof sample[k] === "string");
         const idKey = ["id", "jobId", "_id", "identifier", "slug", "absolute_url", "url", "applyUrl"].find((k) => sample[k] !== undefined);
-        if (titleKey && idKey) {
+        // "text" is broad enough to match nav links / FAQ entries / sidebar
+        // cards. Require a co-occurring job hint when we'd be accepting "text"
+        // as the title. Revolut's positions ({id, text, locations[], team})
+        // still qualify via locations[]. Added 2026-05-18.
+        const looksJobLike = titleKey !== "text" || hasJobHint(sample);
+        if (titleKey && idKey && looksJobLike) {
           for (const item of node) {
             if (!item || typeof item !== "object") continue;
             const it = item as Record<string, unknown>;
@@ -2624,6 +2687,25 @@ function extractJobsFromUnknownJson(root: unknown, baseUrl: string): ScrapedJob[
 
   visit(root);
   return found;
+}
+
+/**
+ * Used by extractJobsFromUnknownJson when the only title-shaped field is "text"
+ * (broad). Returns true if the sample object also has a job-shaped sibling:
+ * locations array, team/department string, or a URL whose path looks job-like.
+ * Keeps Revolut positions matching while rejecting nav/FAQ/sidebar arrays.
+ */
+function hasJobHint(sample: Record<string, unknown>): boolean {
+  if (Array.isArray(sample.locations) && sample.locations.length > 0) return true;
+  if (typeof sample.team === "string" && sample.team.length > 0) return true;
+  if (typeof sample.department === "string" && sample.department.length > 0) return true;
+  const urlCandidate =
+    (typeof sample.url === "string" && sample.url) ||
+    (typeof sample.applyUrl === "string" && sample.applyUrl) ||
+    (typeof sample.absolute_url === "string" && sample.absolute_url) ||
+    "";
+  if (urlCandidate && /\/(job|career|position|opening|role|posting)/i.test(urlCandidate)) return true;
+  return false;
 }
 
 function extractLocation(obj: Record<string, unknown>): string {
@@ -2676,7 +2758,7 @@ async function scrapeUberCareers(careersUrl: string): Promise<ScrapedJob[]> {
           "Content-Type": "application/json",
           "x-csrf-token": "x",
           "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            SCRAPER_UA,
         },
         body: JSON.stringify({
           limit: 50,
@@ -2724,14 +2806,10 @@ async function scrapeUberCareers(careersUrl: string): Promise<ScrapedJob[]> {
  * deploy, so we resolve them dynamically by scanning for the known field-name strings.
  */
 async function scrapeShopifyCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
-  const UA =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
   let html: string;
   try {
     const res = await fetch("https://www.shopify.com/careers", {
-      headers: { "User-Agent": UA, Accept: "text/html" },
+      headers: { "User-Agent": SCRAPER_UA, Accept: "text/html" },
       signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2874,7 +2952,7 @@ async function scrapePhenomCareers(
     const res = await fetch(searchUrl, {
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          SCRAPER_UA,
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
       signal: AbortSignal.timeout(30000),
@@ -2964,7 +3042,7 @@ async function scrapeSuccessFactorsCareers(
     const res = await fetch(url, {
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          SCRAPER_UA,
         Accept: "text/html,application/xhtml+xml",
       },
       signal: AbortSignal.timeout(30000),
@@ -3029,7 +3107,7 @@ async function scrapeKPMGCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
     const res = await fetch(url, {
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          SCRAPER_UA,
         Referer: `${BASE}/job-search/`,
         Accept: "application/json, text/javascript, */*",
       },
@@ -3240,17 +3318,52 @@ async function scrapeRevolutCareers(buildId: string, stats?: ScrapeStats): Promi
 }
 
 /**
+ * Walks `text` from startIdx (a `{` character) to the matching `}`, respecting
+ * JSON string quoting and escapes. Returns the substring including both braces,
+ * or null if no balanced close is found. Used by scrapeDeelCareers to safely
+ * slice a job envelope out of the RSC stream before JSON.parse.
+ */
+function sliceBalancedObject(text: string, startIdx: number): string | null {
+  if (text.charCodeAt(startIdx) !== 0x7b /* { */) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = startIdx; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (c === 0x5c /* \ */) { escape = true; continue; }
+      if (c === 0x22 /* " */) { inString = false; }
+      continue;
+    }
+    if (c === 0x22 /* " */) { inString = true; continue; }
+    if (c === 0x7b /* { */) depth++;
+    else if (c === 0x7d /* } */) {
+      depth--;
+      if (depth === 0) return text.slice(startIdx, i + 1);
+    }
+  }
+  return null;
+}
+
+/**
  * Deel job board (jobs.deel.com/{slug}) — Next.js SPA. Use RSC: 1 header to
  * get the React Server Components payload which contains all positions as
  * JSON objects. Generic across Deel customers — Klarna confirmed (106 jobs).
+ *
+ * Parsing strategy: find each job-envelope start via a tight regex (id + jobId
+ * UUIDs + title prefix), then bracket-balance-slice the full object and
+ * JSON.parse. Beats the old single-regex approach which truncated jobLocations
+ * on the first `]` (breaking if any nested array appeared) and only ever read
+ * the first location (always Stockholm for Klarna). Picks the most US-leaning
+ * location when multiple are present.
  */
 async function scrapeDeelCareers(orgSlug: string, label: string, stats?: ScrapeStats): Promise<ScrapedJob[]> {
   let text: string;
   try {
     const res = await fetch(`https://jobs.deel.com/${orgSlug}`, {
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": SCRAPER_UA,
         RSC: "1",
         Accept: "text/plain",
       },
@@ -3266,26 +3379,40 @@ async function scrapeDeelCareers(orgSlug: string, label: string, stats?: ScrapeS
     return [];
   }
 
-  const JOB_RE = /\{"id":"([0-9a-f-]{36})","jobId":"([0-9a-f-]{36})","title":"([^"]+)"[^}]{0,500}"jobLocations":\[([^\]]*)\]/g;
+  // Envelope-start regex: id + jobId UUIDs + title key. We then balance-slice
+  // forward to get the full JSON object.
+  const ENVELOPE_START = /\{"id":"[0-9a-f-]{36}","jobId":"[0-9a-f-]{36}","title":/g;
   const allRaw: ScrapedJob[] = [];
-  let m: RegExpExecArray | null;
   const seen = new Set<string>();
+  let m: RegExpExecArray | null;
 
-  while ((m = JOB_RE.exec(text)) !== null) {
-    const listingId = m[1];
-    const title = m[3];
-    const locationsJson = m[4] ?? "";
+  while ((m = ENVELOPE_START.exec(text)) !== null) {
+    const slice = sliceBalancedObject(text, m.index);
+    if (!slice) continue;
+    let obj: { id?: string; title?: string; jobLocations?: Array<{ name?: string }> };
+    try {
+      obj = JSON.parse(slice);
+    } catch {
+      continue;
+    }
+    if (!obj.id || !obj.title || seen.has(obj.id)) continue;
+    seen.add(obj.id);
 
-    if (seen.has(listingId)) continue;
-    seen.add(listingId);
-
-    const locMatch = locationsJson.match(/"name":"([^"]+)"/);
-    const location = locMatch ? locMatch[1] : "";
+    const locations = Array.isArray(obj.jobLocations)
+      ? obj.jobLocations.map((l) => (typeof l?.name === "string" ? l.name : "")).filter(Boolean)
+      : [];
+    // Prefer US-leaning location when multi-location: Klarna's payload always
+    // sorts Stockholm first, so picking [0] hides any US sites.
+    const preferredLoc =
+      locations.find((loc) => /united states|, usa\b|, us\b/i.test(loc)) ||
+      locations.find((loc) => /\b(NY|CA|TX|WA|MA|IL|GA|NC|FL|CO|AZ|VA|PA|OH|MI|NJ|MN|TN|OR|UT)\b/.test(loc)) ||
+      locations[0] ||
+      "";
 
     allRaw.push({
-      title: title.trim(),
-      location,
-      urlPath: `https://jobs.deel.com/${orgSlug}/${listingId}`,
+      title: obj.title.trim(),
+      location: preferredLoc,
+      urlPath: `https://jobs.deel.com/${orgSlug}/${obj.id}`,
     });
   }
 
@@ -3361,6 +3488,11 @@ export async function scrapeCompanyCareers(
       case "revolut":
         if (platformConfig.buildId) {
           return scrapeRevolutCareers(platformConfig.buildId, stats);
+        }
+        break;
+      case "deel":
+        if (platformConfig.orgSlug) {
+          return scrapeDeelCareers(platformConfig.orgSlug, label, stats);
         }
         break;
       case "custom_api":
@@ -3441,6 +3573,9 @@ export async function scrapeCompanyCareers(
   if (hostname === "jobs.deel.com") {
     const deelSlug = new URL(careersUrl).pathname.replace(/^\//, "").split("/")[0];
     console.log(`Detected Deel job board (slug=${deelSlug}), using RSC scraper`);
+    // label and slug match here — when a Deel company is configured in DB with
+    // platform_type="deel", the platform_type switch above passes the company's
+    // proper label.
     return scrapeDeelCareers(deelSlug, deelSlug, stats);
   }
   if (hostname.includes("kpmguscareers.com")) {
@@ -3563,7 +3698,7 @@ export async function scrapeCompanyCareers(
     const scrapeWork = async () => {
     const page = await browser.newPage();
     await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      SCRAPER_UA
     );
 
     await page.goto(careersUrl, {
