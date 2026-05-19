@@ -15,7 +15,52 @@ const VALID_INDUSTRIES = new Set([
 ]);
 const VALID_LEVELS = new Set(["early", "mid", "director"]);
 const VALID_SORTS = new Set(["latest", "oldest", "company"]);
+const VALID_REGIONS = new Set(["west", "northeast", "midwest", "south", "remote"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Region patterns for server-side location filtering. Building one big OR
+// of ilike conditions per region — verbose but ships down to PostgREST cleanly.
+// City patterns use bare substring match; state abbreviations are anchored by
+// ", " prefix to avoid false matches like "Bangalore" hitting "BA".
+const REGION_PATTERNS: Record<string, { cities: string[]; stateNames: string[]; stateAbbrs: string[] }> = {
+  west: {
+    stateAbbrs: ["CA", "OR", "WA", "NV", "AZ", "UT", "CO", "NM", "ID", "MT", "WY", "AK", "HI"],
+    stateNames: ["California", "Oregon", "Washington", "Nevada", "Arizona", "Utah", "Colorado", "New Mexico", "Idaho", "Montana", "Wyoming", "Alaska", "Hawaii"],
+    cities: ["San Francisco", "Los Angeles", "San Diego", "Seattle", "Portland", "Denver", "Phoenix", "Las Vegas", "Salt Lake City", "Sacramento", "Oakland", "San Jose", "Berkeley", "Palo Alto", "Mountain View", "Menlo Park", "Cupertino", "Sunnyvale", "Santa Clara", "Bellevue", "Redmond", "Albuquerque", "Tucson", "Boise", "Boulder"],
+  },
+  northeast: {
+    stateAbbrs: ["ME", "NH", "VT", "MA", "RI", "CT", "NY", "NJ", "PA"],
+    stateNames: ["Maine", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New York", "New Jersey", "Pennsylvania"],
+    cities: ["New York", "NYC", "Boston", "Philadelphia", "Pittsburgh", "Newark", "Jersey City", "Brooklyn", "Manhattan", "Cambridge", "Hartford"],
+  },
+  midwest: {
+    stateAbbrs: ["OH", "IN", "IL", "MI", "WI", "MO", "IA", "KS", "NE", "ND", "SD", "MN"],
+    stateNames: ["Ohio", "Indiana", "Illinois", "Michigan", "Wisconsin", "Missouri", "Iowa", "Kansas", "Nebraska", "North Dakota", "South Dakota", "Minnesota"],
+    cities: ["Chicago", "Detroit", "Indianapolis", "Columbus", "Milwaukee", "Minneapolis", "St. Paul", "St. Louis", "Kansas City", "Cleveland", "Cincinnati", "Omaha"],
+  },
+  south: {
+    stateAbbrs: ["DE", "MD", "DC", "VA", "WV", "NC", "SC", "GA", "FL", "KY", "TN", "AL", "MS", "AR", "LA", "OK", "TX"],
+    stateNames: ["Delaware", "Maryland", "Washington DC", "Virginia", "West Virginia", "North Carolina", "South Carolina", "Georgia", "Florida", "Kentucky", "Tennessee", "Alabama", "Mississippi", "Arkansas", "Louisiana", "Oklahoma", "Texas"],
+    cities: ["Atlanta", "Miami", "Orlando", "Tampa", "Jacksonville", "Charlotte", "Raleigh", "Durham", "Nashville", "Memphis", "New Orleans", "Houston", "Dallas", "Austin", "San Antonio", "Plano", "Arlington", "Richmond", "Norfolk", "Louisville", "Birmingham"],
+  },
+  // "Remote only" is a special case — handled separately, NOT in this map.
+};
+
+function buildRegionOrClause(region: string): string {
+  const r = REGION_PATTERNS[region];
+  if (!r) return "";
+  const escape = (s: string) => s.replace(/[\\,()]/g, "\\$&");
+  const parts: string[] = [];
+  for (const city of r.cities) parts.push(`job_location.ilike.%${escape(city)}%`);
+  for (const name of r.stateNames) parts.push(`job_location.ilike.%${escape(name)}%`);
+  // State abbreviations: match ", XX" (city, state) and ", XX," (city, state, country)
+  // — avoids 2-letter false matches in random words.
+  for (const abbr of r.stateAbbrs) {
+    parts.push(`job_location.ilike.%, ${abbr}%`);
+    parts.push(`job_location.ilike.%, ${abbr},%`);
+  }
+  return parts.join(",");
+}
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -62,6 +107,12 @@ router.get("/", async (req: Request, res: Response) => {
     const sortParam = typeof req.query.sort === "string" ? req.query.sort : "latest";
     const sort = VALID_SORTS.has(sortParam) ? sortParam : "latest";
 
+    const regionParam = typeof req.query.region === "string" ? req.query.region : null;
+    const region = regionParam && VALID_REGIONS.has(regionParam) ? regionParam : null;
+
+    const cityRaw = typeof req.query.city === "string" ? req.query.city.trim().slice(0, 60) : "";
+    const cityFilter = cityRaw.length > 0 ? cityRaw : null;
+
     // Foreign-key join via Supabase's nested select. `companies!inner` makes
     // the filter on `companies.industry` an INNER JOIN so non-matching jobs
     // are excluded server-side instead of post-filtered in JS.
@@ -77,8 +128,12 @@ router.get("/", async (req: Request, res: Response) => {
       query = query.order("first_seen_at", { ascending: true });
     } else if (sort === "company") {
       // Sort by company name then date so all of one company's jobs cluster.
+      // `referencedTable` is the v2 name (replaced `foreignTable`); both used
+      // to work but newer PostgREST silently ignored foreignTable for nested
+      // sorts, which is why /api/feed?sort=company was returning the default
+      // date-desc order in production.
       query = query
-        .order("name", { foreignTable: "companies", ascending: true })
+        .order("name", { referencedTable: "companies", ascending: true })
         .order("first_seen_at", { ascending: false });
     } else {
       query = query.order("first_seen_at", { ascending: false });
@@ -99,6 +154,21 @@ router.get("/", async (req: Request, res: Response) => {
       // % wildcards are safe here: query is constrained to 100 chars and
       // ilike treats % as a wildcard token, not an injection vector.
       query = query.ilike("job_title", `%${q}%`);
+    }
+
+    // Region: "remote" is a special case (substring match on the word).
+    // The four geo regions push an OR of city + state-name + state-abbr
+    // patterns into PostgREST. Without this, pagination + counts were wrong
+    // because the region filter only ran client-side after fetch.
+    if (region === "remote") {
+      query = query.ilike("job_location", "%Remote%");
+    } else if (region) {
+      const orClause = buildRegionOrClause(region);
+      if (orClause) query = query.or(orClause);
+    }
+
+    if (cityFilter) {
+      query = query.ilike("job_location", `%${cityFilter.replace(/[%_]/g, "\\$&")}%`);
     }
 
     query = query.range(offset, offset + limit - 1);
@@ -134,7 +204,7 @@ router.get("/", async (req: Request, res: Response) => {
       total: count ?? jobs.length,
       limit,
       offset,
-      filters: { industry, level, q, includeClosed, companyId, sort },
+      filters: { industry, level, q, includeClosed, companyId, sort, region, city: cityFilter },
     });
   } catch (err) {
     Sentry.captureException(err);

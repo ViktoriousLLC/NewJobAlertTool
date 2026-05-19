@@ -36,36 +36,13 @@ const LEVEL_PILL: Record<LevelId, { bg: string; text: string }> = {
   director: { bg: "rgb(237 233 254)", text: "rgb(109 40 217)" },
 };
 
-type RegionId = "west" | "northeast" | "midwest" | "south";
-const REGIONS: { id: RegionId; label: string; stateAbbrs: string[]; stateNames: string[]; cities: string[] }[] = [
-  {
-    id: "west",
-    label: "West",
-    stateAbbrs: ["CA", "OR", "WA", "NV", "AZ", "UT", "CO", "NM", "ID", "MT", "WY", "AK", "HI"],
-    stateNames: ["California", "Oregon", "Washington", "Nevada", "Arizona", "Utah", "Colorado", "New Mexico", "Idaho", "Montana", "Wyoming", "Alaska", "Hawaii"],
-    cities: ["San Francisco", "Los Angeles", "San Diego", "Seattle", "Portland", "Denver", "Phoenix", "Las Vegas", "Salt Lake City", "Sacramento", "Oakland", "San Jose", "Berkeley", "Palo Alto", "Mountain View", "Menlo Park", "Cupertino", "Sunnyvale", "Santa Clara", "Bellevue", "Redmond", "Albuquerque", "Tucson", "Boise", "Boulder"],
-  },
-  {
-    id: "northeast",
-    label: "Northeast",
-    stateAbbrs: ["ME", "NH", "VT", "MA", "RI", "CT", "NY", "NJ", "PA"],
-    stateNames: ["Maine", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New York", "New Jersey", "Pennsylvania"],
-    cities: ["New York", "NYC", "Boston", "Philadelphia", "Pittsburgh", "Newark", "Jersey City", "Brooklyn", "Manhattan", "Cambridge", "Hartford"],
-  },
-  {
-    id: "midwest",
-    label: "Midwest",
-    stateAbbrs: ["OH", "IN", "IL", "MI", "WI", "MO", "IA", "KS", "NE", "ND", "SD", "MN"],
-    stateNames: ["Ohio", "Indiana", "Illinois", "Michigan", "Wisconsin", "Missouri", "Iowa", "Kansas", "Nebraska", "North Dakota", "South Dakota", "Minnesota"],
-    cities: ["Chicago", "Detroit", "Indianapolis", "Columbus", "Milwaukee", "Minneapolis", "St. Paul", "St. Louis", "Kansas City", "Cleveland", "Cincinnati", "Omaha"],
-  },
-  {
-    id: "south",
-    label: "South",
-    stateAbbrs: ["DE", "MD", "DC", "VA", "WV", "NC", "SC", "GA", "FL", "KY", "TN", "AL", "MS", "AR", "LA", "OK", "TX"],
-    stateNames: ["Delaware", "Maryland", "Washington DC", "Virginia", "West Virginia", "North Carolina", "South Carolina", "Georgia", "Florida", "Kentucky", "Tennessee", "Alabama", "Mississippi", "Arkansas", "Louisiana", "Oklahoma", "Texas"],
-    cities: ["Atlanta", "Miami", "Orlando", "Tampa", "Jacksonville", "Charlotte", "Raleigh", "Durham", "Nashville", "Memphis", "New Orleans", "Houston", "Dallas", "Austin", "San Antonio", "Plano", "Arlington", "Richmond", "Norfolk", "Louisville", "Birmingham"],
-  },
+type RegionId = "west" | "northeast" | "midwest" | "south" | "remote";
+const REGIONS: { id: RegionId; label: string }[] = [
+  { id: "west", label: "West" },
+  { id: "northeast", label: "Northeast" },
+  { id: "midwest", label: "Midwest" },
+  { id: "south", label: "South" },
+  { id: "remote", label: "Remote only" },
 ];
 
 type SortId = "latest" | "oldest" | "company";
@@ -74,24 +51,6 @@ const SORTS: { id: SortId; label: string }[] = [
   { id: "oldest", label: "Oldest first" },
   { id: "company", label: "Company A → Z" },
 ];
-
-function detectRegion(location: string | null | undefined): RegionId | null {
-  if (!location) return null;
-  const loc = location.toLowerCase();
-  for (const region of REGIONS) {
-    for (const city of region.cities) {
-      if (loc.includes(city.toLowerCase())) return region.id;
-    }
-    for (const name of region.stateNames) {
-      if (loc.includes(name.toLowerCase())) return region.id;
-    }
-    for (const abbr of region.stateAbbrs) {
-      const re = new RegExp(`\\b${abbr}\\b`);
-      if (re.test(location)) return region.id;
-    }
-  }
-  return null;
-}
 
 interface FeedJob {
   id: string;
@@ -162,9 +121,10 @@ export default function JobFeed() {
   const [includeClosed, setIncludeClosed] = useState(false);
   const [sort, setSort] = useState<SortId>("latest");
 
-  // Client-side filters
+  // Region + city now server-side (was client-side; broke pagination)
   const [region, setRegion] = useState<RegionId | null>(null);
   const [city, setCity] = useState("");
+  const [debouncedCity, setDebouncedCity] = useState("");
 
   // Company list (for the cascading dropdown)
   const [allCompanies, setAllCompanies] = useState<CompanyOption[]>([]);
@@ -177,6 +137,11 @@ export default function JobFeed() {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
     return () => clearTimeout(t);
   }, [search]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedCity(city.trim()), 300);
+    return () => clearTimeout(t);
+  }, [city]);
 
   // Fetch the company list once for the dropdown.
   useEffect(() => {
@@ -236,6 +201,8 @@ export default function JobFeed() {
       if (companyId) params.set("company", companyId);
       if (level) params.set("level", level);
       if (debouncedSearch) params.set("q", debouncedSearch);
+      if (region) params.set("region", region);
+      if (debouncedCity) params.set("city", debouncedCity);
       if (includeClosed) params.set("include_closed", "true");
 
       try {
@@ -258,25 +225,19 @@ export default function JobFeed() {
         setLoadingMore(false);
       }
     },
-    [industry, companyId, level, debouncedSearch, includeClosed, sort, offset, showToast]
+    [industry, companyId, level, debouncedSearch, region, debouncedCity, includeClosed, sort, offset, showToast]
   );
 
-  // Reset + refetch on server-side filter change
+  // Reset + refetch on filter change. Region + city are now server-side so
+  // pagination counts and "Load more" work correctly (previously Midwest
+  // showed only 1-2 results from the first 50 with "497 remaining" because
+  // total reflected the server filter, not the client one).
   useEffect(() => {
     fetchFeed({ reset: true, offsetOverride: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [industry, companyId, level, debouncedSearch, includeClosed, sort]);
+  }, [industry, companyId, level, debouncedSearch, region, debouncedCity, includeClosed, sort]);
 
-  // Client-side: region + city narrow further
-  const cityLower = city.trim().toLowerCase();
-  const visibleJobs = useMemo(() => {
-    if (!region && !cityLower) return jobs;
-    return jobs.filter((j) => {
-      if (region && detectRegion(j.location) !== region) return false;
-      if (cityLower && !(j.location || "").toLowerCase().includes(cityLower)) return false;
-      return true;
-    });
-  }, [jobs, region, cityLower]);
+  const visibleJobs = jobs;
 
   // Company dropdown options scoped to the current industry
   const companyOptions = useMemo(() => {
@@ -312,7 +273,6 @@ export default function JobFeed() {
   };
 
   const hasMore = jobs.length < total;
-  const clientFilteredOut = jobs.length - visibleJobs.length;
 
   return (
     <div>
@@ -362,6 +322,7 @@ export default function JobFeed() {
         </div>
       </div>
 
+      {/* Filter order: Level → Region → Industry → Company per UX feedback */}
       <FilterRow label="Level">
         {LEVELS.map((l) => (
           <Chip
@@ -374,6 +335,38 @@ export default function JobFeed() {
           </Chip>
         ))}
       </FilterRow>
+
+      <FilterRow label="Region">
+        <Chip active={region === null} onClick={() => setRegion(null)} activeBg="#1A1A2E">All US</Chip>
+        {REGIONS.map((r) => (
+          <Chip
+            key={r.id}
+            active={region === r.id}
+            onClick={() => setRegion(region === r.id ? null : r.id)}
+            activeBg="#0EA5E9"
+          >
+            {r.label}
+          </Chip>
+        ))}
+      </FilterRow>
+
+      {/* Search city — proper input (was a tiny inline field) */}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] uppercase tracking-wide text-stone-400 font-semibold w-[60px] shrink-0">City</span>
+        <div className="relative w-full sm:w-auto sm:max-w-[240px]">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search city (Austin, SF, Boston…)"
+            value={city}
+            onChange={(e) => setCity(e.target.value)}
+            className="w-full pl-9 pr-3 py-1.5 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
+          />
+        </div>
+      </div>
 
       <FilterRow label="Industry">
         <Chip active={industry === null} onClick={() => setIndustry(null)} activeBg="#1A1A2E">All</Chip>
@@ -415,27 +408,6 @@ export default function JobFeed() {
         )}
       </FilterRow>
 
-      <FilterRow label="Region">
-        <Chip active={region === null} onClick={() => setRegion(null)} activeBg="#1A1A2E">All US</Chip>
-        {REGIONS.map((r) => (
-          <Chip
-            key={r.id}
-            active={region === r.id}
-            onClick={() => setRegion(region === r.id ? null : r.id)}
-            activeBg="#0EA5E9"
-          >
-            {r.label}
-          </Chip>
-        ))}
-        <input
-          type="text"
-          placeholder="City…"
-          value={city}
-          onChange={(e) => setCity(e.target.value)}
-          className="ml-2 px-2.5 py-1 text-[12px] rounded-full border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all w-[140px]"
-        />
-      </FilterRow>
-
       <div className="mb-5">
         <label className="inline-flex items-center gap-2 text-[12px] text-[#6B7280] cursor-pointer select-none">
           <input
@@ -455,11 +427,7 @@ export default function JobFeed() {
         </div>
       ) : visibleJobs.length === 0 ? (
         <div className="bg-white rounded-xl border border-stone-200 p-8 text-center">
-          <p className="text-stone-600">
-            {jobs.length === 0
-              ? "No jobs match these filters. Try clearing the industry, company, or search."
-              : `${clientFilteredOut} jobs hidden by the region/city filter. Clear or change region to see more.`}
-          </p>
+          <p className="text-stone-600">No jobs match these filters. Try clearing region, industry, company, or search.</p>
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
