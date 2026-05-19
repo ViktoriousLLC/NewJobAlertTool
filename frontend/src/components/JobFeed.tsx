@@ -52,6 +52,24 @@ const SORTS: { id: SortId; label: string }[] = [
   { id: "company", label: "Company A → Z" },
 ];
 
+// Min total-comp filter (data source: levels.fyi via comp_cache). Threshold
+// applies to the median of the company's tier matching the job's job_level.
+// Jobs from companies with no levels.fyi data are excluded when the filter
+// is active — we can't verify they meet the bar, better than polluting the view.
+const MIN_COMP_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: "Any comp" },
+  { value: 200_000, label: "$200k+" },
+  { value: 300_000, label: "$300k+" },
+  { value: 500_000, label: "$500k+" },
+  { value: 1_000_000, label: "$1M+" },
+];
+
+function formatComp(amount: number | null | undefined): string {
+  if (!amount) return "—";
+  if (amount >= 1_000_000) return `$${(amount / 1_000_000).toFixed(1)}M`;
+  return `$${Math.round(amount / 1000)}K`;
+}
+
 interface FeedJob {
   id: string;
   title: string;
@@ -66,6 +84,7 @@ interface FeedJob {
     careers_url: string;
     industry: string;
   };
+  comp: { min: number; max: number; median: number | null; tier: string } | null;
 }
 
 interface FeedResponse {
@@ -125,6 +144,10 @@ export default function JobFeed() {
   const [region, setRegion] = useState<RegionId | null>(null);
   const [city, setCity] = useState("");
   const [debouncedCity, setDebouncedCity] = useState("");
+
+  // Minimum total-comp filter (server-side; uses levels.fyi-derived tier
+  // median per company × the job's level).
+  const [minComp, setMinComp] = useState<number>(0);
 
   // Company list (for the cascading dropdown)
   const [allCompanies, setAllCompanies] = useState<CompanyOption[]>([]);
@@ -203,6 +226,7 @@ export default function JobFeed() {
       if (debouncedSearch) params.set("q", debouncedSearch);
       if (region) params.set("region", region);
       if (debouncedCity) params.set("city", debouncedCity);
+      if (minComp > 0) params.set("min_comp", String(minComp));
       if (includeClosed) params.set("include_closed", "true");
 
       try {
@@ -225,17 +249,13 @@ export default function JobFeed() {
         setLoadingMore(false);
       }
     },
-    [industry, companyId, level, debouncedSearch, region, debouncedCity, includeClosed, sort, offset, showToast]
+    [industry, companyId, level, debouncedSearch, region, debouncedCity, minComp, includeClosed, sort, offset, showToast]
   );
 
-  // Reset + refetch on filter change. Region + city are now server-side so
-  // pagination counts and "Load more" work correctly (previously Midwest
-  // showed only 1-2 results from the first 50 with "497 remaining" because
-  // total reflected the server filter, not the client one).
   useEffect(() => {
     fetchFeed({ reset: true, offsetOverride: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [industry, companyId, level, debouncedSearch, region, debouncedCity, includeClosed, sort]);
+  }, [industry, companyId, level, debouncedSearch, region, debouncedCity, minComp, includeClosed, sort]);
 
   const visibleJobs = jobs;
 
@@ -368,6 +388,24 @@ export default function JobFeed() {
         </div>
       </div>
 
+      <FilterRow label="Min comp">
+        {MIN_COMP_OPTIONS.map((opt) => (
+          <Chip
+            key={opt.value}
+            active={minComp === opt.value}
+            onClick={() => setMinComp(opt.value)}
+            activeBg="#16A34A"
+          >
+            {opt.label}
+          </Chip>
+        ))}
+        {minComp > 0 && (
+          <span className="text-[11px] text-stone-400 italic ml-1">
+            (companies with no levels.fyi data excluded)
+          </span>
+        )}
+      </FilterRow>
+
       <FilterRow label="Industry">
         <Chip active={industry === null} onClick={() => setIndustry(null)} activeBg="#1A1A2E">All</Chip>
         {INDUSTRIES.map((ind) => (
@@ -432,12 +470,13 @@ export default function JobFeed() {
       ) : (
         <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full table-fixed min-w-[800px]">
+            <table className="w-full table-fixed min-w-[900px]">
               <colgroup>
+                <col className="w-[16%]" />
+                <col className="w-[30%]" />
                 <col className="w-[18%]" />
-                <col className="w-[36%]" />
-                <col className="w-[20%]" />
-                <col className="w-[8%]" />
+                <col className="w-[7%]" />
+                <col className="w-[11%]" />
                 <col className="w-[8%]" />
                 <col className="w-[10%]" />
               </colgroup>
@@ -447,6 +486,7 @@ export default function JobFeed() {
                   <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Title</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Location</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Level</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Comp <span className="text-[9px] font-normal normal-case text-stone-400">levels.fyi</span></th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Posted</th>
                   <th className="text-right px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Track</th>
                 </tr>
@@ -489,6 +529,15 @@ export default function JobFeed() {
                             }}
                           >
                             {LEVELS.find((l) => l.id === job.level)?.label}
+                          </span>
+                        ) : (
+                          <span className="text-stone-300">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-[12px] whitespace-nowrap">
+                        {job.comp && job.comp.median ? (
+                          <span className="font-medium text-stone-700" title={`${formatComp(job.comp.min)} – ${formatComp(job.comp.max)} range`}>
+                            {formatComp(job.comp.median)}
                           </span>
                         ) : (
                           <span className="text-stone-300">—</span>

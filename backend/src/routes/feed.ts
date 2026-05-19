@@ -141,6 +141,12 @@ router.get("/", async (req: Request, res: Response) => {
     const cityRaw = typeof req.query.city === "string" ? req.query.city.trim().slice(0, 60) : "";
     const cityFilter = cityRaw.length > 0 ? cityRaw : null;
 
+    // Minimum total-comp filter (sourced from comp_cache by company + level).
+    // 0 / unset = no filter. Capped at 10M to bound JS Number behavior in the
+    // unlikely event of weird input.
+    const minCompRaw = Number(req.query.min_comp);
+    const minComp = Number.isFinite(minCompRaw) && minCompRaw > 0 ? Math.min(minCompRaw, 10_000_000) : 0;
+
     // Foreign-key join via Supabase's nested select. `companies!inner` makes
     // the filter on `companies.industry` an INNER JOIN so non-matching jobs
     // are excluded server-side instead of post-filtered in JS.
@@ -224,7 +230,18 @@ router.get("/", async (req: Request, res: Response) => {
     };
 
     const rows = (data as unknown as JoinedRow[]) || [];
-    let jobs = rows.map((row) => ({
+    type FeedJob = {
+      id: string;
+      title: string;
+      location: string | null;
+      urlPath: string;
+      firstSeenAt: string;
+      level: string | null;
+      status: string | null;
+      company: JoinedRow["companies"];
+      comp: { min: number; max: number; median: number | null; tier: string } | null;
+    };
+    let jobs: FeedJob[] = rows.map((row) => ({
       id: row.id,
       title: row.job_title,
       location: row.job_location,
@@ -233,11 +250,36 @@ router.get("/", async (req: Request, res: Response) => {
       level: row.job_level,
       status: row.status,
       company: row.companies,
+      comp: null,
     }));
 
-    // Per-company seniority filter. Apply in Node since PostgREST can't
-    // compare a job column to a joined-row column in a single query. Jobs
-    // with no detected level pass through — better than over-filtering.
+    // ---- Enrich with comp tiers from comp_cache ----
+    // Distinct company names in this page → one batched query → map per job's
+    // job_level to the company's tier. Companies without levels.fyi data
+    // remain `comp = null`. Used both for display and the min_comp filter.
+    const distinctCompanyNames = Array.from(new Set(jobs.map((j) => j.company.name)));
+    if (distinctCompanyNames.length > 0) {
+      const { data: compRows } = await supabase
+        .from("comp_cache")
+        .select("company_name, data")
+        .in("company_name", distinctCompanyNames);
+      const compByName = new Map<string, { tiers?: { early?: { min: number; max: number }; mid?: { min: number; max: number }; director?: { min: number; max: number } }; overallMedianTC?: number }>();
+      for (const row of compRows || []) {
+        compByName.set(row.company_name as string, (row.data as Parameters<typeof compByName.set>[1]) || {});
+      }
+      for (const job of jobs) {
+        const compData = compByName.get(job.company.name);
+        if (!compData?.tiers) continue;
+        const tierKey = job.level === "director" ? "director" : job.level === "mid" ? "mid" : "early";
+        const tier = compData.tiers[tierKey as "early" | "mid" | "director"];
+        if (tier && tier.min && tier.max) {
+          const median = Math.round((tier.min + tier.max) / 2);
+          job.comp = { min: tier.min, max: tier.max, median, tier: tierKey };
+        }
+      }
+    }
+
+    // Per-company seniority filter (manual override, still in effect after PR #33).
     const seniorityFiltered = jobs.filter((j) => {
       const threshold = j.company.min_relevant_seniority;
       if (!threshold) return true;
@@ -249,12 +291,23 @@ router.get("/", async (req: Request, res: Response) => {
     const filteredOutBySeniority = jobs.length - seniorityFiltered.length;
     jobs = seniorityFiltered;
 
+    // Min-comp filter. Excludes jobs without comp data when the filter is on —
+    // we can't verify they meet the threshold, so default to excluding rather
+    // than polluting the user's "$X+" view with unknowns. User can clear the
+    // filter to see all again.
+    let filteredOutByComp = 0;
+    if (minComp > 0) {
+      const compFiltered = jobs.filter((j) => {
+        if (!j.comp || !j.comp.median) return false;
+        return j.comp.median >= minComp;
+      });
+      filteredOutByComp = jobs.length - compFiltered.length;
+      jobs = compFiltered;
+    }
+
     let totalForResponse = count ?? jobs.length;
-    // Adjust total to reflect what the user can actually see (count came from
-    // SQL pre-filter; we just dropped some rows in Node). Approximation —
-    // good enough for "Load more (N remaining)" framing.
-    if (filteredOutBySeniority > 0 && totalForResponse > 0) {
-      totalForResponse = Math.max(0, totalForResponse - filteredOutBySeniority);
+    if (filteredOutBySeniority + filteredOutByComp > 0 && totalForResponse > 0) {
+      totalForResponse = Math.max(0, totalForResponse - filteredOutBySeniority - filteredOutByComp);
     }
 
     if (sort === "company") {
@@ -273,7 +326,7 @@ router.get("/", async (req: Request, res: Response) => {
       total: totalForResponse,
       limit,
       offset,
-      filters: { industry, level, q, includeClosed, companyId, sort, region, city: cityFilter },
+      filters: { industry, level, q, includeClosed, companyId, sort, region, city: cityFilter, minComp },
     });
   } catch (err) {
     Sentry.captureException(err);
