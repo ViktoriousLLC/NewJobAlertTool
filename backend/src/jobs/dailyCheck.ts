@@ -34,6 +34,17 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Per-company seniority floor (companies.min_relevant_seniority). Used by
+// both the daily alert path and the recommendation picker. Job title → level
+// classifier reused so the filter stays consistent with seen_jobs.job_level.
+const SENIORITY_RANK: Record<string, number> = { early: 0, mid: 1, director: 2 };
+function passesSeniorityThreshold(jobTitle: string, threshold: string | null | undefined): boolean {
+  if (!threshold) return true;
+  const level = classifyJobLevel(jobTitle);
+  if (!level) return true; // uncategorized → over-show, don't over-filter
+  return (SENIORITY_RANK[level] ?? 0) >= (SENIORITY_RANK[threshold] ?? 0);
+}
+
 // ---- Recommendation engine (PR #1b) -----------------------------------------
 // Per-user "Companies you may find interesting" picker for alert emails.
 // Pure function: takes the user's subscriptions + a cached catalog snapshot
@@ -46,10 +57,17 @@ function delay(ms: number) {
 // (excluding ones the user already subscribes to). Within a company: pick
 // the 2 most-senior roles (director > mid > early > unknown).
 
-type CompanyWithIndustry = { id: string; name: string; careersUrl: string; industry: string };
+type CompanyWithIndustry = {
+  id: string;
+  name: string;
+  careersUrl: string;
+  industry: string;
+  minRelevantSeniority: string | null;
+};
 type RecentJobRow = { title: string; urlPath: string; level: "early" | "mid" | "director" | null };
 
-const SENIORITY_RANK: Record<"director" | "mid" | "early", number> = { director: 0, mid: 1, early: 2 };
+// Reverse ordering for "most senior first" picking inside a company.
+const RECOMMENDATION_SENIORITY_RANK: Record<"director" | "mid" | "early", number> = { director: 0, mid: 1, early: 2 };
 
 function pickRecommendations(
   userCompanyIds: string[],
@@ -90,11 +108,25 @@ function pickRecommendations(
 
   for (const { industry, count } of allocation) {
     // Pool: companies in this industry the user does NOT track, that posted
-    // PM jobs in the past 7 days.
+    // PM jobs in the past 7 days (after per-company seniority filtering).
     const candidates = allCompanies
       .filter((c) => c.industry === industry)
       .filter((c) => !subscribedSet.has(c.id) && !usedCompanyIds.has(c.id))
-      .map((c) => ({ company: c, jobs: jobsByCompany.get(c.id) || [] }))
+      .map((c) => {
+        const rawJobs = jobsByCompany.get(c.id) || [];
+        // Apply per-company seniority floor — if Google is mid-and-up, an
+        // entry-level Google role shouldn't surface as a recommendation.
+        const eligibleJobs = c.minRelevantSeniority
+          ? rawJobs.filter((j) => {
+              if (!j.level) return true;
+              const tRank = RECOMMENDATION_SENIORITY_RANK[c.minRelevantSeniority as "early" | "mid" | "director"] ?? 99;
+              const jRank = RECOMMENDATION_SENIORITY_RANK[j.level] ?? 99;
+              // Smaller rank = more senior in this map; threshold means "rank <= threshold-rank"
+              return jRank <= tRank;
+            })
+          : rawJobs;
+        return { company: c, jobs: eligibleJobs };
+      })
       .filter((entry) => entry.jobs.length > 0)
       .sort((a, b) => b.jobs.length - a.jobs.length);
 
@@ -106,8 +138,8 @@ function pickRecommendations(
       // applied at fetch time, so the array is already most-recent-first).
       const topJobs = [...jobs]
         .sort((a, b) => {
-          const ra = a.level ? SENIORITY_RANK[a.level] : 3;
-          const rb = b.level ? SENIORITY_RANK[b.level] : 3;
+          const ra = a.level ? RECOMMENDATION_SENIORITY_RANK[a.level] : 3;
+          const rb = b.level ? RECOMMENDATION_SENIORITY_RANK[b.level] : 3;
           return ra - rb;
         })
         .slice(0, 2)
@@ -390,7 +422,14 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
           console.error(`Failed to insert jobs for ${company.name}:`, insertError);
         }
 
-        newJobs.push(...toInsert.map((j) => ({ title: j.title, urlPath: j.urlPath })));
+        // Per-company seniority filter for alerts: jobs still land in seen_jobs
+        // (so the feed shows them with the same filter), but emails skip them.
+        // For Google etc. (min_relevant_seniority='mid'), the "Senior PM, Ads"
+        // role goes through; "Associate PM, Ads" doesn't.
+        const alertable = toInsert.filter((j) =>
+          passesSeniorityThreshold(j.title, company.min_relevant_seniority)
+        );
+        newJobs.push(...alertable.map((j) => ({ title: j.title, urlPath: j.urlPath })));
       }
 
       // 2. Returned jobs: in DB as 'removed' OR 'archived', back in scrape → flip to 'active'
@@ -417,7 +456,10 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       }
       if (returnedJobs.length > 0) {
         console.log(`${company.name}: ${returnedJobs.length} job(s) returned (re-activated from removed/archived)`);
-        newJobs.push(...returnedJobs);
+        const alertable = returnedJobs.filter((j) =>
+          passesSeniorityThreshold(j.title, company.min_relevant_seniority)
+        );
+        newJobs.push(...alertable);
       }
 
       // 2.5. Refresh stale title/location on currently-active jobs. EA renames jobs
@@ -681,7 +723,7 @@ async function sendPerUserAlerts(
   const [allCompaniesResult, recentJobsResult] = await Promise.all([
     supabase
       .from("companies")
-      .select("id, name, careers_url, industry")
+      .select("id, name, careers_url, industry, min_relevant_seniority")
       .not("industry", "is", null),
     supabase
       .from("seen_jobs")
@@ -696,6 +738,7 @@ async function sendPerUserAlerts(
     name: c.name as string,
     careersUrl: c.careers_url as string,
     industry: c.industry as string,
+    minRelevantSeniority: (c.min_relevant_seniority as string | null) ?? null,
   }));
   const recentJobsByCompany = new Map<string, RecentJobRow[]>();
   for (const row of recentJobsResult.data || []) {

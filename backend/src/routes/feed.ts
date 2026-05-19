@@ -14,6 +14,13 @@ const VALID_INDUSTRIES = new Set([
   "gaming", "hardware", "healthcare", "media", "tech",
 ]);
 const VALID_LEVELS = new Set(["early", "mid", "director"]);
+
+// Seniority rank for per-company threshold comparison. companies.min_relevant_seniority
+// can be NULL | 'early' | 'mid' | 'director'. A job passes if its rank >=
+// company's threshold rank. NULL threshold = show all. Jobs with no detected
+// level always pass — uncategorized titles are more likely senior misclassifies
+// than junior; better to over-show than over-filter.
+const SENIORITY_RANK: Record<string, number> = { early: 0, mid: 1, director: 2 };
 const VALID_SORTS = new Set(["latest", "oldest", "company"]);
 const VALID_REGIONS = new Set(["west", "northeast", "midwest", "south", "remote"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -140,7 +147,7 @@ router.get("/", async (req: Request, res: Response) => {
     let query = supabase
       .from("seen_jobs")
       .select(
-        "id, job_title, job_location, job_url_path, first_seen_at, job_level, status, companies!inner ( id, name, careers_url, industry )",
+        "id, job_title, job_location, job_url_path, first_seen_at, job_level, status, companies!inner ( id, name, careers_url, industry, min_relevant_seniority )",
         { count: "exact" }
       )
       .eq("is_baseline", false);
@@ -213,7 +220,7 @@ router.get("/", async (req: Request, res: Response) => {
       first_seen_at: string;
       job_level: string | null;
       status: string | null;
-      companies: { id: string; name: string; careers_url: string; industry: string };
+      companies: { id: string; name: string; careers_url: string; industry: string; min_relevant_seniority: string | null };
     };
 
     const rows = (data as unknown as JoinedRow[]) || [];
@@ -228,7 +235,27 @@ router.get("/", async (req: Request, res: Response) => {
       company: row.companies,
     }));
 
+    // Per-company seniority filter. Apply in Node since PostgREST can't
+    // compare a job column to a joined-row column in a single query. Jobs
+    // with no detected level pass through — better than over-filtering.
+    const seniorityFiltered = jobs.filter((j) => {
+      const threshold = j.company.min_relevant_seniority;
+      if (!threshold) return true;
+      if (!j.level) return true;
+      const tRank = SENIORITY_RANK[threshold] ?? 0;
+      const jRank = SENIORITY_RANK[j.level] ?? 0;
+      return jRank >= tRank;
+    });
+    const filteredOutBySeniority = jobs.length - seniorityFiltered.length;
+    jobs = seniorityFiltered;
+
     let totalForResponse = count ?? jobs.length;
+    // Adjust total to reflect what the user can actually see (count came from
+    // SQL pre-filter; we just dropped some rows in Node). Approximation —
+    // good enough for "Load more (N remaining)" framing.
+    if (filteredOutBySeniority > 0 && totalForResponse > 0) {
+      totalForResponse = Math.max(0, totalForResponse - filteredOutBySeniority);
+    }
 
     if (sort === "company") {
       // Sort by company name ASC, ties broken by newest first within a company.
