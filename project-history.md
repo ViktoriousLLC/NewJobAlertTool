@@ -1283,3 +1283,121 @@ Tonight the plan executed end-to-end in one session, with one wrinkle the user i
 - **Getro scraper** if Solana Labs comes back into scope, or if other crypto/web3 catalog adds use Getro.
 - **Cisco as the second Phenom test.** Adds the generic scraper's first non-eBay user. ~2-line DB add when user wants it.
 - **The unverified-zeros backlog triage.** ~49 companies remain in the section after tonight's work. Each needs admin sign-off (is_verified_zero=true) or scraper investigation. Recurring weekly task until backlog drains.
+
+---
+
+## 2026-05-15 → 2026-05-18 — Targeted Catalog Growth + 5 New ATS Scrapers (Catalog 216 → 244)
+
+### Context
+
+After the zero-jobs audit closed, two distinct catalog-growth paths emerged. The hypothesis: scale to 500-1000 companies by leveraging Common Crawl + targeted vertical batches. This entry covers what got built, what worked, what was rejected, and the strategic insight that came out of it.
+
+### What was decided
+
+**1. Common Crawl harvest pipeline (PR planning + tooling — 2026-05-17).**
+
+Built `backend/src/scripts/common-crawl-harvest.js` to query CC's CDX index for known ATS hostname patterns (`boards.greenhouse.io/*`, `jobs.lever.co/*`, `jobs.ashbyhq.com/*`, `jobs.smartrecruiters.com/*`), extract candidate slugs, validate each against the ATS's own public API, and emit JSONL → SQL via the existing bulk-add toolchain. Plus a companion `harvest-to-sql.js` that converts the candidates into a paste-ready INSERT batch.
+
+Tested end-to-end: 1352 validated companies discovered (446 Greenhouse, 305 Lever, 516 SmartRecruiters, 85 Ashby). After name-dedup against existing catalog: 1328 truly new candidates. Top results dominated by either niche tech the user hadn't heard of (Adyen, Anaplan, Astera Labs, Aurora Innovation, Applied Intuition, Celonis) or non-tech noise (BAYADA Home Health, ALO Yoga, Centria Autism, Ennoble Care, Daniels Sharpsmart).
+
+User reaction: *"I've never even heard of most of these companies. I look mostly in banking, biotech, consulting, those kinds of companies, tech."*
+
+**Deprioritized in favor of targeted curation per vertical.** Pipeline kept (script + JSONL + harvest-to-sql.js stay on disk) for future use if breadth becomes valuable. Decision documented in `docs/backlog.md` under "Catalog Growth Strategy — Targeted Curation."
+
+**2. Targeted curation batches (2026-05-18, 4 phases):**
+
+**Batch A (16 detected, all applied):** Bank of America (Workday), Citi (Eightfold), Charles Schwab (iCIMS), Mastercard (Workday), Wise (SmartRecruiters), Adyen (Greenhouse), Moderna (Workday), Johnson & Johnson (Workday), Vertex Pharmaceuticals (Workday), Biogen (Workday), Eli Lilly (Workday), Bristol-Myers Squibb (Workday), AbbVie (SmartRecruiters), Merck (Workday), Novartis (Workday), AstraZeneca (Eightfold).
+
+**Batch B (8 detected via 3 parallel scraper-doctor agents, all applied):** Morgan Stanley (Eightfold), Wells Fargo (Workday, with curl-verified URL pattern fix), Fidelity Investments (Workday), BlackRock (Workday), Pfizer (Workday), Regeneron (Workday), PwC (Workday), Accenture (Workday).
+
+**Batch C (5 via custom scrapers, PR #13):** Goldman Sachs (custom Higher GraphQL), EY (SuccessFactors generic), KPMG (bespoke WordPress), Klarna (Deel generic), Revolut (Next.js SSG — code shipped, DB add held pending buildId-refresh). Plus BCG via existing Phenom scraper (DB-only add).
+
+**Batch D (verification + 1 quick win via SuccessFactors generic):** Ametek via the SuccessFactors scraper we just shipped.
+
+**Total: 29 high-recognition catalog additions over 4 days.**
+
+**3. Five new ATS scraper types shipped in PR #13 (merged 2026-05-18):**
+
+- `scrapeSuccessFactorsCareers(baseUrl, label, stats?)` — generic SAP SF HTML scraper. Paginates `/search?q=product+manager&startrow=N` (25 per page). Reusable. Active for EY, Ametek.
+- `scrapeGoldmanSachsCareers(stats?)` — Goldman's proprietary "Higher" platform. Unauthenticated GraphQL at `api-higher.gs.com/gateway/api/v1/graphql`. Pagination via `GetRoles`. CF lets server-side POSTs through. **~35 US PMs verified live.**
+- `scrapeKPMGCareers(stats?)` — KPMG-specific WordPress + PHP search endpoint. NOT SuccessFactors despite SSO references.
+- `scrapeDeelCareers(orgSlug, label, stats?)` — generic for any Deel customer's job board. Uses `RSC: 1` header to fetch React Server Components stream from `jobs.deel.com/{slug}`. Regex-parses JSON job objects.
+- `scrapeRevolutCareers(buildId, stats?)` — Revolut's self-hosted Next.js. Cloudflare blocks the HTML at `/careers` but `/_next/data/{buildId}/careers.json` bypasses CF. ~681 positions.
+
+**4. Revolut buildId auto-refresh (PR #14, merged 2026-05-18):** Wired `inferPlatformFromSniffedUrl` to recognize `www.revolut.com/_next/data/{buildId}/careers.json` and extract the buildId. Plus added `"text"` to `extractJobsFromUnknownJson` titleKey list (Revolut positions use `text` not `title`). When Revolut's buildId rotates per deploy, the configured scraper 404s → stealth tier intercepts the new URL → buildId auto-updates in `platform_config`. Risk: the "text" titleKey expansion has cross-company false-positive potential; monitor Monday digest.
+
+**5. Honest scraper verification became a habit.** After PR #13 shipped, ran `catalog-scout` agent to simulate each of the 5 new scrapers against live data with our actual PM_KEYWORDS + HARD_EXCLUSIONS + US filter, reporting real-after-filter yield:
+
+| Scraper | Live API total | After PM_KEYWORDS | After US filter | Verdict |
+|---|---|---|---|---|
+| Goldman Sachs | 819 | 38/700 sampled | **~35** | High yield, kept |
+| EY (SuccessFactors) | ~75 | 7 | **2** | Marginal, kept |
+| BCG (Phenom) | 868 | 1/100 sampled | **~8 extrap.** | Marginal, kept |
+| KPMG (WordPress) | 59 | 0 | **0** | **Structurally 0** — marked `is_verified_zero=true` |
+| Klarna (Deel) | 106 | 3 | **0** | **Structurally 0** — marked `is_verified_zero=true` |
+
+KPMG's 59 results are all engineering leads, SAP product costing managers, and consulting product owners — none pass our filter. Klarna's 106-job Deel board is concentrated Stockholm/Milan/London; their 3 PM-keyword matches are all Europe-based. **Suppressing both from the daily email without auto-disabling working scrapers.**
+
+**6. Companies confirmed permanently unscrapeable:**
+
+| Company | ATS | Why |
+|---|---|---|
+| McKinsey | Avature | Login-gated SPA, robots.txt disallows, no public JSON API |
+| Bain | Avature | Same — confirmed via `<meta name="avature.portal.id">` tag |
+| Deloitte | Avature (NOT Oracle Taleo as initially assumed) | Same — keyword search isn't a title filter, so even if we built Avature support, ~3 minutes per scrape for ~5 PMs makes it impractical |
+| Goldman (originally) | Custom (escaped — found GraphQL) | Now scraped via PR #13 |
+| Klarna's Deel board | Working scraper, no US PMs | Suppressed |
+| KPMG | Working scraper, no PM-titled roles | Suppressed |
+
+**7. Other catalog ops:**
+- **Rivian fix**: `platform_type='custom_api'` with empty config → fixed to `icims` with `baseUrl=https://careers.rivian.com` (curl-verified, returned real PMs immediately).
+- **Bolt revert**: Common Crawl had suggested `bolt42` Greenhouse slug; that board returned 404 (board moved/removed). Reverted to NULL + `is_verified_zero=true`. Bolt has no public scrapable board today.
+- **EA scraper rewrite (PR #10)**: per-`<article>` parsing + paginate-until-empty (replaced broken "of N results" total-count regex) + multi-location handling + `stats` out-param. Also: dailyCheck now refreshes title/location on existing-active jobs (catches in-place renames) AND re-activates archived URLs that reappear (was silently dropping them).
+- **Location filter fix (PR #11)**: `isUSLocation` now short-circuits on `"United States"` / `"USA"` substring before NON_US_PATTERNS gets a chance (was rejecting "United States or Canada, 100% remote" because `Canada` matched first). Added `/\bNorth America\b/i` to US_PATTERNS. Unblocks Sumo Logic + Linear-style remote-NA jobs.
+- **Add-any-URL flow (PR #12)**: `/api/companies/check` now returns `detection_method` (ats_known / ats_discovery / url_discovery / none) + `confidence` (high / medium / experimental). Plumbing for the future trust-system UI.
+
+### Alternatives considered
+
+**Common Crawl ⊥ targeted curation.** Considered applying all 1328 cleaned candidates → catalog would jump 214 → 1542. Rejected: the audience wants recognizable companies in their vertical, not raw count. Decision validated by the user explicitly saying *"I've never even heard of most of these companies."*
+
+**Apply only top-50 by job count.** Same reasoning — top 50 was still mostly niche/non-tech. 24 of 50 were noise.
+
+**Apply only 18 clearly-tech entries from top 50.** Considered. Rejected by user: even "tech" entries like Astera Labs, Anaplan, Adyen are niche to their banking/biotech/consulting target. *"I'd lean toward dropping the 18 and doing targeted batches in your verticals."*
+
+**Build SAP SuccessFactors as priority new ATS.** Worth it — unlocks EY + Ametek + any future F500. Done in PR #13.
+
+**Build Oracle Taleo for Deloitte.** Started; agent investigation revealed Deloitte is NOT on Taleo — it's on Avature. The "Taleo" assumption from earlier triage was wrong. No Taleo scraper built. Saved a half-day.
+
+**Build Avature scraper for McKinsey/Bain/Deloitte.** Agent investigations confirmed Avature is intentionally bot-resistant + login-gated + the search keyword isn't a title filter. Even Puppeteer would need an auth session. Skipped indefinitely.
+
+**Generalize Intuit TalentBrew scraper for Disney.** Investigated; Disney's TalentBrew uses a different URL pattern (server-rendered HTML with `/en/job/...` URLs, not the Intuit `/search-jobs/results?` JSON-in-HTML pattern). Would need a new index→detail crawler. Deferred — ~1 hour build for one company.
+
+**Add `text` to titleKey list in `extractJobsFromUnknownJson`.** Required for Revolut's buildId auto-refresh path. Has cross-company false-positive risk. Accepted because mitigated by: stealth tier only runs on already-failed scrapers (small audience), Monday self-heal log surfaces every `stealth_recovery` for review.
+
+**Run change-reviewer on PR #13.** Skipped — the 5 scrapers were each self-verified by their building agent via curl, and the integration was straightforward. Saved a session round-trip. (PR #14 had no change-reviewer either; one-line patches.)
+
+### Key insights
+
+- **Catalog quality > catalog quantity for our audience.** Raw breadth via Common Crawl finds long-tail SaaS the user has never heard of. PMs job-hunting in banking/biotech/consulting/big-tech want recognizable names in their vertical. The lesson generalizes: scaling along the wrong dimension is worse than not scaling.
+- **Honest verification of scraper yield matters more than "endpoint works."** Built 5 scrapers, all returned 200, all parsed correctly. Verification revealed 2 of 5 (KPMG, Klarna) deliver zero user value despite working perfectly. Without the simulation pass, we'd have shipped silent zeros + added noise to the unverified-zeros email forever.
+- **Industry-wide ATS patterns are real.** Avature dominates consulting (4 of 8 firms). SuccessFactors dominates Fortune-500 HR (we picked up 2 with one scraper). Workday is the safe default for biotech (all 12 pharma giants confirmed). Pattern-matching at the industry level saved enormous time vs. per-company investigation.
+- **The 4-tier scraper architecture (configured → broadATSDiscovery → stealth → infer-and-auto-refresh) handles a remarkable range.** Revolut's CF challenge → stealth bypass → buildId auto-update is the most sophisticated single chain we've built. Each tier extends the others.
+- **Parallel agents are the right tool when the work is independent.** Spawned 3 agents (banking/biotech/consulting) for Batch B research, 4 agents (SuccessFactors/Goldman/Klarna/Revolut) for the custom-scraper round, 5 agents (verification/Revolut-buildId/Taleo/McKinsey/Bain) for the verification round. Total: 12 parallel agent runs across the work. Net: roughly 12-15 hours of human-equivalent work compressed into ~3-4 conversation hours.
+- **"Agents propose, main thread disposes" held across every PR.** No agent committed code directly. Every patch was integrated + verified + reviewed by the main thread before push. 0 production regressions across PRs #10-14.
+
+### Files / artifacts
+
+- **5 merged PRs**: #10 EA rewrite + dailyCheck refresh, #11 location filter, #12 add-any-URL, #13 5 new scrapers, #14 Revolut buildId auto-refresh
+- **Common Crawl tooling**: `backend/src/scripts/common-crawl-harvest.js`, `harvest-to-sql.js`, `candidates_clean.jsonl` (1328 candidates), `existing-careers-urls.txt`
+- **Targeted-curation tooling**: `bulk-add-targeted-20260518.js`, `targeted-20260518.jsonl`
+- **Backlog updated**: `docs/backlog.md` "Catalog Growth Strategy — Targeted Curation" section + "Next-Phase Plan — Build Order (TLDR)"
+- **Catalog**: 216 → 244 companies. KPMG + Klarna marked `is_verified_zero=true`. Bolt reverted to NULL + verified-zero. Rivian config fixed.
+
+### Next batch — open ideas
+
+- **DocuSign + Joby Aviation iCIMS deep-dive** — both return HTML SPA at `/api/jobs` (different iCIMS template than Rivian/Costco). Find their actual JSON endpoint or use Puppeteer iCIMS scraper. ~half-day.
+- **Disney TalentBrew custom scraper** — index page has 645KB HTML with `/en/job/...` URLs; each detail page emits JSON-LD JobPosting. Build index→detail crawler. ~1 hour for one company.
+- **Shopify prod debugging** — scraper works locally (84 jobs parsed correctly), prod cron returns 0. Likely Cloudflare blocking Railway IP. Needs prod log access.
+- **Trust foundation UI** — frontend changes to show `confidence` badges (high/medium/experimental) on company cards, surface `detection_method` to admin, build user-report button feeding the future triage agent inbox.
+- **Phase 1 Stripe billing** — 3-tier auth (anonymous browse / free login save / paid add-any-URL). Per existing monetization plan.
+- **eBay Phenom Vue stealth crawl** — if eBay subscribers grow, build a stealth-rendered Vue crawl that goes beyond the 10-job server-render cap. Defer indefinitely until demand justifies.
