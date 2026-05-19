@@ -106,22 +106,27 @@ function pickRecommendations(
   const recommendations: RecommendedCompany[] = [];
   const usedCompanyIds = new Set<string>();
 
+  // Rotation: pool top-8 candidates per slot, cycle which `count` appear
+  // based on day-of-month so the email feels fresh even when the underlying
+  // top-job-posters don't change. Day 1 picks slice [0..count); Day 2 picks
+  // [1..count+1); wraps mod pool size. Deterministic — same companies for
+  // every user on a given day, no per-user RNG state needed.
+  const POOL_SIZE = 8;
+  const dayOfMonth = new Date().getUTCDate();
+
   for (const { industry, count } of allocation) {
     // Pool: companies in this industry the user does NOT track, that posted
     // PM jobs in the past 7 days (after per-company seniority filtering).
-    const candidates = allCompanies
+    const allRanked = allCompanies
       .filter((c) => c.industry === industry)
       .filter((c) => !subscribedSet.has(c.id) && !usedCompanyIds.has(c.id))
       .map((c) => {
         const rawJobs = jobsByCompany.get(c.id) || [];
-        // Apply per-company seniority floor — if Google is mid-and-up, an
-        // entry-level Google role shouldn't surface as a recommendation.
         const eligibleJobs = c.minRelevantSeniority
           ? rawJobs.filter((j) => {
               if (!j.level) return true;
               const tRank = RECOMMENDATION_SENIORITY_RANK[c.minRelevantSeniority as "early" | "mid" | "director"] ?? 99;
               const jRank = RECOMMENDATION_SENIORITY_RANK[j.level] ?? 99;
-              // Smaller rank = more senior in this map; threshold means "rank <= threshold-rank"
               return jRank <= tRank;
             })
           : rawJobs;
@@ -130,7 +135,16 @@ function pickRecommendations(
       .filter((entry) => entry.jobs.length > 0)
       .sort((a, b) => b.jobs.length - a.jobs.length);
 
-    for (let i = 0; i < count && i < candidates.length; i++) {
+    const pool = allRanked.slice(0, POOL_SIZE);
+    const candidates: typeof pool = [];
+    if (pool.length > 0) {
+      const start = (dayOfMonth - 1) % pool.length;
+      for (let i = 0; i < count && i < pool.length; i++) {
+        candidates.push(pool[(start + i) % pool.length]);
+      }
+    }
+
+    for (let i = 0; i < candidates.length; i++) {
       const { company, jobs } = candidates[i];
       usedCompanyIds.add(company.id);
 
@@ -455,11 +469,14 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
         }
       }
       if (returnedJobs.length > 0) {
-        console.log(`${company.name}: ${returnedJobs.length} job(s) returned (re-activated from removed/archived)`);
-        const alertable = returnedJobs.filter((j) =>
-          passesSeniorityThreshold(j.title, company.min_relevant_seniority)
-        );
-        newJobs.push(...alertable);
+        // Note: deliberately NOT pushing to `newJobs`. Scraper instability
+        // (jobs disappearing then reappearing) was causing months-old roles
+        // to flag as "new today" in the daily email — diagnosed 2026-05-19
+        // when an OpenAI role first seen 2026-02-26 showed up in today's
+        // "5 new at OpenAI" list. Users see returned jobs in the /new-home
+        // feed (status=active there); they shouldn't pollute the email's
+        // "what's actually new" framing.
+        console.log(`${company.name}: ${returnedJobs.length} job(s) returned (re-activated, NOT included in email's "new")`);
       }
 
       // 2.5. Refresh stale title/location on currently-active jobs. EA renames jobs
