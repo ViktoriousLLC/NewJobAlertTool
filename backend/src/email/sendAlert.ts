@@ -128,9 +128,21 @@ function buildRecommendationsSection(recommendations: RecommendedCompany[], font
 }
 
 function buildAlertHtml(alerts: NewJobAlert[], now: string, period: "daily" | "weekly" = "daily", recommendations: RecommendedCompany[] = []): string {
-  const sorted = [...alerts].sort(
-    (a, b) => b.newJobs.length - a.newJobs.length
-  );
+  // Firehose-sort: companies with >=10 new jobs (Microsoft/Amazon style)
+  // drowned out single-job companies the admin actually wanted to see.
+  // Now: small batches first (DESC by count so 8 > 5 > 3 > 1), then the
+  // firehoses pinned to the bottom (still DESC among themselves). Keeps
+  // the "I just got an Anthropic role" jolt at the top of the email.
+  const FIREHOSE_THRESHOLD = 10;
+  const small: NewJobAlert[] = [];
+  const big: NewJobAlert[] = [];
+  for (const a of alerts) {
+    if (a.newJobs.length >= FIREHOSE_THRESHOLD) big.push(a);
+    else small.push(a);
+  }
+  small.sort((a, b) => b.newJobs.length - a.newJobs.length);
+  big.sort((a, b) => b.newJobs.length - a.newJobs.length);
+  const sorted = [...small, ...big];
   const totalNewJobs = sorted.reduce((sum, a) => sum + a.newJobs.length, 0);
   const companiesWithNew = sorted.filter((a) => a.newJobs.length > 0);
   const noNewJobs = sorted.filter((a) => a.newJobs.length === 0);
