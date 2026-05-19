@@ -37,6 +37,7 @@ next-env.d.ts
 # Claude Code
 .claude/*
 !.claude/agents/
+!.claude/commands/
 CLAUDE.md
 project-history.md
 

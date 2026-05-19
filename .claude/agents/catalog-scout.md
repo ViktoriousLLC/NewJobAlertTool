@@ -67,3 +67,68 @@ Total: N companies. M with confirmed platform, K need detection on first scrape.
 ## When stuck
 
 If a category is ambiguous ("good startups"), ask the user to narrow it: stage (seed/A/B/C+), region (Bay Area/NYC/remote-US), domain (AI/fintech/biotech/etc.), size (employee count or revenue). Don't guess.
+
+---
+
+## Mode: simulate-yield
+
+When invoked with a prompt that begins with `MODE: simulate-yield` followed by a JSONL list of newly-added companies, switch to validation mode instead of discovery.
+
+### Goal
+
+For each company, estimate the **real US-PM yield** the daily cron will produce — *not* the raw job count, but the count after PM_KEYWORDS filtering and US location filtering. This catches the Klarna/KPMG/Bolt failure mode where the scraper works but yield is structurally 0 (e.g., entire board is Stockholm, or all titles are consulting roles that PM_KEYWORDS rejects).
+
+### Procedure (per company)
+
+1. **Fetch the live source** using the platform info from the JSONL:
+   - `greenhouse`: `WebFetch https://api.greenhouse.io/v1/boards/{boardToken}/jobs?content=true`
+   - `lever`: `WebFetch https://api.lever.co/v0/postings/{handle}?mode=json`
+   - `ashby`: try `WebFetch https://jobs.ashbyhq.com/{orgName}` — Ashby's GraphQL is harder to hit from WebFetch, so the HTML form is fine as a sanity check
+   - `workday`, `icims`, `oracle_hcm`, `successfactors`, `phenom`, `deel`, `revolut`, `apple`, `shopify`, `goldman_higher`, `kpmg`: `WebFetch` the careers_url directly and reason about visible titles
+   - `null` (needs-detection): WebFetch the careers_url and reason about visible titles
+
+2. **Apply the PM_KEYWORDS filter** to the titles you see. Current keywords (mirror `backend/src/scraper/validateScrape.ts`):
+   - `product manager`, `product management`, `product owner`, `product lead`, `head of product`, `vp product`, `vp of product`, `chief product`, `cpo`, `director of product`, `principal product`, `senior product`, `staff product`, `lead product`, `group product`, `associate product`, `product strategy`
+   - Also reject titles matching HARD_EXCLUSIONS even if PM_KEYWORDS matched: `data product`, `marketing product`, `technical program manager`, `tpm`, `program manager` (unless qualified), `business operations`, `customer experience`, `solution consultant`, `sales engineer`, etc.
+
+3. **Apply the US location filter** (mirror `backend/src/lib/locationFilter.ts`):
+   - Accept: any "United States", "USA", "Remote - US", "Remote (US)", "North America", or any of the 50 US state names/abbreviations co-occurring with a city, or pure US city names (San Francisco, NYC, etc.)
+   - Reject: India, UK, Germany, Canada (ON,CA / BC,CA / Toronto / Vancouver), Australia, Singapore, EMEA, APAC, LATAM, or any unambiguous non-US country/region marker
+   - If location is empty / unclear: count as non-US (matches the prod code's conservative default)
+
+4. **Compute `estimated_us_pm_count`** = titles passing both filters.
+
+### Output contract
+
+For simulate-yield mode return EXACTLY this (no JSONL block, no Verification notes — different shape):
+
+```
+## Simulate-yield results
+
+| Company | Platform | Total visible | After PM filter | After US filter | Verdict |
+|---|---|---:|---:|---:|---|
+| <name> | <platform> | N | M | K | ✅ has yield / ⚠️ structural zero / ❓ uncertain |
+
+### Recommended is_verified_zero updates
+
+The following companies have **structural zero yield** (scraper works, but no US PM titles will ever land):
+- <company> — <reason, e.g. "all 106 titles are Stockholm ops">
+- <company> — <reason>
+
+### Manual recheck recommended
+
+The following companies returned uncertain results (couldn't fetch live data, ambiguous titles, etc.). Don't auto-flip is_verified_zero; let the first real cron run validate them:
+- <company> — <reason>
+```
+
+### Verdict heuristic
+
+- **✅ has yield**: estimated_us_pm_count ≥ 1
+- **⚠️ structural zero**: total visible ≥ 20 jobs AND after-US-filter count is 0. The scraper is working — the company genuinely has 0 US PM roles on the board. Safe to mark `is_verified_zero=true`.
+- **❓ uncertain**: couldn't fetch, total visible < 20 (board too small to be sure), or titles too ambiguous to filter confidently. Leave for the daily cron to verify.
+
+### Output discipline (simulate-yield)
+
+- DO NOT update the DB yourself. Return recommendations only — the orchestrating slash command applies updates via Supabase MCP after user confirmation.
+- DO NOT mark something `is_verified_zero=true` based on a small sample (< 20 visible jobs). Better to be wrong about "uncertain" than to silently hide a working scraper.
+- DO note when the prod `is_verified` ratchet would override your verdict anyway (it auto-flips to true on any successful >0 scrape).
