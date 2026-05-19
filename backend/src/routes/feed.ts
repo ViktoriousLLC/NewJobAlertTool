@@ -32,18 +32,26 @@ router.get("/", async (req: Request, res: Response) => {
     const qRaw = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 100) : "";
     const q = qRaw.length > 0 ? qRaw : null;
 
+    const includeClosed = req.query.include_closed === "true";
+
     // Foreign-key join via Supabase's nested select. `companies!inner` makes
     // the filter on `companies.industry` an INNER JOIN so non-matching jobs
     // are excluded server-side instead of post-filtered in JS.
     let query = supabase
       .from("seen_jobs")
       .select(
-        "id, job_title, job_location, job_url_path, first_seen_at, job_level, companies!inner ( id, name, careers_url, industry )",
+        "id, job_title, job_location, job_url_path, first_seen_at, job_level, status, companies!inner ( id, name, careers_url, industry )",
         { count: "exact" }
       )
-      .eq("status", "active")
       .eq("is_baseline", false)
       .order("first_seen_at", { ascending: false });
+
+    if (includeClosed) {
+      // Active + removed; archived is too old to be useful.
+      query = query.in("status", ["active", "removed"]);
+    } else {
+      query = query.eq("status", "active");
+    }
 
     if (industry) query = query.eq("companies.industry", industry);
     if (level) query = query.eq("job_level", level);
@@ -66,6 +74,7 @@ router.get("/", async (req: Request, res: Response) => {
       job_url_path: string;
       first_seen_at: string;
       job_level: string | null;
+      status: string | null;
       companies: { id: string; name: string; careers_url: string; industry: string };
     };
 
@@ -77,6 +86,7 @@ router.get("/", async (req: Request, res: Response) => {
       urlPath: row.job_url_path,
       firstSeenAt: row.first_seen_at,
       level: row.job_level,
+      status: row.status,
       company: row.companies,
     }));
 
@@ -85,7 +95,7 @@ router.get("/", async (req: Request, res: Response) => {
       total: count ?? jobs.length,
       limit,
       offset,
-      filters: { industry, level, q },
+      filters: { industry, level, q, includeClosed },
     });
   } catch (err) {
     Sentry.captureException(err);

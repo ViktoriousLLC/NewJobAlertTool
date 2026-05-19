@@ -7,14 +7,13 @@ import { apiFetch } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { getBrandColor, getFaviconUrl, softenColor } from "@/lib/brandColors";
 
-// Job-first landing feed. Drives the new `/` page. Public read (no auth
-// required) — the Track action is the only gated path, falling back to
-// /login when the visitor isn't signed in.
-
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 const PAGE_SIZE = 50;
 
-const INDUSTRIES = [
+// Industries: DB values (left) mapped to display labels (right). Healthcare
+// renamed to "Health-tech" in UI to make the consumer-health + medical-devices
+// scope clearer ("biotech" is the lab-research bucket).
+const INDUSTRIES: { id: string; label: string }[] = [
   { id: "tech", label: "Tech" },
   { id: "fintech", label: "Fintech" },
   { id: "biotech", label: "Biotech" },
@@ -24,21 +23,76 @@ const INDUSTRIES = [
   { id: "media", label: "Media" },
   { id: "banking", label: "Banking" },
   { id: "consulting", label: "Consulting" },
-  { id: "healthcare", label: "Healthcare" },
-] as const;
+  { id: "healthcare", label: "Health-tech" },
+];
 
-type LevelId = "director" | "mid" | "early";
-const LEVELS: { id: LevelId; label: string; color: string }[] = [
-  { id: "director", label: "Director+", color: "violet" },
-  { id: "mid", label: "Mid", color: "amber" },
-  { id: "early", label: "Junior", color: "blue" },
+// Sorted junior → director (per user feedback: low-to-high seniority).
+type LevelId = "early" | "mid" | "director";
+const LEVELS: { id: LevelId; label: string }[] = [
+  { id: "early", label: "Junior" },
+  { id: "mid", label: "Mid" },
+  { id: "director", label: "Director+" },
 ];
 
 const LEVEL_PILL: Record<LevelId, { bg: string; text: string }> = {
-  director: { bg: "rgb(237 233 254)", text: "rgb(109 40 217)" },
-  mid: { bg: "rgb(254 243 199)", text: "rgb(180 83 9)" },
   early: { bg: "rgb(219 234 254)", text: "rgb(29 78 216)" },
+  mid: { bg: "rgb(254 243 199)", text: "rgb(180 83 9)" },
+  director: { bg: "rgb(237 233 254)", text: "rgb(109 40 217)" },
 };
+
+// US regions for the location filter. Patterns matched in priority order
+// (cities first, then state names, then abbreviations) — state abbreviations
+// like "WA" are short and need a word-boundary anchor to avoid false matches.
+type RegionId = "west" | "northeast" | "midwest" | "south";
+const REGIONS: { id: RegionId; label: string; stateAbbrs: string[]; stateNames: string[]; cities: string[] }[] = [
+  {
+    id: "west",
+    label: "West",
+    stateAbbrs: ["CA", "OR", "WA", "NV", "AZ", "UT", "CO", "NM", "ID", "MT", "WY", "AK", "HI"],
+    stateNames: ["California", "Oregon", "Washington", "Nevada", "Arizona", "Utah", "Colorado", "New Mexico", "Idaho", "Montana", "Wyoming", "Alaska", "Hawaii"],
+    cities: ["San Francisco", "Los Angeles", "San Diego", "Seattle", "Portland", "Denver", "Phoenix", "Las Vegas", "Salt Lake City", "Sacramento", "Oakland", "San Jose", "Berkeley", "Palo Alto", "Mountain View", "Menlo Park", "Cupertino", "Sunnyvale", "Santa Clara", "Bellevue", "Redmond", "Albuquerque", "Tucson", "Boise", "Boulder"],
+  },
+  {
+    id: "northeast",
+    label: "Northeast",
+    stateAbbrs: ["ME", "NH", "VT", "MA", "RI", "CT", "NY", "NJ", "PA"],
+    stateNames: ["Maine", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New York", "New Jersey", "Pennsylvania"],
+    cities: ["New York", "NYC", "Boston", "Philadelphia", "Pittsburgh", "Newark", "Jersey City", "Brooklyn", "Manhattan", "Cambridge", "Hartford"],
+  },
+  {
+    id: "midwest",
+    label: "Midwest",
+    stateAbbrs: ["OH", "IN", "IL", "MI", "WI", "MO", "IA", "KS", "NE", "ND", "SD", "MN"],
+    stateNames: ["Ohio", "Indiana", "Illinois", "Michigan", "Wisconsin", "Missouri", "Iowa", "Kansas", "Nebraska", "North Dakota", "South Dakota", "Minnesota"],
+    cities: ["Chicago", "Detroit", "Indianapolis", "Columbus", "Milwaukee", "Minneapolis", "St. Paul", "St. Louis", "Kansas City", "Cleveland", "Cincinnati", "Omaha"],
+  },
+  {
+    id: "south",
+    label: "South",
+    stateAbbrs: ["DE", "MD", "DC", "VA", "WV", "NC", "SC", "GA", "FL", "KY", "TN", "AL", "MS", "AR", "LA", "OK", "TX"],
+    stateNames: ["Delaware", "Maryland", "Washington DC", "Virginia", "West Virginia", "North Carolina", "South Carolina", "Georgia", "Florida", "Kentucky", "Tennessee", "Alabama", "Mississippi", "Arkansas", "Louisiana", "Oklahoma", "Texas"],
+    cities: ["Atlanta", "Miami", "Orlando", "Tampa", "Jacksonville", "Charlotte", "Raleigh", "Durham", "Nashville", "Memphis", "New Orleans", "Houston", "Dallas", "Austin", "San Antonio", "Plano", "Arlington", "Richmond", "Norfolk", "Louisville", "Birmingham"],
+  },
+];
+
+function detectRegion(location: string | null | undefined): RegionId | null {
+  if (!location) return null;
+  const loc = location.toLowerCase();
+  for (const region of REGIONS) {
+    for (const city of region.cities) {
+      if (loc.includes(city.toLowerCase())) return region.id;
+    }
+    for (const name of region.stateNames) {
+      if (loc.includes(name.toLowerCase())) return region.id;
+    }
+    for (const abbr of region.stateAbbrs) {
+      // Word-boundary match for 2-letter abbreviations
+      const re = new RegExp(`\\b${abbr}\\b`);
+      if (re.test(location)) return region.id;
+    }
+  }
+  return null;
+}
 
 interface FeedJob {
   id: string;
@@ -47,6 +101,7 @@ interface FeedJob {
   urlPath: string;
   firstSeenAt: string;
   level: LevelId | null;
+  status: string | null;
   company: {
     id: string;
     name: string;
@@ -93,22 +148,27 @@ export default function JobFeed() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // Server-side filters
   const [industry, setIndustry] = useState<string | null>(null);
   const [level, setLevel] = useState<LevelId | null>(null);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [includeClosed, setIncludeClosed] = useState(false);
+
+  // Client-side filters (location is computed from the location string,
+  // can't easily be done in SQL without parsing on the backend)
+  const [region, setRegion] = useState<RegionId | null>(null);
+  const [city, setCity] = useState("");
 
   const [isAuthed, setIsAuthed] = useState<boolean>(false);
   const [subscribedCompanyIds, setSubscribedCompanyIds] = useState<Set<string>>(new Set());
   const [trackingInFlight, setTrackingInFlight] = useState<Set<string>>(new Set());
 
-  // Debounce the search input — 300ms.
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
     return () => clearTimeout(t);
   }, [search]);
 
-  // Detect session + load existing subscriptions for the Track button state.
   useEffect(() => {
     let cancelled = false;
     supabase.auth.getSession().then(async ({ data }) => {
@@ -122,7 +182,7 @@ export default function JobFeed() {
             setSubscribedCompanyIds(new Set(ids));
           }
         } catch {
-          // Best-effort; the feed still renders without sub data.
+          // best-effort
         }
       }
     });
@@ -142,6 +202,7 @@ export default function JobFeed() {
       if (industry) params.set("industry", industry);
       if (level) params.set("level", level);
       if (debouncedSearch) params.set("q", debouncedSearch);
+      if (includeClosed) params.set("include_closed", "true");
 
       try {
         const res = await fetch(`${API_URL}/api/feed?${params.toString()}`);
@@ -163,18 +224,29 @@ export default function JobFeed() {
         setLoadingMore(false);
       }
     },
-    [industry, level, debouncedSearch, offset, showToast]
+    [industry, level, debouncedSearch, includeClosed, offset, showToast]
   );
 
-  // Reset + refetch when filters change.
+  // Reset + refetch when server-side filters change
   useEffect(() => {
     fetchFeed({ reset: true, offsetOverride: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [industry, level, debouncedSearch]);
+  }, [industry, level, debouncedSearch, includeClosed]);
+
+  // Apply client-side filters (region + city) on top of server data
+  const cityLower = city.trim().toLowerCase();
+  const visibleJobs = useMemo(() => {
+    if (!region && !cityLower) return jobs;
+    return jobs.filter((j) => {
+      if (region && detectRegion(j.location) !== region) return false;
+      if (cityLower && !(j.location || "").toLowerCase().includes(cityLower)) return false;
+      return true;
+    });
+  }, [jobs, region, cityLower]);
 
   const handleTrack = async (companyId: string, companyName: string) => {
     if (!isAuthed) {
-      router.push(`/login?next=${encodeURIComponent("/")}`);
+      router.push(`/login?next=${encodeURIComponent("/new-home")}`);
       return;
     }
     if (subscribedCompanyIds.has(companyId)) return;
@@ -200,138 +272,152 @@ export default function JobFeed() {
   };
 
   const hasMore = jobs.length < total;
+  const clientFilteredOut = jobs.length - visibleJobs.length;
 
-  // Top-strip stats
-  const visibleCount = jobs.length;
-  const filterSummary = useMemo(() => {
-    const parts: string[] = [];
-    if (industry) parts.push(INDUSTRIES.find((i) => i.id === industry)?.label || industry);
-    if (level) parts.push(LEVELS.find((l) => l.id === level)?.label || level);
-    if (debouncedSearch) parts.push(`"${debouncedSearch}"`);
-    return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
-  }, [industry, level, debouncedSearch]);
-
+  // -------- Render --------
   return (
     <div>
-      {/* Hero strip */}
-      <div className="mb-4 sm:mb-6">
-        <h1 className="text-[24px] sm:text-[28px] font-[800] text-[#1A1A2E] leading-tight">
-          Latest PM jobs <span className="text-[#6B7280] font-[500]">across 243 companies</span>
+      {/* Header */}
+      <div className="mb-5">
+        <h1 className="text-[26px] sm:text-[30px] font-[800] text-[#1A1A2E] leading-tight">
+          Latest PM jobs
         </h1>
-        <p className="text-[13px] text-[#6B7280] mt-1">
-          {loading ? "Loading…" : `${total.toLocaleString()} active jobs${filterSummary} · updated daily at 14:00 UTC`}
+        <p className="text-[14px] text-[#6B7280] mt-1">
+          {loading ? (
+            "Loading…"
+          ) : (
+            <>
+              <span className="font-semibold text-[#1A1A2E]">{total.toLocaleString()}</span> active jobs across <span className="font-semibold text-[#1A1A2E]">243 companies</span> · updated daily at 14:00 UTC
+            </>
+          )}
         </p>
       </div>
 
-      {/* Filter bar */}
-      <div className="mb-4 space-y-2">
-        {/* Search + level filters on the same row */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative w-full sm:w-auto sm:flex-1 sm:max-w-[280px]">
-            <svg
-              className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
-            <input
-              type="text"
-              placeholder="Search role or company…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
-            />
-          </div>
-          {LEVELS.map((l) => {
-            const active = level === l.id;
-            return (
-              <button
-                key={l.id}
-                onClick={() => setLevel(active ? null : l.id)}
-                className={`px-3 py-1.5 text-[12px] font-semibold rounded-full border transition-colors ${
-                  active
-                    ? "border-transparent text-white"
-                    : "border-[#E5E7EB] bg-white text-[#6B7280] hover:bg-[#F8FAFC]"
-                }`}
-                style={
-                  active
-                    ? { backgroundColor: LEVEL_PILL[l.id].text }
-                    : undefined
-                }
-              >
-                {l.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Industry chips */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            onClick={() => setIndustry(null)}
-            className={`px-3 py-1 text-[12px] font-medium rounded-full border transition-colors ${
-              industry === null
-                ? "bg-[#1A1A2E] border-[#1A1A2E] text-white"
-                : "bg-white border-[#E5E7EB] text-[#6B7280] hover:bg-[#F8FAFC]"
-            }`}
+      {/* Search — own line */}
+      <div className="mb-3">
+        <div className="relative max-w-[420px]">
+          <svg
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
           >
-            All industries
-          </button>
-          {INDUSTRIES.map((ind) => {
-            const active = industry === ind.id;
-            return (
-              <button
-                key={ind.id}
-                onClick={() => setIndustry(active ? null : ind.id)}
-                className={`px-3 py-1 text-[12px] font-medium rounded-full border transition-colors ${
-                  active
-                    ? "bg-[#0EA5E9] border-[#0EA5E9] text-white"
-                    : "bg-white border-[#E5E7EB] text-[#6B7280] hover:bg-[#F8FAFC]"
-                }`}
-              >
-                {ind.label}
-              </button>
-            );
-          })}
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+            />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search role title or company…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
+          />
         </div>
+      </div>
+
+      {/* Level row */}
+      <FilterRow label="Level">
+        {LEVELS.map((l) => (
+          <Chip
+            key={l.id}
+            active={level === l.id}
+            onClick={() => setLevel(level === l.id ? null : l.id)}
+            activeBg={LEVEL_PILL[l.id].text}
+          >
+            {l.label}
+          </Chip>
+        ))}
+      </FilterRow>
+
+      {/* Industry row */}
+      <FilterRow label="Industry">
+        <Chip active={industry === null} onClick={() => setIndustry(null)} activeBg="#1A1A2E">
+          All
+        </Chip>
+        {INDUSTRIES.map((ind) => (
+          <Chip
+            key={ind.id}
+            active={industry === ind.id}
+            onClick={() => setIndustry(industry === ind.id ? null : ind.id)}
+            activeBg="#0EA5E9"
+          >
+            {ind.label}
+          </Chip>
+        ))}
+      </FilterRow>
+
+      {/* Location row */}
+      <FilterRow label="Region">
+        <Chip active={region === null} onClick={() => setRegion(null)} activeBg="#1A1A2E">
+          All US
+        </Chip>
+        {REGIONS.map((r) => (
+          <Chip
+            key={r.id}
+            active={region === r.id}
+            onClick={() => setRegion(region === r.id ? null : r.id)}
+            activeBg="#0EA5E9"
+          >
+            {r.label}
+          </Chip>
+        ))}
+        <input
+          type="text"
+          placeholder="City…"
+          value={city}
+          onChange={(e) => setCity(e.target.value)}
+          className="ml-2 px-2.5 py-1 text-[12px] rounded-full border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all w-[140px]"
+        />
+      </FilterRow>
+
+      {/* Closed-jobs toggle */}
+      <div className="mb-5">
+        <label className="inline-flex items-center gap-2 text-[12px] text-[#6B7280] cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeClosed}
+            onChange={(e) => setIncludeClosed(e.target.checked)}
+            className="rounded border-stone-300 text-[#0EA5E9] focus:ring-[#0EA5E9]"
+          />
+          Include closed jobs (filled or removed in the last 60 days)
+        </label>
       </div>
 
       {/* Job list */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
-          <div className="animate-pulse flex items-center gap-2 text-stone-500">
-            Loading latest jobs…
-          </div>
+          <div className="animate-pulse flex items-center gap-2 text-stone-500">Loading latest jobs…</div>
         </div>
-      ) : jobs.length === 0 ? (
+      ) : visibleJobs.length === 0 ? (
         <div className="bg-white rounded-xl border border-stone-200 p-8 text-center">
           <p className="text-stone-600">
-            No jobs match these filters. Try clearing the industry or level.
+            {jobs.length === 0
+              ? "No jobs match these filters. Try clearing the industry, level, or search."
+              : `${clientFilteredOut} jobs hidden by the region/city filter. Clear or change region to see more.`}
           </p>
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
           <ul className="divide-y divide-stone-100">
-            {jobs.map((job) => {
+            {visibleJobs.map((job) => {
               const isSubscribed = subscribedCompanyIds.has(job.company.id);
               const isTracking = trackingInFlight.has(job.company.id);
               const brandColor = getBrandColor(job.company.name);
               const softBg = softenColor(brandColor, 0.92);
               const favicon = getFaviconUrl(job.company.name, job.company.careers_url);
+              const industryLabel = INDUSTRIES.find((i) => i.id === job.company.industry)?.label || job.company.industry;
+              const isClosed = job.status === "removed";
+
               return (
                 <li
                   key={job.id}
-                  className="px-4 sm:px-5 py-3.5 hover:bg-[#F8FAFC] transition-colors"
+                  className={`px-4 sm:px-5 py-3.5 hover:bg-[#F8FAFC] transition-colors ${isClosed ? "opacity-60" : ""}`}
                 >
                   <div className="flex items-start gap-3">
-                    {/* Logo + company column */}
                     <div className="shrink-0 mt-0.5">
                       <div
                         className="w-9 h-9 rounded-lg flex items-center justify-center overflow-hidden border"
@@ -351,13 +437,13 @@ export default function JobFeed() {
                       </div>
                     </div>
 
-                    {/* Main content */}
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                         <span className="font-semibold text-[14px] text-[#1A1A2E]">{job.company.name}</span>
-                        <span className="text-[11px] text-stone-400 uppercase tracking-wide">
-                          {job.company.industry}
-                        </span>
+                        <span className="text-[11px] text-stone-400 uppercase tracking-wide">{industryLabel}</span>
+                        {isClosed && (
+                          <span className="text-[11px] text-red-500 uppercase tracking-wide font-semibold">closed</span>
+                        )}
                         <span className="text-[12px] text-stone-400 ml-auto">{timeAgo(job.firstSeenAt)}</span>
                       </div>
                       <a
@@ -407,7 +493,6 @@ export default function JobFeed() {
                       </div>
                     </div>
 
-                    {/* Actions column */}
                     <div className="shrink-0 flex items-center gap-2 ml-2">
                       <button
                         onClick={() => handleTrack(job.company.id, job.company.name)}
@@ -449,5 +534,42 @@ export default function JobFeed() {
         </div>
       )}
     </div>
+  );
+}
+
+// -------- Small helpers (inline rather than a separate file — single use) --------
+
+function FilterRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-1.5">
+      <span className="text-[11px] uppercase tracking-wide text-stone-400 font-semibold w-[60px] shrink-0">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function Chip({
+  active,
+  onClick,
+  activeBg,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  activeBg?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1 text-[12px] font-medium rounded-full border transition-colors ${
+        active
+          ? "border-transparent text-white"
+          : "bg-white border-[#E5E7EB] text-[#6B7280] hover:bg-[#F8FAFC]"
+      }`}
+      style={active && activeBg ? { backgroundColor: activeBg } : undefined}
+    >
+      {children}
+    </button>
   );
 }
