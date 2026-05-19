@@ -361,6 +361,19 @@ export interface AdminDigestInput {
     resolvedSinceLastWeek: { package: string; severity: string; fixAvailable: boolean; via: string }[];
     isFirstSnapshot: boolean;
   } | null;
+  // ---- Analysis layer (PR #19) ----
+  // Optional. When provided, the digest renders per-company trend annotations
+  // inline and a cross-cutting pattern callout near the top. Built in
+  // dailyCheck.ts:buildDigestAnalysis. Old callers without these fields still
+  // render correctly — annotations and patterns just don't appear.
+  perCompanyTrends?: Map<string, string>;
+  crossCuttingPatterns?: { kind: string; description: string; companies: string[] }[];
+}
+
+function trendAnnotation(trends: Map<string, string> | undefined, name: string): string {
+  const t = trends?.get(name);
+  if (!t) return "";
+  return `<div style="margin-top:2px;font-size:11px;color:#6b7280;font-style:italic;">${escapeHtml(t)}</div>`;
 }
 
 export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
@@ -404,6 +417,60 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
 
   let html = `<div style="font-family:${font};max-width:700px;color:#1A1A2E;">`;
 
+  // -------- Top-of-email TL;DR (PR #19) --------
+  // Severity rollup so the admin can triage from the subject line + this
+  // single block without scrolling.
+  if (hasActionItems || input.isMondayDigest) {
+    const rollupParts: string[] = [];
+    if (input.failedCompanies.length > 0) {
+      const withDoctorHint = input.failedCompanies.filter((f) => f.consecutiveFailures >= 3).length;
+      const hint = withDoctorHint > 0 ? ` (${withDoctorHint} ≥3 streak — consider scraper-doctor)` : "";
+      rollupParts.push(`<span style="color:#dc2626;font-weight:bold;">🔴 ${input.failedCompanies.length} broken${hint}</span>`);
+    }
+    if (input.autoDisabled.length > 0) {
+      rollupParts.push(`<span style="color:#dc2626;font-weight:bold;">⛔ ${input.autoDisabled.length} auto-disabled</span>`);
+    }
+    if (input.subscribedZeroDrops.length > 0) {
+      rollupParts.push(`<span style="color:#dc2626;font-weight:bold;">📉 ${input.subscribedZeroDrops.length} dropped to 0 (subscribed)</span>`);
+    }
+    if (input.watchList.length > 0) {
+      rollupParts.push(`<span style="color:#ea580c;font-weight:bold;">🟡 ${input.watchList.length} on watch</span>`);
+    }
+    if (input.unverifiedZeros.length > 0) {
+      const withSubs = input.unverifiedZeros.filter((z) => z.subscribers > 0).length;
+      const subsNote = withSubs > 0 ? ` (${withSubs} with subscribers)` : "";
+      rollupParts.push(`<span style="color:#a16207;">⚪ ${input.unverifiedZeros.length} unverified zeros${subsNote}</span>`);
+    }
+    if (input.emailBatchResult.failed > 0) {
+      rollupParts.push(`<span style="color:#dc2626;font-weight:bold;">📨 ${input.emailBatchResult.failed} email send failures</span>`);
+    }
+    if (input.reEnabled.length > 0) {
+      rollupParts.push(`<span style="color:#16a34a;">✅ ${input.reEnabled.length} re-enabled today</span>`);
+    }
+    if (input.autoRemediated.length > 0 || input.stealthRecovered.length > 0) {
+      const selfHealCount = input.autoRemediated.length + input.stealthRecovered.length;
+      rollupParts.push(`<span style="color:#16a34a;">🛠 ${selfHealCount} self-healed today</span>`);
+    }
+    const healthyCount = input.weeklyHealth ? input.weeklyHealth.healthy : input.totalCompanies - input.failedCompanies.length - input.autoDisabled.length - input.watchList.length;
+    rollupParts.push(`<span style="color:#16a34a;">💚 ${healthyCount} / ${input.totalCompanies} healthy</span>`);
+
+    html += `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:14px 16px;margin-bottom:20px;font-size:14px;line-height:1.8;">${rollupParts.join(" · ")}</div>`;
+  }
+
+  // -------- Cross-cutting patterns (PR #19) --------
+  // Surface clusters before the per-company tables so the admin sees the
+  // forest, not just the trees. Example: 3 Ashby failures today → maybe
+  // Ashby's GraphQL is down, don't chase each company.
+  if (input.crossCuttingPatterns && input.crossCuttingPatterns.length > 0) {
+    html += `<div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px 16px;margin-bottom:20px;font-size:13px;">`;
+    html += `<div style="font-weight:bold;color:#92400e;margin-bottom:6px;">🔍 Patterns detected</div>`;
+    html += `<ul style="margin:0;padding-left:20px;color:#78350f;">`;
+    for (const p of input.crossCuttingPatterns) {
+      html += `<li style="margin:4px 0;">${escapeHtml(p.description)} <span style="color:#a16207;font-style:italic;">(${p.companies.slice(0, 5).map(escapeHtml).join(", ")}${p.companies.length > 5 ? `, +${p.companies.length - 5} more` : ""})</span></li>`;
+    }
+    html += `</ul></div>`;
+  }
+
   // -------- Action-required sections (red) --------
   if (hasActionItems) {
     html += `<h2 style="margin:0 0 12px 0;color:#dc2626;">Needs your attention</h2>`;
@@ -421,7 +488,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
       const streak = `${f.consecutiveFailures} of 7`;
       const streakColor = f.consecutiveFailures >= 5 ? "#dc2626" : f.consecutiveFailures >= 3 ? "#ea580c" : "#78716c";
       html += `<tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(f.name)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(f.name)}${trendAnnotation(input.perCompanyTrends, f.name)}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:${streakColor};font-weight:bold;">${streak}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#6b7280;font-size:12px;">${escapeHtml(f.error.slice(0, 180))}</td>
       </tr>`;
@@ -439,7 +506,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
       </tr>`;
     for (const w of input.watchList) {
       html += `<tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(w.name)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(w.name)}${trendAnnotation(input.perCompanyTrends, w.name)}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#ea580c;font-weight:bold;">${w.consecutiveFailures} of 7</td>
       </tr>`;
     }
@@ -474,7 +541,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
       </tr>`;
     for (const z of input.subscribedZeroDrops) {
       html += `<tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(z.name)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(z.name)}${trendAnnotation(input.perCompanyTrends, z.name)}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#dc2626;font-weight:bold;">${z.prevCount} → 0</td>
         <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${z.subscribers}</td>
       </tr>`;
@@ -499,7 +566,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
       const checked = z.lastCheckedAt ? new Date(z.lastCheckedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
       const subColor = z.subscribers > 0 ? "#dc2626" : "#78716c";
       html += `<tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(z.name)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(z.name)}${trendAnnotation(input.perCompanyTrends, z.name)}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:${subColor};font-weight:bold;">${z.subscribers}</td>
         <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#6b7280;font-size:12px;">${checked}</td>
       </tr>`;

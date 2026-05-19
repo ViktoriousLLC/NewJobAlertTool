@@ -38,6 +38,8 @@ next-env.d.ts
 .claude/*
 !.claude/agents/
 !.claude/commands/
+!.claude/hooks/
+!.claude/settings.json
 CLAUDE.md
 project-history.md
 

@@ -544,7 +544,11 @@ router.post("/check", checkLimiterWithAdminBypass, async (req: Request, res: Res
 // POST /api/companies — add a new company + initial scrape
 router.post("/", async (req: Request, res: Response) => {
   try {
-    const { name, careers_url, jobs: preCheckedJobs, platform_type: preCheckedPlatformType, platform_config: preCheckedPlatformConfig } = req.body;
+    // Note: platform_type and platform_config are NOT accepted from the client.
+    // They're re-detected server-side below regardless of what the client sends.
+    // Trusting them would let any authenticated user inject arbitrary baseUrl
+    // (SSRF amplification) into the daily cron's fetch calls.
+    const { name, careers_url, jobs: preCheckedJobs } = req.body;
 
     if (!name || !careers_url) {
       res.status(400).json({ error: "name and careers_url are required" });
@@ -603,9 +607,18 @@ router.post("/", async (req: Request, res: Response) => {
       }
     }
 
-    // Use pre-checked platform info or detect fresh
-    let platformType: string | null = hasPreCheckedData ? (preCheckedPlatformType || null) : null;
-    let platformConfig: Record<string, string> = hasPreCheckedData ? (preCheckedPlatformConfig || {}) : {};
+    // Always detect platform server-side. We never trust client-supplied
+    // platform_type/platform_config — see destructure comment above.
+    let platformType: string | null = null;
+    let platformConfig: Record<string, string> = {};
+    try {
+      const detection = await detectPlatform(careers_url);
+      platformType = detection.platformType;
+      platformConfig = detection.platformConfig;
+      console.log(`Platform detected for ${name}: ${platformType} (${detection.confidence})`);
+    } catch (err) {
+      console.error("Platform detection failed:", err);
+    }
 
     // Insert company
     const { data: company, error: insertError } = await supabase
@@ -634,19 +647,11 @@ router.post("/", async (req: Request, res: Response) => {
     let scrapeStatus = "success";
 
     if (hasPreCheckedData) {
-      // Use pre-checked data — skip detection + scrape + validation
+      // Use pre-checked jobs the user already saw and confirmed.
+      // (Platform info above came from the server-side re-detection, not the client.)
       jobs = preCheckedJobs as { title: string; location: string; urlPath: string }[];
     } else {
-      // Legacy flow: detect + scrape + validate
-      try {
-        const detection = await detectPlatform(careers_url);
-        platformType = detection.platformType;
-        platformConfig = detection.platformConfig;
-        console.log(`Platform detected for ${name}: ${platformType} (${detection.confidence})`);
-      } catch (err) {
-        console.error("Platform detection failed:", err);
-      }
-
+      // No pre-check: do the initial scrape now using the detected platform.
       try {
         const rawJobs = await scrapeCompanyCareers(careers_url, platformType, platformConfig);
         const validation = validateScrapeResults(rawJobs, name);
