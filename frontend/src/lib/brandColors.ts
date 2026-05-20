@@ -120,20 +120,36 @@ function extractFaviconDomain(companyName: string, careersUrl: string): string {
   }
 }
 
+// logo.dev publishable key (exposed to the browser by design — designed
+// for client-side embedding, like a Stripe pk). Set NEXT_PUBLIC_LOGO_DEV_TOKEN
+// in Vercel to enable; falls back to DuckDuckGo when unset (local dev,
+// preview envs without the key, etc.).
+const LOGO_DEV_TOKEN = process.env.NEXT_PUBLIC_LOGO_DEV_TOKEN || "";
+
 export function getFaviconUrl(companyName: string, careersUrl: string): string {
   const domain = extractFaviconDomain(companyName, careersUrl);
-  // Primary: DuckDuckGo's free icon CDN — better uptime than Google's favicon
-  // service in our measurement, no rate limit, no API key. Real PNG/ICO output.
+  if (LOGO_DEV_TOKEN) {
+    // logo.dev: higher-quality logos than free favicon services, real brand
+    // marks rather than tiny ICO/PNG favicons. Token-gated.
+    return `https://img.logo.dev/${domain}?token=${LOGO_DEV_TOKEN}&size=64`;
+  }
+  // Fallback when no token configured: DuckDuckGo's free icon CDN.
   return `https://icons.duckduckgo.com/ip3/${domain}.ico`;
 }
 
 /**
- * Backup favicon URL — fed into <img>'s onError fallback chain. Returns
- * Google's favicon service. Behind the entire chain, the colored brand
- * chip with a letter is always rendered, so even when both CDNs fail the
- * UI shows something meaningful.
+ * Backup favicon URL — fed into <img>'s onError fallback chain. Behind the
+ * entire chain, the colored brand chip with a letter is always rendered, so
+ * even when both CDNs fail the UI shows something meaningful.
+ *
+ * When logo.dev is primary: falls back to DuckDuckGo (which falls back to
+ * Google's service via the JobFeed's two-step onError handler).
+ * When DuckDuckGo is primary (no logo.dev token): falls back to Google.
  */
 export function getFaviconFallbackUrl(companyName: string, careersUrl: string): string {
   const domain = extractFaviconDomain(companyName, careersUrl);
+  if (LOGO_DEV_TOKEN) {
+    return `https://icons.duckduckgo.com/ip3/${domain}.ico`;
+  }
   return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
 }
