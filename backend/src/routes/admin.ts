@@ -162,4 +162,61 @@ router.get("/users", async (_req: Request, res: Response) => {
   }
 });
 
+// GET /api/admin/email-status — proxy Resend's list emails API.
+//
+// Purpose: investigate missing-email reports without writing user PII to our
+// own database. Resend keeps the per-recipient send log; we just query it.
+//
+// Query params (all optional):
+//   ?email=foo@bar.com  filter results to a specific recipient
+//   ?limit=20           cap returned results (default 20, max 100)
+//
+// Returns: array of recent emails with {id, to, from, subject, last_event, created_at}.
+//
+// Auth: requireAdmin middleware (top of file) — only ADMIN_EMAIL gets in.
+router.get("/email-status", async (req: Request, res: Response) => {
+  try {
+    const apiKey = process.env.RESEND_API_KEY;
+    if (!apiKey) {
+      res.status(500).json({ error: "RESEND_API_KEY not configured" });
+      return;
+    }
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const filterEmail = typeof req.query.email === "string" ? req.query.email.trim().toLowerCase() : null;
+
+    // Resend's list endpoint paginates; pull up to `limit` items in a single page.
+    const resp = await fetch(`https://api.resend.com/emails?limit=${limit}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      res.status(resp.status).json({ error: `Resend API ${resp.status}`, body: text.slice(0, 500) });
+      return;
+    }
+    const json = await resp.json() as { data?: Array<{ id: string; to: string[]; from: string; subject: string; last_event?: string; created_at: string }> };
+    let emails = json.data || [];
+    if (filterEmail) {
+      emails = emails.filter((e) => (e.to || []).some((addr) => (addr || "").toLowerCase().includes(filterEmail)));
+    }
+
+    res.json({
+      count: emails.length,
+      filterEmail,
+      emails: emails.map((e) => ({
+        id: e.id,
+        to: e.to,
+        from: e.from,
+        subject: e.subject,
+        last_event: e.last_event,
+        created_at: e.created_at,
+      })),
+    });
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("GET /api/admin/email-status error:", err);
+    res.status(500).json({ error: "Failed to query Resend" });
+  }
+});
+
 export default router;
