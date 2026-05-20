@@ -722,7 +722,12 @@ async function sendPerUserAlerts(
   companyAlerts: Map<string, { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }>
 ): Promise<BatchSendResult> {
   // Get all users
-  const { data: usersData } = await supabase.auth.admin.listUsers();
+  // CRITICAL: must pass perPage to capture ALL users. Default is 50, which
+  // silently dropped the 16 oldest users (including admin) from the email
+  // batch once the user count crossed 50 around 2026-05-19. Diagnosed when
+  // admin's daily email stopped arriving despite the cron running fine.
+  // 1000 is Supabase's max — bumps it when we cross 1000 users.
+  const { data: usersData } = await supabase.auth.admin.listUsers({ perPage: 1000 });
   const users = usersData?.users || [];
 
   if (users.length === 0) {
