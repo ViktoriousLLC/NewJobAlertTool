@@ -8,6 +8,7 @@ import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
 import { CompanyQualityData } from "../scraper/dailyEval";
 import { runSecurityCheck } from "./securityCheck";
+import { listAllUsers } from "../lib/listAllUsers";
 
 // Log a self-healing event to the scraper_events table. Used to power the
 // Monday weekly digest. Best-effort: failures are swallowed so they never
@@ -721,14 +722,11 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
 async function sendPerUserAlerts(
   companyAlerts: Map<string, { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }>
 ): Promise<BatchSendResult> {
-  // Get all users
-  // CRITICAL: must pass perPage to capture ALL users. Default is 50, which
-  // silently dropped the 16 oldest users (including admin) from the email
-  // batch once the user count crossed 50 around 2026-05-19. Diagnosed when
-  // admin's daily email stopped arriving despite the cron running fine.
-  // 1000 is Supabase's max — bumps it when we cross 1000 users.
-  const { data: usersData } = await supabase.auth.admin.listUsers({ perPage: 1000 });
-  const users = usersData?.users || [];
+  // Get ALL users via proper pagination. The earlier `{ perPage: 1000 }`
+  // bump fixed the immediate bug but would re-break at 1001 users. listAllUsers
+  // iterates pages until exhausted.
+  const users = await listAllUsers();
+  console.log(`sendPerUserAlerts: fetched ${users.length} total users`);
 
   if (users.length === 0) {
     console.log("No users found — skipping email alerts");
