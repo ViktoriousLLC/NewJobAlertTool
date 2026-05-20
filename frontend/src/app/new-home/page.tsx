@@ -1,6 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
+import LandingHero from "@/components/LandingHero";
 
 const JobFeed = dynamic(() => import("@/components/JobFeed"), {
   ssr: false,
@@ -14,77 +16,55 @@ const JobFeed = dynamic(() => import("@/components/JobFeed"), {
 });
 
 export default function NewHomePage() {
-  return (
-    <>
-      <HomeHero />
-      <div id="jobs" className="scroll-mt-6">
-        <JobFeed />
-      </div>
-    </>
-  );
-}
+  const router = useRouter();
 
-function HomeHero() {
+  function handleCtaSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    router.push("/login?next=/new-home");
+  }
+
   return (
-    <section
-      className="relative overflow-hidden rounded-2xl mb-8 px-6 py-12 sm:px-12 sm:py-16"
-      style={{
-        background:
-          "linear-gradient(135deg, #081226 0%, #0F1E3D 55%, #112B5C 100%)",
-      }}
+    <div
+      id="new-home-scroll"
+      className="fixed inset-0 z-30 overflow-y-auto bg-[#081226]"
+      style={{ scrollBehavior: "smooth" }}
     >
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -top-24 -right-24 w-[420px] h-[420px] rounded-full opacity-30"
+      <LandingHero onCtaSubmit={handleCtaSubmit} />
+
+      {/* Themed feed section — steel-gray gradient continues the page so the
+          table doesn't feel like a separate website pasted underneath. */}
+      <section
+        id="jobs"
+        className="scroll-mt-6 px-5 md:px-10 py-12 md:py-16"
         style={{
           background:
-            "radial-gradient(closest-side, rgba(14,165,233,0.55), rgba(14,165,233,0) 70%)",
+            "linear-gradient(180deg, #F0F4F8 0%, #E8EDF4 40%, #F5F3F0 100%)",
         }}
-      />
-      <div className="relative max-w-2xl">
-        <div
-          className="inline-flex items-center gap-2 px-3 py-1 rounded-full mb-5"
-          style={{
-            background: "rgba(14,165,233,0.12)",
-            border: "1px solid rgba(14,165,233,0.25)",
-          }}
+      >
+        <div className="max-w-[1140px] mx-auto">
+          <JobFeed />
+        </div>
+      </section>
+
+      <footer className="bg-[#081226] border-t border-white/5 py-6 text-center text-sm text-white/40">
+        Built by Vik Agarwal
+        <span className="mx-2">·</span>
+        <a
+          href="https://www.linkedin.com/in/vik-agarwal/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-[#0EA5E9] transition-colors underline underline-offset-2"
         >
-          <span
-            className="inline-block w-1.5 h-1.5 rounded-full bg-[#0EA5E9] animate-pulse"
-          />
-          <span className="text-[12px] font-semibold text-[#7DD3FC]">
-            Made by a PM, for PMs
-          </span>
-        </div>
-
-        <h1 className="text-[28px] sm:text-[36px] md:text-[44px] font-[900] leading-[1.08] text-white tracking-tight">
-          New PM jobs.{" "}
-          <span
-            style={{
-              background:
-                "linear-gradient(135deg, #0EA5E9, #38BDF8, #7DD3FC)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-            }}
-          >
-            Fresh daily.
-          </span>
-        </h1>
-
-        <p className="mt-4 text-[15px] sm:text-[16px] leading-[1.65] text-white/65 max-w-[560px]">
-          We scan career pages at top tech, fintech, biotech, and consulting
-          companies every day and surface every new product management role —
-          so you never miss the one at your dream company.
-        </p>
-
-        <div className="mt-7 flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px] text-white/55">
-          <span className="inline-flex items-center gap-2">
-            <span className="text-[#7DD3FC]">↓</span> See open roles below
-          </span>
-          <span className="hidden sm:inline text-white/25">·</span>
-          <span>Free. No spam. No credit card.</span>
-        </div>
-      </div>
-    </section>
+          LinkedIn
+        </a>
+        <span className="mx-2">·</span>
+        <a
+          href="/privacy"
+          className="hover:text-[#0EA5E9] transition-colors underline underline-offset-2"
+        >
+          Privacy
+        </a>
+      </footer>
+    </div>
   );
 }
