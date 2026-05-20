@@ -63,17 +63,42 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-stone-50">
+    <div className="min-h-screen flex items-center justify-center bg-stone-50 py-10">
       <div className="bg-white rounded-xl border border-stone-200 p-5 sm:p-8 shadow-sm max-w-md w-full mx-4 sm:mx-0">
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex items-center gap-3 mb-5">
           <div className="w-10 h-10 bg-[var(--brand)] rounded-lg flex items-center justify-center">
             <span className="text-white font-bold text-sm">PM</span>
           </div>
           <div>
-            <h1 className="text-xl font-bold text-stone-800">Sign In</h1>
-            <p className="text-sm text-stone-500">NewPMJobs.com</p>
+            <h1 className="text-xl font-bold text-stone-800">Welcome to NewPMJobs</h1>
+            <p className="text-sm text-stone-500">Sign in to start tracking</p>
           </div>
         </div>
+
+        {!sent && (
+          <div className="mb-6 rounded-lg bg-stone-50 border border-stone-200 p-4">
+            <p className="text-[13px] text-stone-600 leading-relaxed mb-3">
+              Once you sign in, you can:
+            </p>
+            <ul className="space-y-1.5 text-[13px] text-stone-700">
+              <li className="flex gap-2">
+                <span className="text-[var(--brand)] font-bold">✓</span>
+                Track companies you care about
+              </li>
+              <li className="flex gap-2">
+                <span className="text-[var(--brand)] font-bold">✓</span>
+                Get email alerts when they post new PM roles
+              </li>
+              <li className="flex gap-2">
+                <span className="text-[var(--brand)] font-bold">✓</span>
+                Save and revisit jobs you want to apply to
+              </li>
+            </ul>
+            <p className="text-[12px] text-stone-500 mt-3 pt-3 border-t border-stone-200">
+              Free. No fees. No credit card. No spam.
+            </p>
+          </div>
+        )}
 
         {sent ? (
           <div className="text-center py-4">

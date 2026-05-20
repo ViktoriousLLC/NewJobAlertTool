@@ -121,6 +121,23 @@ function timeAgo(iso: string): string {
   return `${months}mo`;
 }
 
+// 14:00 UTC scrape, rendered alongside PT + ET. Intl handles DST automatically
+// (PST/PDT and EST/EDT both come out correct).
+function formatScrapeWindow(): string {
+  const d = new Date();
+  d.setUTCHours(14, 0, 0, 0);
+  const inZone = (tz: string) =>
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "numeric",
+      hour12: true,
+    })
+      .format(d)
+      .replace(" ", "")
+      .toLowerCase();
+  return `14:00 UTC · ${inZone("America/Los_Angeles")} PT · ${inZone("America/New_York")} ET`;
+}
+
 export default function JobFeed() {
   const router = useRouter();
   const { showToast } = useToast();
@@ -298,62 +315,28 @@ export default function JobFeed() {
     <div>
       {/* Header */}
       <div className="mb-5">
-        <h1 className="text-[26px] sm:text-[30px] font-[800] text-[#1A1A2E] leading-tight">
+        <h2 className="text-[20px] sm:text-[22px] font-[800] text-[#1A1A2E] leading-tight">
           Latest PM jobs
-        </h1>
-        <p className="text-[14px] text-[#6B7280] mt-1">
+        </h2>
+        <p className="text-[13px] text-[#6B7280] mt-1">
           {loading ? (
             "Loading…"
           ) : (
             <>
-              <span className="font-semibold text-[#1A1A2E]">{total.toLocaleString()}</span> active jobs across <span className="font-semibold text-[#1A1A2E]">{allCompanies.length || 243}</span> companies · updated daily at 14:00 UTC
+              <span className="font-semibold text-[#1A1A2E]">{total.toLocaleString()}</span> active jobs across <span className="font-semibold text-[#1A1A2E]">{allCompanies.length || 243}</span> companies · updated daily at {formatScrapeWindow()}
             </>
           )}
         </p>
       </div>
 
-      {/* Filters */}
-      <div className="mb-3">
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Search */}
-          <div className="relative w-full sm:w-auto sm:max-w-[280px] sm:flex-1">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <input
-              type="text"
-              placeholder="Search role title…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
-            />
-          </div>
-          {/* Sort dropdown */}
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortId)}
-            className="px-3 py-2 text-[12px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
-            aria-label="Sort"
-          >
-            {SORTS.map((s) => (
-              <option key={s.id} value={s.id}>Sort: {s.label}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {/* Filter order: Level → Region → Industry → Company per UX feedback */}
-      <FilterRow label="Level">
-        {LEVELS.map((l) => (
-          <Chip
-            key={l.id}
-            active={level === l.id}
-            onClick={() => setLevel(level === l.id ? null : l.id)}
-            activeBg={LEVEL_PILL[l.id].text}
-          >
-            {l.label}
-          </Chip>
-        ))}
+      {/* Filter order: Function → Region+City → Level → Industry → Min comp → Company → Search+Sort → Closed */}
+      <FilterRow label="Function">
+        <Chip active={true} onClick={() => {}} activeBg="#0EA5E9">
+          Product Management
+        </Chip>
+        <span className="text-[11px] text-stone-400 italic ml-1">
+          (other functions coming soon)
+        </span>
       </FilterRow>
 
       <FilterRow label="Region">
@@ -370,7 +353,6 @@ export default function JobFeed() {
         ))}
       </FilterRow>
 
-      {/* Search city — proper input (was a tiny inline field) */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
         <span className="text-[11px] uppercase tracking-wide text-stone-400 font-semibold w-[60px] shrink-0">City</span>
         <div className="relative w-full sm:w-auto sm:max-w-[240px]">
@@ -388,6 +370,33 @@ export default function JobFeed() {
         </div>
       </div>
 
+      <FilterRow label="Level">
+        {LEVELS.map((l) => (
+          <Chip
+            key={l.id}
+            active={level === l.id}
+            onClick={() => setLevel(level === l.id ? null : l.id)}
+            activeBg={LEVEL_PILL[l.id].text}
+          >
+            {l.label}
+          </Chip>
+        ))}
+      </FilterRow>
+
+      <FilterRow label="Industry">
+        <Chip active={industry === null} onClick={() => setIndustry(null)} activeBg="#1A1A2E">All</Chip>
+        {INDUSTRIES.map((ind) => (
+          <Chip
+            key={ind.id}
+            active={industry === ind.id}
+            onClick={() => setIndustry(industry === ind.id ? null : ind.id)}
+            activeBg="#0EA5E9"
+          >
+            {ind.label}
+          </Chip>
+        ))}
+      </FilterRow>
+
       <FilterRow label="Min comp">
         {MIN_COMP_OPTIONS.map((opt) => (
           <Chip
@@ -404,20 +413,6 @@ export default function JobFeed() {
             (companies with no levels.fyi data excluded)
           </span>
         )}
-      </FilterRow>
-
-      <FilterRow label="Industry">
-        <Chip active={industry === null} onClick={() => setIndustry(null)} activeBg="#1A1A2E">All</Chip>
-        {INDUSTRIES.map((ind) => (
-          <Chip
-            key={ind.id}
-            active={industry === ind.id}
-            onClick={() => setIndustry(industry === ind.id ? null : ind.id)}
-            activeBg="#0EA5E9"
-          >
-            {ind.label}
-          </Chip>
-        ))}
       </FilterRow>
 
       <FilterRow label="Company">
@@ -445,6 +440,33 @@ export default function JobFeed() {
           </button>
         )}
       </FilterRow>
+
+      {/* Search + Sort deprioritized to the bottom — power-user filters */}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] uppercase tracking-wide text-stone-400 font-semibold w-[60px] shrink-0">Search</span>
+        <div className="relative w-full sm:w-auto sm:max-w-[240px]">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search role title…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-9 pr-3 py-1.5 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
+          />
+        </div>
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as SortId)}
+          className="px-3 py-1.5 text-[12px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
+          aria-label="Sort"
+        >
+          {SORTS.map((s) => (
+            <option key={s.id} value={s.id}>Sort: {s.label}</option>
+          ))}
+        </select>
+      </div>
 
       <div className="mb-5">
         <label className="inline-flex items-center gap-2 text-[12px] text-[#6B7280] cursor-pointer select-none">
