@@ -23,7 +23,7 @@ router.get("/stats", async (_req: Request, res: Response) => {
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
     const [usersResult, companiesResult, activeJobsResult, subsResult, errorCompaniesResult] = await Promise.all([
-      supabase.auth.admin.listUsers(),
+      supabase.auth.admin.listUsers({ perPage: 1000 }),
       supabase.from("companies").select("id", { count: "exact", head: true }),
       supabase.from("seen_jobs").select("id", { count: "exact", head: true }).eq("status", "active"),
       supabase.from("user_subscriptions").select("id", { count: "exact", head: true }),
@@ -71,7 +71,7 @@ router.get("/issues", async (_req: Request, res: Response) => {
       supabase
         .from("companies")
         .select("id, name"),
-      supabase.auth.admin.listUsers(),
+      supabase.auth.admin.listUsers({ perPage: 1000 }),
     ]);
 
     // Build lookup maps
@@ -124,7 +124,7 @@ router.get("/companies", async (_req: Request, res: Response) => {
 router.get("/users", async (_req: Request, res: Response) => {
   try {
     const [usersResult, subsResult, prefsResult] = await Promise.all([
-      supabase.auth.admin.listUsers(),
+      supabase.auth.admin.listUsers({ perPage: 1000 }),
       supabase.from("user_subscriptions").select("user_id"),
       supabase.from("user_preferences").select("user_id, email_frequency"),
     ]);

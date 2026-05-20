@@ -201,8 +201,9 @@ app.post("/api/admin/add-company", async (req, res) => {
   }
 
   try {
-    // Find admin user by email
-    const { data: users } = await supabase.auth.admin.listUsers();
+    // Find admin user by email — perPage default is 50, must bump or admin
+    // disappears from results once user count exceeds 50.
+    const { data: users } = await supabase.auth.admin.listUsers({ perPage: 1000 });
     const adminUser = users?.users?.find((u) => u.email === ADMIN_EMAIL);
     const adminUserId = adminUser?.id;
 
