@@ -59,7 +59,7 @@ export function softenColor(hex: string, amount: number): string {
 // ATS hostname patterns → regex to extract company slug from URL
 const ATS_PATTERNS: { host: RegExp; slugFromUrl: (url: URL) => string | null }[] = [
   {
-    // boards.greenhouse.io/discord → discord
+    // boards.greenhouse.io/discord → discord. Also job-boards.greenhouse.io/bitkraft.
     host: /greenhouse\.io$/,
     slugFromUrl: (u) => u.pathname.split("/").filter(Boolean)[0] || null,
   },
@@ -74,9 +74,15 @@ const ATS_PATTERNS: { host: RegExp; slugFromUrl: (url: URL) => string | null }[]
     slugFromUrl: (u) => u.pathname.split("/").filter(Boolean)[0] || null,
   },
   {
-    // *.myworkdayjobs.com → extract subdomain prefix or path slug
+    // nvidia.wd5.myworkdayjobs.com → nvidia (FIXED 2026-05-19 — was returning
+    // null, falling through to the full hostname which logo.dev/favicon CDNs
+    // can't resolve. Workday subdomain is always {company}.wd*.myworkdayjobs.com.)
     host: /myworkdayjobs\.com$/,
-    slugFromUrl: () => null, // complex structure, fall through to name-based
+    slugFromUrl: (u) => {
+      const parts = u.hostname.split(".");
+      // Expect: {company}.wd{N}.myworkdayjobs.com → 4 parts minimum
+      return parts.length >= 4 ? parts[0] : null;
+    },
   },
   {
     // paypal.eightfold.ai → paypal (subdomain)
@@ -84,6 +90,27 @@ const ATS_PATTERNS: { host: RegExp; slugFromUrl: (url: URL) => string | null }[]
     slugFromUrl: (u) => {
       const parts = u.hostname.split(".");
       return parts.length > 2 ? parts[0] : null;
+    },
+  },
+  {
+    // *.icims.com → {prefix} (e.g. uscareers-docusign.icims.com → uscareers-docusign,
+    // then strip prefixes like "uscareers-" or "careers-" if present)
+    host: /icims\.com$/,
+    slugFromUrl: (u) => {
+      const parts = u.hostname.split(".");
+      if (parts.length < 3) return null;
+      let slug = parts[0];
+      // Strip common iCIMS subdomain prefixes
+      slug = slug.replace(/^(us)?careers-/, "");
+      return slug || null;
+    },
+  },
+  {
+    // *.oraclecloud.com → tenant prefix (e.g., jpmc.fa.oraclecloud.com → jpmc)
+    host: /oraclecloud\.com$/,
+    slugFromUrl: (u) => {
+      const parts = u.hostname.split(".");
+      return parts.length >= 3 ? parts[0] : null;
     },
   },
   {
@@ -97,27 +124,46 @@ const ATS_PATTERNS: { host: RegExp; slugFromUrl: (url: URL) => string | null }[]
   },
 ];
 
+// Overrides for companies whose logo-resolvable domain isn't slug+".com".
+// Hand-curated when we notice a logo isn't loading — beats trying to guess
+// every company's actual web domain. Slug here matches what extractFaviconDomain
+// would produce; the value is what logo CDNs actually resolve.
+const LOGO_DOMAIN_OVERRIDE: Record<string, string> = {
+  // Slug we'd produce → actual brand domain
+  "confluent.com": "confluent.io",
+  "anthropic.com": "anthropic.com",
+  "supabase.com": "supabase.com",
+  "vercel.com": "vercel.com",
+  "linear.com": "linear.app",
+  "notion.com": "notion.so",
+  "openai.com": "openai.com",
+  "asana.com": "asana.com",
+  "magic.com": "magic.dev",
+  "kraken.com": "kraken.com",
+  "earnin.com": "earnin.com",
+};
+
 function extractFaviconDomain(companyName: string, careersUrl: string): string {
+  let domain: string;
   try {
     const url = new URL(careersUrl);
     const hostname = url.hostname.replace(/^www\./, "");
 
-    // Check if it's an ATS-hosted URL
+    domain = hostname;
     for (const pattern of ATS_PATTERNS) {
       if (pattern.host.test(hostname)) {
         const slug = pattern.slugFromUrl(url);
-        if (slug) return `${slug}.com`;
-        // Fall through to name-based fallback
+        if (slug) {
+          domain = `${slug}.com`;
+        }
         break;
       }
     }
-
-    // Direct company domain — use as-is
-    return hostname;
   } catch {
-    // URL parse failed — use company name
-    return `${companyName.toLowerCase().replace(/\s+/g, "")}.com`;
+    domain = `${companyName.toLowerCase().replace(/\s+/g, "")}.com`;
   }
+  // Apply per-company override if the slug-derived domain doesn't resolve
+  return LOGO_DOMAIN_OVERRIDE[domain] || domain;
 }
 
 // logo.dev publishable key (exposed to the browser by design — designed
