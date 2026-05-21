@@ -284,7 +284,7 @@ export default function JobFeed() {
 
   const handleTrack = async (cid: string, companyName: string) => {
     if (!isAuthed) {
-      router.push(`/login?next=${encodeURIComponent("/new-home")}`);
+      router.push(`/login?next=${encodeURIComponent("/")}`);
       return;
     }
     if (subscribedCompanyIds.has(cid)) return;
