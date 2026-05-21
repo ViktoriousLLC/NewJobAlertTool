@@ -25,7 +25,6 @@ interface Company {
   latest_new_job_at: string | null;
 }
 
-type FilterKey = "all" | "new" | "healthy" | "errors";
 
 function sortCompanies(companies: Company[]): Company[] {
   return [...companies].sort((a, b) => {
@@ -42,25 +41,6 @@ function sortCompanies(companies: Company[]): Company[] {
   });
 }
 
-function filterCompanies(
-  companies: Company[],
-  filter: FilterKey
-): Company[] {
-  switch (filter) {
-    case "new":
-      return companies.filter((c) => c.new_jobs_today > 0);
-    case "healthy":
-      return companies.filter((c) =>
-        c.last_check_status?.startsWith("success")
-      );
-    case "errors":
-      return companies.filter((c) =>
-        c.last_check_status?.startsWith("error")
-      );
-    default:
-      return companies;
-  }
-}
 
 export default function Dashboard() {
   return (
@@ -76,7 +56,6 @@ function DashboardContent() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [subscribedIds, setSubscribedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<FilterKey>("all");
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [removeToast, setRemoveToast] = useState<string | null>(null);
@@ -178,23 +157,13 @@ function DashboardContent() {
     0
   );
   const newToday = companies.reduce((sum, c) => sum + c.new_jobs_today, 0);
-  const errorCount = companies.filter((c) =>
-    c.last_check_status?.startsWith("error")
-  ).length;
 
   const searched = search
     ? companies.filter((c) =>
         c.name.toLowerCase().includes(search.toLowerCase())
       )
     : companies;
-  const sorted = sortCompanies(filterCompanies(searched, filter));
-
-  const filters: { key: FilterKey; label: string }[] = [
-    { key: "all", label: "All" },
-    { key: "new", label: "New" },
-    { key: "healthy", label: "Healthy" },
-    { key: "errors", label: "Errors" },
-  ];
+  const sorted = sortCompanies(searched);
 
   return (
     <div>
@@ -218,8 +187,17 @@ function DashboardContent() {
           </p>
         </div>
 
-        {/* Stat boxes */}
+        {/* Stat boxes — Total Companies / Total Roles / New Today.
+            Errors box removed per UX feedback (operator metric, not user-facing). */}
         <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center sm:gap-3 w-full sm:w-auto">
+          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#F3F5FA", border: "1px solid #D9DEEA" }}>
+            <div className="text-[16px] sm:text-[20px] font-bold text-[#1A1A2E]">
+              {companies.length}
+            </div>
+            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#5F6478", opacity: 0.85 }}>
+              Total Companies
+            </div>
+          </div>
           <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#FAF8F5", border: "1px solid #E8E4DF" }}>
             <div className="text-[16px] sm:text-[20px] font-bold text-[#1A1A2E]">
               {totalRoles}
@@ -236,20 +214,13 @@ function DashboardContent() {
               New Today
             </div>
           </div>
-          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#FDF5F3", border: "1px solid #E8CFC9" }}>
-            <div className="text-[16px] sm:text-[20px] font-bold text-[#A14B38]">
-              {errorCount}
-            </div>
-            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#A14B38", opacity: 0.7 }}>
-              Errors
-            </div>
-          </div>
         </div>
       </div>
 
-      {/* Search + Filter bar */}
-      <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-5">
-        <div className="relative w-full sm:flex-initial sm:max-w-[200px]">
+      {/* Search bar (filter pills removed per UX feedback — they exposed
+          operator-y categories like Healthy/Errors). */}
+      <div className="mb-5">
+        <div className="relative w-full sm:max-w-[280px]">
           <svg
             className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9CA3AF]"
             fill="none"
@@ -271,23 +242,6 @@ function DashboardContent() {
             className="w-full pl-9 pr-3 py-2 text-[13px] rounded-lg border border-[#E5E7EB] bg-white text-[#1A1A2E] placeholder-[#9CA3AF] focus:outline-none focus:border-[#0EA5E9] focus:ring-1 focus:ring-[#0EA5E9]/30 transition-all"
           />
         </div>
-
-        <div className="flex items-center gap-1.5">
-          {filters.map((f) => (
-            <button
-              key={f.key}
-              onClick={() => { setFilter(f.key); trackEvent("dashboard_filter", { filter: f.key }); }}
-              className={`px-3 py-1.5 sm:px-[14px] sm:py-[6px] rounded-[7px] text-[13px] transition-all ${
-                filter === f.key
-                  ? "font-semibold bg-[#0C1E3A] text-white border border-[#0C1E3A]"
-                  : "font-medium bg-white border border-[#E0E0E6] text-[#1A1A2E] hover:bg-[#F3F4F6]"
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-
       </div>
 
       {companies.length === 0 && !showModal ? (
