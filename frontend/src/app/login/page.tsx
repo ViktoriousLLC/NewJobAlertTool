@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { supabase } from "@/lib/supabase";
+import { getFaviconUrl, getFaviconFallbackUrl } from "@/lib/brandColors";
 
 // Mix a hex color toward white by `pct` percent. Inlined (not imported from
 // LandingPage) to keep the login route bundle small.
@@ -16,10 +17,12 @@ function mix(hex: string, pct: number): string {
 }
 
 // 10 decorative cards: 3 big-tech + 3 famous startups + 1 biotech + 1 banking
-// + 1 auto + 1 consumer. Different from /new-home hero (which shows Google,
-// Stripe, Netflix, OpenAI, Uber, Discord, Figma) so login feels distinct.
+// + 1 auto + 1 consumer. Real logos loaded via getFaviconUrl (logo.dev →
+// DuckDuckGo); colored brand chip + letter sits behind as the always-visible
+// fallback.
 type DecoCard = {
   name: string;
+  domain: string;
   color: string;
   letter: string;
   roles: number;
@@ -30,25 +33,28 @@ type DecoCard = {
 
 const DECORATIVE_CARDS: DecoCard[] = [
   // Top-left cluster (3)
-  { name: "Apple",         color: "#1D1D1F", letter: "A", roles: 37, pos: { top: "9%",  left: "4%"  }, dur: 3.0, delay: 0.0 },
-  { name: "Microsoft",     color: "#0078D4", letter: "M", roles: 52, pos: { top: "26%", left: "1%"  }, dur: 3.4, delay: 0.4 },
-  { name: "Amazon",        color: "#FF9900", letter: "A", roles: 41, pos: { top: "14%", left: "18%" }, dur: 3.6, delay: 0.8 },
-  // Top-right cluster (2)
-  { name: "Meta",          color: "#0668E1", letter: "M", roles: 28, pos: { top: "10%", right: "5%"  }, dur: 3.2, delay: 0.2 },
-  { name: "Anthropic",     color: "#D4A574", letter: "A", roles: 6,  pos: { top: "26%", right: "11%" }, dur: 3.5, delay: 0.6 },
+  { name: "Apple",         domain: "apple.com",        color: "#1D1D1F", letter: "A", roles: 37, pos: { top: "9%",  left: "4%"  }, dur: 3.0, delay: 0.0 },
+  { name: "Microsoft",     domain: "microsoft.com",    color: "#0078D4", letter: "M", roles: 52, pos: { top: "26%", left: "1%"  }, dur: 3.4, delay: 0.4 },
+  { name: "Amazon",        domain: "amazon.com",       color: "#FF9900", letter: "A", roles: 41, pos: { top: "14%", left: "18%" }, dur: 3.6, delay: 0.8 },
+  // Top-right cluster (2) — OpenAI replaces Meta per UX feedback
+  { name: "OpenAI",        domain: "openai.com",       color: "#10A37F", letter: "O", roles: 24, pos: { top: "10%", right: "5%"  }, dur: 3.2, delay: 0.2 },
+  { name: "Anthropic",     domain: "anthropic.com",    color: "#D4A574", letter: "A", roles: 6,  pos: { top: "26%", right: "11%" }, dur: 3.5, delay: 0.6 },
   // Bottom-left cluster (2)
-  { name: "Linear",        color: "#5E6AD2", letter: "L", roles: 4,  pos: { bottom: "30%", left: "1%" }, dur: 3.3, delay: 0.5 },
-  { name: "Notion",        color: "#2D2D2D", letter: "N", roles: 7,  pos: { bottom: "14%", left: "5%" }, dur: 3.7, delay: 1.0 },
-  // Bottom-right cluster (3)
-  { name: "Moderna",       color: "#E31837", letter: "M", roles: 9,  pos: { bottom: "8%",  right: "5%"  }, dur: 3.4, delay: 0.7 },
-  { name: "Goldman Sachs", color: "#7399C6", letter: "G", roles: 35, pos: { bottom: "23%", right: "11%" }, dur: 3.6, delay: 0.9 },
-  { name: "Tesla",         color: "#CC0000", letter: "T", roles: 18, pos: { bottom: "14%", right: "21%" }, dur: 3.8, delay: 1.2 },
+  { name: "Linear",        domain: "linear.app",       color: "#5E6AD2", letter: "L", roles: 4,  pos: { bottom: "30%", left: "1%" }, dur: 3.3, delay: 0.5 },
+  { name: "Notion",        domain: "notion.so",        color: "#2D2D2D", letter: "N", roles: 7,  pos: { bottom: "14%", left: "5%" }, dur: 3.7, delay: 1.0 },
+  // Bottom-right cluster (3) — Pfizer replaces Moderna (more recognizable)
+  { name: "Pfizer",        domain: "pfizer.com",       color: "#0093D0", letter: "P", roles: 11, pos: { bottom: "8%",  right: "5%"  }, dur: 3.4, delay: 0.7 },
+  { name: "Goldman Sachs", domain: "goldmansachs.com", color: "#7399C6", letter: "G", roles: 35, pos: { bottom: "23%", right: "11%" }, dur: 3.6, delay: 0.9 },
+  { name: "Tesla",         domain: "tesla.com",        color: "#CC0000", letter: "T", roles: 18, pos: { bottom: "14%", right: "21%" }, dur: 3.8, delay: 1.2 },
 ];
 
-function DecorativeCard({ name, color, letter, roles, pos, dur, delay }: DecoCard) {
+function DecorativeCard({ name, domain, color, letter, roles, pos, dur, delay }: DecoCard) {
   const bg96 = mix(color, 96);
   const grad55 = mix(color, 55);
   const grad30 = mix(color, 30);
+  const careersUrl = `https://${domain}`;
+  const primaryLogo = getFaviconUrl(name, careersUrl);
+  const fallbackLogo = getFaviconFallbackUrl(name, careersUrl);
   return (
     <div
       aria-hidden
@@ -75,8 +81,12 @@ function DecorativeCard({ name, color, letter, roles, pos, dur, delay }: DecoCar
           gap: 5,
         }}
       >
+        {/* Colored brand chip is always rendered; logo <img> overlays on top
+            and falls back through CDN chain, hiding itself if everything 404s.
+            Mirrors the JobFeed CompanyCell pattern. */}
         <div
           style={{
+            position: "relative",
             width: 16,
             height: 16,
             borderRadius: 3,
@@ -87,9 +97,28 @@ function DecorativeCard({ name, color, letter, roles, pos, dur, delay }: DecoCar
             color: "#fff",
             fontSize: 8,
             fontWeight: 700,
+            overflow: "hidden",
           }}
         >
-          {letter}
+          <span>{letter}</span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={primaryLogo}
+            alt=""
+            width={16}
+            height={16}
+            referrerPolicy="no-referrer"
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+            onError={(e) => {
+              const img = e.currentTarget as HTMLImageElement & { dataset: DOMStringMap };
+              if (img.dataset.fallback !== "1") {
+                img.dataset.fallback = "1";
+                img.src = fallbackLogo;
+              } else {
+                img.style.display = "none";
+              }
+            }}
+          />
         </div>
         <span style={{ fontSize: 10, fontWeight: 700, color: "#1A1A2E" }}>{name}</span>
       </div>
@@ -178,6 +207,18 @@ function LoginForm() {
         aria-hidden
         className="pointer-events-none absolute rounded-full"
         style={{ bottom: -100, left: -80, width: 420, height: 420, background: "radial-gradient(circle, rgba(99,91,255,0.10), transparent 65%)" }}
+      />
+
+      {/* Grid texture overlay — same pattern as /new-home hero gives the
+          dark gradient some visual depth. */}
+      <div
+        aria-hidden
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px)",
+          backgroundSize: "60px 60px",
+        }}
       />
 
       {/* Decorative floating company cards — desktop only (lg+ = ≥1024px)
