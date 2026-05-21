@@ -5,6 +5,104 @@ import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { supabase } from "@/lib/supabase";
 
+// Mix a hex color toward white by `pct` percent. Inlined (not imported from
+// LandingPage) to keep the login route bundle small.
+function mix(hex: string, pct: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const f = pct / 100;
+  return `rgb(${Math.round(r + (255 - r) * f)},${Math.round(g + (255 - g) * f)},${Math.round(b + (255 - b) * f)})`;
+}
+
+// 10 decorative cards: 3 big-tech + 3 famous startups + 1 biotech + 1 banking
+// + 1 auto + 1 consumer. Different from /new-home hero (which shows Google,
+// Stripe, Netflix, OpenAI, Uber, Discord, Figma) so login feels distinct.
+type DecoCard = {
+  name: string;
+  color: string;
+  letter: string;
+  roles: number;
+  pos: React.CSSProperties;
+  dur: number;
+  delay: number;
+};
+
+const DECORATIVE_CARDS: DecoCard[] = [
+  // Top-left cluster (3)
+  { name: "Apple",         color: "#1D1D1F", letter: "A", roles: 37, pos: { top: "9%",  left: "4%"  }, dur: 3.0, delay: 0.0 },
+  { name: "Microsoft",     color: "#0078D4", letter: "M", roles: 52, pos: { top: "26%", left: "1%"  }, dur: 3.4, delay: 0.4 },
+  { name: "Amazon",        color: "#FF9900", letter: "A", roles: 41, pos: { top: "14%", left: "18%" }, dur: 3.6, delay: 0.8 },
+  // Top-right cluster (2)
+  { name: "Meta",          color: "#0668E1", letter: "M", roles: 28, pos: { top: "10%", right: "5%"  }, dur: 3.2, delay: 0.2 },
+  { name: "Anthropic",     color: "#D4A574", letter: "A", roles: 6,  pos: { top: "26%", right: "11%" }, dur: 3.5, delay: 0.6 },
+  // Bottom-left cluster (2)
+  { name: "Linear",        color: "#5E6AD2", letter: "L", roles: 4,  pos: { bottom: "30%", left: "1%" }, dur: 3.3, delay: 0.5 },
+  { name: "Notion",        color: "#2D2D2D", letter: "N", roles: 7,  pos: { bottom: "14%", left: "5%" }, dur: 3.7, delay: 1.0 },
+  // Bottom-right cluster (3)
+  { name: "Moderna",       color: "#E31837", letter: "M", roles: 9,  pos: { bottom: "8%",  right: "5%"  }, dur: 3.4, delay: 0.7 },
+  { name: "Goldman Sachs", color: "#7399C6", letter: "G", roles: 35, pos: { bottom: "23%", right: "11%" }, dur: 3.6, delay: 0.9 },
+  { name: "Tesla",         color: "#CC0000", letter: "T", roles: 18, pos: { bottom: "14%", right: "21%" }, dur: 3.8, delay: 1.2 },
+];
+
+function DecorativeCard({ name, color, letter, roles, pos, dur, delay }: DecoCard) {
+  const bg96 = mix(color, 96);
+  const grad55 = mix(color, 55);
+  const grad30 = mix(color, 30);
+  return (
+    <div
+      aria-hidden
+      style={{
+        ...pos,
+        position: "absolute",
+        background: bg96,
+        borderRadius: 10,
+        overflow: "hidden",
+        width: 110,
+        boxShadow: "0 10px 30px rgba(0,0,0,0.30)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        animation: `heroFloat ${dur}s ease-in-out infinite alternate`,
+        animationDelay: `${delay}s`,
+        pointerEvents: "none",
+      }}
+    >
+      <div
+        style={{
+          background: `linear-gradient(135deg, ${grad55}, ${grad30})`,
+          padding: "5px 8px",
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+        }}
+      >
+        <div
+          style={{
+            width: 16,
+            height: 16,
+            borderRadius: 3,
+            background: color,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#fff",
+            fontSize: 8,
+            fontWeight: 700,
+          }}
+        >
+          {letter}
+        </div>
+        <span style={{ fontSize: 10, fontWeight: 700, color: "#1A1A2E" }}>{name}</span>
+      </div>
+      <div style={{ padding: "8px 6px", textAlign: "center" }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 2 }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1A2E" }}>{roles}</span>
+          <span style={{ fontSize: 8, fontWeight: 500, color: "#6E6E80" }}>roles</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LoginForm() {
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
@@ -82,6 +180,14 @@ function LoginForm() {
         style={{ bottom: -100, left: -80, width: 420, height: 420, background: "radial-gradient(circle, rgba(99,91,255,0.10), transparent 65%)" }}
       />
 
+      {/* Decorative floating company cards — desktop only (lg+ = ≥1024px)
+          so they don't crowd the central card on smaller screens. */}
+      <div className="hidden lg:block absolute inset-0 pointer-events-none" aria-hidden>
+        {DECORATIVE_CARDS.map((c) => (
+          <DecorativeCard key={c.name} {...c} />
+        ))}
+      </div>
+
       <div
         className="relative bg-white rounded-xl border border-stone-200 p-5 sm:p-8 max-w-md w-full mx-4 sm:mx-0"
         style={{
@@ -121,7 +227,7 @@ function LoginForm() {
             <p className="text-[12px] text-stone-500 mt-3 pt-3 border-t border-stone-200">
               Free. No fees. No credit card. No spam.
             </p>
-            <div className="flex items-center justify-center gap-1.5 mt-3 text-[10px] uppercase tracking-wider text-stone-400 font-semibold">
+            <div className="flex flex-wrap items-center gap-1.5 mt-3 text-[10px] uppercase tracking-wider text-stone-400 font-semibold">
               <span>Tracking 240+ companies</span>
               <span className="text-stone-300">·</span>
               <span>Updated daily</span>
