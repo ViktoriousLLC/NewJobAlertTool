@@ -39,6 +39,13 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async redirects() {
+    // /new-home was the staging URL while iterating; content is now at /.
+    // Permanent redirect keeps any bookmarks alive without a 404.
+    return [
+      { source: "/new-home", destination: "/", permanent: true },
+    ];
+  },
 };
 
 export default withSentryConfig(nextConfig, {

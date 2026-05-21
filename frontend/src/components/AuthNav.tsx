@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { trackEvent } from "@/lib/analytics";
@@ -17,7 +18,16 @@ export default function AuthNav({ email }: AuthNavProps) {
     router.push("/login");
   }
 
-  if (!email) return null;
+  if (!email) {
+    return (
+      <Link
+        href="/login"
+        className="bg-[#0EA5E9] hover:bg-[#0284C7] text-white px-3.5 py-1.5 rounded-[6px] text-[13px] font-semibold transition-all"
+      >
+        Sign In
+      </Link>
+    );
+  }
 
   return (
     <div className="flex items-center gap-3">
