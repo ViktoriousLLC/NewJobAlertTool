@@ -1,36 +1,127 @@
-// Brand colors for known companies — lowercase name → hex
+// Brand colors for known companies — lowercase name → hex.
+// Unknown companies fall back to a deterministic hash-based color (see
+// hashBrandColor below) so every company gets *some* recognizable color
+// instead of generic gray. Hand-mapped entries are still preferred since
+// they match the real brand identity.
 export const BRAND_COLORS: Record<string, string> = {
+  // Big tech
+  apple: "#000000",
+  google: "#4285F4",
+  microsoft: "#00A4EF",
+  amazon: "#FF9900",
+  meta: "#0668E1",
+  netflix: "#E50914",
+  uber: "#000000",
+  cisco: "#049FD9",
+  oracle: "#C74634",
+  salesforce: "#00A1E0",
+  adobe: "#FF0000",
+  intel: "#0071C5",
+  nvidia: "#76B900",
+  // AI / dev tools
+  openai: "#10A37F",
+  anthropic: "#D4A574",
+  notion: "#000000",
+  linear: "#5E6AD2",
+  figma: "#A259FF",
+  github: "#181717",
+  slack: "#611F69",
   atlassian: "#0052CC",
-  doordash: "#FF3008",
+  asana: "#F06A6A",
+  hubspot: "#FF7A59",
+  snowflake: "#29B5E8",
+  databricks: "#FF3621",
+  // Consumer / social
   discord: "#5865F2",
   reddit: "#FF4500",
   instacart: "#43B02A",
-  figma: "#A259FF",
   airbnb: "#FF5A5F",
-  openai: "#10A37F",
-  slack: "#611F69",
-  stripe: "#635BFF",
-  uber: "#000000",
-  google: "#4285F4",
-  netflix: "#E50914",
-  paypal: "#003087",
-  apple: "#000000",
-  meta: "#0668E1",
-  amazon: "#FF9900",
-  microsoft: "#00A4EF",
+  doordash: "#FF3008",
+  lyft: "#FF00BF",
+  pinterest: "#BD081C",
+  linkedin: "#0077B5",
   spotify: "#1DB954",
-  ebay: "#E53238",
-  anthropic: "#D4A574",
-  vanta: "#5C2D91",
-  cisco: "#049FD9",
+  twitch: "#9146FF",
+  snap: "#FFFC00",
+  snapchat: "#FFFC00",
+  expedia: "#1A287E",
+  // Fintech / banking
+  stripe: "#635BFF",
+  paypal: "#003087",
+  visa: "#1A1F71",
+  mastercard: "#EB001B",
+  "capital one": "#C8102E",
+  capitalone: "#C8102E",
+  "american express": "#006FCF",
+  amex: "#006FCF",
+  jpmorgan: "#0F4C81",
+  "jpmorgan chase": "#0F4C81",
+  "goldman sachs": "#7399C6",
+  goldman: "#7399C6",
+  "morgan stanley": "#015C9B",
+  block: "#000000",
+  square: "#000000",
+  robinhood: "#00C805",
+  coinbase: "#0052FF",
+  klarna: "#FFA8CD",
+  // Hardware / auto / consumer
+  tesla: "#CC0000",
+  shopify: "#95BF47",
+  // Biotech / pharma
+  pfizer: "#0093D0",
+  moderna: "#E31837",
+  "eli lilly": "#D52B1E",
+  lilly: "#D52B1E",
+  "johnson & johnson": "#D71921",
+  "j&j": "#D71921",
+  // Gaming / media
   roblox: "#E2231A",
+  ea: "#FF4747",
+  "electronic arts": "#FF4747",
+  ebay: "#E53238",
+  // Misc
+  vanta: "#5C2D91",
   bitkraft: "#1A1A2E",
+  twilio: "#F22F46",
+  dropbox: "#0061FF",
 };
+
+// Fallback palette for unknown companies — picks one of these via a
+// deterministic hash of the company name, so the same company always
+// gets the same color across refreshes.
+const FALLBACK_PALETTE = [
+  "#1E88E5", // blue
+  "#43A047", // green
+  "#E53935", // red
+  "#FB8C00", // orange
+  "#8E24AA", // purple
+  "#00ACC1", // cyan
+  "#F4511E", // deep orange
+  "#5E35B1", // deep purple
+  "#3949AB", // indigo
+  "#00897B", // teal
+  "#7CB342", // light green
+  "#D81B60", // pink
+  "#039BE5", // light blue
+  "#6D4C41", // brown
+  "#00838F", // dark cyan
+  "#C0392B", // brick red
+];
+
+// djb2-ish hash, kept small + deterministic
+function hashBrandColor(name: string): string {
+  let h = 5381;
+  const s = name.toLowerCase();
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  }
+  return FALLBACK_PALETTE[Math.abs(h) % FALLBACK_PALETTE.length];
+}
 
 export const DEFAULT_BRAND_COLOR = "#6B7280";
 
 export function getBrandColor(companyName: string): string {
-  return BRAND_COLORS[companyName.toLowerCase()] ?? DEFAULT_BRAND_COLOR;
+  return BRAND_COLORS[companyName.toLowerCase()] ?? hashBrandColor(companyName);
 }
 
 /**
