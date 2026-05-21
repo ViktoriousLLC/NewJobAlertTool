@@ -80,35 +80,35 @@ function AllJobsPage() {
   useEffect(() => {
     async function fetchAllJobs() {
       try {
-        // Single /api/jobs call replaces N+1 company detail fetches
-        const fetches: Promise<Response>[] = [
-          apiFetch("/api/jobs"),
-          apiFetch("/api/favorites"),
-        ];
-
-        // Fetch comp data in parallel if starred mode
         const isStarred = searchParams.get("filter") === "starred";
-        if (isStarred) {
-          fetches.push(apiFetch("/api/compensation"));
-        }
+
+        // Starred mode hits the dedicated endpoint that returns ONLY the
+        // user's favorites joined with company info — much smaller payload
+        // than fetching every job from every subscribed company. Saves the
+        // separate /api/favorites call too (IDs derived from returned jobs).
+        const fetches: Promise<Response>[] = isStarred
+          ? [apiFetch("/api/favorites/jobs"), apiFetch("/api/compensation")]
+          : [apiFetch("/api/jobs"), apiFetch("/api/favorites")];
 
         const responses = await Promise.all(fetches);
 
         const apiJobs: ApiJob[] = await responses[0].json();
 
-        try {
-          const favIds: string[] = await responses[1].json();
-          setFavorites(new Set(favIds));
-        } catch {
-          // ignore
-        }
-
-        if (isStarred && responses[2]) {
+        if (isStarred) {
+          // All returned jobs are by definition favorites
+          setFavorites(new Set(apiJobs.map((j) => j.id)));
           try {
-            const data = await responses[2].json();
+            const data = await responses[1].json();
             setCompData(data || {});
           } catch {
             // No comp data — that's fine
+          }
+        } else {
+          try {
+            const favIds: string[] = await responses[1].json();
+            setFavorites(new Set(favIds));
+          } catch {
+            // ignore
           }
         }
 
