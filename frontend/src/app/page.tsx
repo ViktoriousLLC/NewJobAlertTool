@@ -1,11 +1,16 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import LandingHero from "@/components/LandingHero";
+import { supabase } from "@/lib/supabase";
 
-// The job-first feed homepage. Took over from the old LandingPage on the
-// 2026-05-20 swap; the old landing is preserved at /welcome.
+// Auth-aware /:
+//   - Unauth → JobFeed home (hero + public job feed) — the post-2026-05-20
+//     replacement for the old LandingPage marketing page (preserved at /welcome).
+//   - Authed → Dashboard ("Tracked Companies"). Same view as before the
+//     /new-home swap, so signed-in users land on their own data.
 const JobFeed = dynamic(() => import("@/components/JobFeed"), {
   ssr: false,
   loading: () => (
@@ -17,7 +22,25 @@ const JobFeed = dynamic(() => import("@/components/JobFeed"), {
   ),
 });
 
+const Dashboard = dynamic(() => import("@/components/DashboardContent"), {
+  ssr: false,
+});
+
 export default function HomePage() {
+  const [authState, setAuthState] = useState<"loading" | "authenticated" | "unauthenticated">("loading");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setAuthState(session?.user ? "authenticated" : "unauthenticated");
+    });
+  }, []);
+
+  if (authState === "loading") return null;
+  if (authState === "authenticated") return <Dashboard />;
+  return <UnauthHome />;
+}
+
+function UnauthHome() {
   const router = useRouter();
 
   function handleCtaSubmit(e: React.FormEvent) {
