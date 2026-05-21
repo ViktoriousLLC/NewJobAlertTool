@@ -13,9 +13,14 @@ interface HeroCardCompany {
 export default function LandingHero({
   onCtaSubmit,
   ctaLabel = "Get Started Free",
+  compact = false,
 }: {
   onCtaSubmit: (e: React.FormEvent) => void;
   ctaLabel?: string;
+  // compact=true on /new-home: hero takes ~2/3 of viewport so the job
+  // feed peeks underneath, top padding is reduced, and the
+  // "Tracking daily" company strip is hidden.
+  compact?: boolean;
 }) {
   return (
     <section
@@ -24,7 +29,7 @@ export default function LandingHero({
           "linear-gradient(165deg, #081226 0%, #0C1E3A 30%, #0F2847 55%, #0A1F3D 75%, #081226 100%)",
         position: "relative",
         overflow: "hidden",
-        minHeight: "100vh",
+        minHeight: compact ? undefined : "100vh",
         display: "flex",
         flexDirection: "column",
       }}
@@ -53,7 +58,9 @@ export default function LandingHero({
       />
 
       <div
-        className="flex-1 grid grid-cols-1 md:grid-cols-[1fr_1.1fr] gap-10 md:gap-10 items-center relative px-5 md:px-10 pt-24 md:pt-[110px] pb-10 md:pb-10"
+        className={`flex-1 grid grid-cols-1 md:grid-cols-[1fr_1.1fr] gap-10 md:gap-10 items-center relative px-5 md:px-10 pb-10 md:pb-10 ${
+          compact ? "pt-12 md:pt-14" : "pt-24 md:pt-[110px]"
+        }`}
         style={{ maxWidth: 1140, margin: "0 auto", width: "100%" }}
       >
         {/* Left: copy */}
@@ -278,7 +285,9 @@ export default function LandingHero({
         </div>
       </div>
 
-      {/* Company strip */}
+      {/* Company strip — hidden in compact mode so the feed below can
+          peek into the viewport */}
+      {!compact && (
       <div style={{ borderTop: "1px solid rgba(255,255,255,0.04)", padding: "18px 0" }}>
         <div className="px-5 md:px-10 flex items-center gap-4" style={{ maxWidth: 1140, margin: "0 auto" }}>
           <span
@@ -343,6 +352,7 @@ export default function LandingHero({
           </div>
         </div>
       </div>
+      )}
     </section>
   );
 }

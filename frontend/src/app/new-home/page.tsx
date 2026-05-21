@@ -29,7 +29,7 @@ export default function NewHomePage() {
       className="fixed inset-0 z-30 overflow-y-auto bg-[#081226]"
       style={{ scrollBehavior: "smooth" }}
     >
-      <LandingHero onCtaSubmit={handleCtaSubmit} />
+      <LandingHero onCtaSubmit={handleCtaSubmit} compact />
 
       {/* Themed feed section — steel-gray gradient continues the page so the
           table doesn't feel like a separate website pasted underneath. */}
