@@ -26,7 +26,7 @@ export default function NewHomePage() {
   return (
     <div
       id="new-home-scroll"
-      className="fixed inset-0 z-30 overflow-y-auto bg-[#081226]"
+      className="fixed inset-0 z-0 overflow-y-auto bg-[#081226] pt-[54px]"
       style={{ scrollBehavior: "smooth" }}
     >
       <LandingHero onCtaSubmit={handleCtaSubmit} compact />

@@ -63,8 +63,32 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-stone-50 py-10">
-      <div className="bg-white rounded-xl border border-stone-200 p-5 sm:p-8 shadow-sm max-w-md w-full mx-4 sm:mx-0">
+    <div
+      className="relative min-h-screen flex items-center justify-center py-10 overflow-hidden"
+      style={{
+        background:
+          "linear-gradient(165deg, #081226 0%, #0C1E3A 30%, #0F2847 55%, #0A1F3D 75%, #081226 100%)",
+      }}
+    >
+      {/* Decorative orbs (match /new-home hero) */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute rounded-full"
+        style={{ top: -120, right: -100, width: 480, height: 480, background: "radial-gradient(circle, rgba(14,165,233,0.18), transparent 65%)" }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute rounded-full"
+        style={{ bottom: -100, left: -80, width: 420, height: 420, background: "radial-gradient(circle, rgba(99,91,255,0.10), transparent 65%)" }}
+      />
+
+      <div
+        className="relative bg-white rounded-xl border border-stone-200 p-5 sm:p-8 max-w-md w-full mx-4 sm:mx-0"
+        style={{
+          boxShadow:
+            "0 20px 60px rgba(0,0,0,0.35), 0 4px 16px rgba(14,165,233,0.12)",
+        }}
+      >
         <div className="flex items-center gap-3 mb-5">
           <div className="w-10 h-10 bg-[var(--brand)] rounded-lg flex items-center justify-center">
             <span className="text-white font-bold text-sm">PM</span>
@@ -97,6 +121,13 @@ function LoginForm() {
             <p className="text-[12px] text-stone-500 mt-3 pt-3 border-t border-stone-200">
               Free. No fees. No credit card. No spam.
             </p>
+            <div className="flex items-center justify-center gap-1.5 mt-3 text-[10px] uppercase tracking-wider text-stone-400 font-semibold">
+              <span>Tracking 240+ companies</span>
+              <span className="text-stone-300">·</span>
+              <span>Updated daily</span>
+              <span className="text-stone-300">·</span>
+              <span>Made by a PM</span>
+            </div>
           </div>
         )}
 
