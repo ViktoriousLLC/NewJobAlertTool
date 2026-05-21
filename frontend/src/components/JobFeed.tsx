@@ -135,7 +135,7 @@ function formatScrapeWindow(): string {
       .format(d)
       .replace(" ", "")
       .toLowerCase();
-  return `14:00 UTC · ${inZone("America/Los_Angeles")} PT · ${inZone("America/New_York")} ET`;
+  return `${inZone("UTC")} UTC · ${inZone("America/Los_Angeles")} PT · ${inZone("America/New_York")} ET`;
 }
 
 export default function JobFeed() {
