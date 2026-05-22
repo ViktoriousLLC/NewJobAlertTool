@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { apiFetch } from "@/lib/api";
 
-type IssueType = "bug" | "missing_data" | "other";
+type IssueType = "bug" | "feature_request" | "missing_data" | "other";
 
 export default function HelpButton() {
   const [isOpen, setIsOpen] = useState(false);
@@ -83,6 +83,7 @@ export default function HelpButton() {
                   className="w-full px-3 py-2 text-sm border border-stone-200 rounded-lg bg-white focus:outline-none focus:border-[#0EA5E9]"
                 >
                   <option value="bug">Bug Report</option>
+                  <option value="feature_request">Feature Request</option>
                   <option value="missing_data">Missing / Wrong Data</option>
                   <option value="other">Other Feedback</option>
                 </select>
