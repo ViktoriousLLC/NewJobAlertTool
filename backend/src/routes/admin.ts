@@ -220,4 +220,39 @@ router.get("/email-status", async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/admin/weekly-digest/send — trigger the weekly LinkedIn-draft
+// email send manually. Useful for test sends + ad-hoc runs without waiting
+// for the Friday cron. Returns the computed data so the caller can preview
+// the numbers even on a no-key (compute-but-don't-send) outcome.
+router.post("/weekly-digest/send", async (_req: Request, res: Response) => {
+  try {
+    const { sendWeeklyDigest } = await import("../jobs/weeklyDigest");
+    const result = await sendWeeklyDigest();
+    res.json(result);
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("Admin weekly-digest send failed:", err);
+    res.status(500).json({ error: "Weekly digest send failed" });
+  }
+});
+
+// GET /api/admin/weekly-digest/preview — return the computed data + the
+// rendered LinkedIn post text + HTML email body without sending. Useful for
+// previewing what Friday's email will look like before it lands in the inbox.
+router.get("/weekly-digest/preview", async (_req: Request, res: Response) => {
+  try {
+    const { computeWeeklyDigest, renderLinkedInPost, renderEmailHtml } = await import("../jobs/weeklyDigest");
+    const data = await computeWeeklyDigest();
+    res.json({
+      data,
+      linkedinPost: renderLinkedInPost(data),
+      emailHtml: renderEmailHtml(data),
+    });
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("Admin weekly-digest preview failed:", err);
+    res.status(500).json({ error: "Weekly digest preview failed" });
+  }
+});
+
 export default router;

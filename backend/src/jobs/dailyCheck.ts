@@ -176,7 +176,7 @@ function pickRecommendations(
 // Overlap guard: prevent concurrent daily check runs
 let dailyCheckRunning = false;
 
-export async function runDailyCheck(options?: { skipEmails?: boolean; forceMondayDigest?: boolean }): Promise<void> {
+export async function runDailyCheck(options?: { skipEmails?: boolean; forceMondayDigest?: boolean; forceWeeklyDigest?: boolean }): Promise<void> {
   if (dailyCheckRunning) {
     console.warn("Daily check already running — skipping this trigger to prevent overlap");
     return;
@@ -190,7 +190,7 @@ export async function runDailyCheck(options?: { skipEmails?: boolean; forceMonda
   }
 }
 
-async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayDigest?: boolean }): Promise<void> {
+async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayDigest?: boolean; forceWeeklyDigest?: boolean }): Promise<void> {
   console.log(`Starting daily job check...${options?.skipEmails ? " (skipEmails mode)" : ""}`);
 
   // Scrape all companies so the catalog stays fresh (even with 0 subscribers)
@@ -684,6 +684,20 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     emailBatchResult,
     forceMondayDigest: options?.forceMondayDigest ?? false,
   });
+
+  // --- Weekly LinkedIn-draft digest (Fridays) ---
+  // Fires after the daily run on Friday UTC so the freshly-scraped jobs are
+  // included. Owned by Railway's daily cron — no separate Friday schedule
+  // needed. forceWeeklyDigest=true allows ad-hoc test sends.
+  const isFridayUtc = new Date().getUTCDay() === 5;
+  if (isFridayUtc || options?.forceWeeklyDigest) {
+    try {
+      const { sendWeeklyDigest } = await import("./weeklyDigest");
+      await sendWeeklyDigest();
+    } catch (err) {
+      console.error("Failed to send weekly digest:", err);
+    }
+  }
 
   // Refresh compensation data for all active companies
   console.log("Refreshing compensation data...");
