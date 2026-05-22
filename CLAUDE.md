@@ -85,28 +85,43 @@ All routes require `Authorization: Bearer <token>` unless noted. See `backend/sr
 GET    /api/companies, /api/companies/{id}, /api/catalog, /api/jobs
 POST   /api/companies/check, /api/companies, /api/subscriptions, /api/favorites/{jobId}, /api/help, /api/issues
 DELETE /api/companies/{id}, /api/subscriptions/{companyId}, /api/favorites/{jobId}
+GET    /api/favorites/jobs                   (user's starred jobs, pre-joined with company — backs /jobs?filter=starred)
 GET    /api/preferences, PUT /api/preferences
 GET    /api/compensation, /api/compensation/{companyName}
+GET    /api/feed, /api/feed/companies        (PUBLIC — no auth — drives the JobFeed home at /)
 GET    /api/admin/* (requires ADMIN_EMAIL)
+GET    /api/admin/email-status               (proxies Resend list-emails API; optional ?email= filter)
 GET    /api/cron/trigger (requires CRON_SECRET; see JOBS.md)
 ```
+
+`/api/feed` filters: `industry`, `level`, `region`, `city`, `company`, `min_comp`, `sort`, `include_closed`. Region filter is server-side; sort=company uses fetch-and-sort in Node because PostgREST silently ignores nested-table order. Comp tier enriched per-job from `comp_cache`.
+
+**Frontend routes (after the 2026-05-20 home swap, PR #48):** `/` is the JobFeed home (auth-aware: unauth gets hero + public feed; authed gets Dashboard). `/welcome` is the old marketing landing (permanent backup, can roll back swap). `/companies` is the authed Tracked Companies view (Dashboard direct). `/new-home` deleted; permanent 308 redirect → `/` in `frontend/next.config.ts`.
 
 ## Database Schema
 
 | Table | Notes |
 |---|---|
-| `companies` | Shared catalog. `is_active` = subscriber_count > 0. `auto_disabled` + `consecutive_failure_count` for self-healing. `is_verified` + `is_verified_zero` to close silent-zero gap. CASCADE deletes jobs. |
-| `seen_jobs` | Status: active → removed → archived (60 days). Unique on (company_id, job_url_path). |
+| `companies` | Shared catalog. `is_active` = subscriber_count > 0. `auto_disabled` + `consecutive_failure_count` for self-healing. `is_verified` + `is_verified_zero` to close silent-zero gap. `industry` (enum-shaped text, drives email recommendations + /new-home filter). `min_relevant_seniority` (early/mid/director — filters daily email + feed; FAANG=mid by default). CASCADE deletes jobs. |
+| `seen_jobs` | Status: active → removed → archived (60 days). `last_removed_at` (2026-05-19) stamped on active→removed; used for 2-week return rule. Unique on (company_id, job_url_path). |
 | `user_subscriptions` | Links users to tracked companies. UNIQUE(user_id, company_id). |
 | `user_job_favorites` | Star icons on jobs pages. UNIQUE(user_id, seen_job_id). |
 | `user_new_company_submissions` | Rate limit: 10/user, admin bypass. |
 | `user_preferences` | email_frequency: daily/weekly/off. |
 | `comp_cache` | levels.fyi cache, 24hr TTL. No RLS. |
+| `recommendation_history` | (user_id, company_id, sent_at). Cron writes after picking email recommendations; excludes companies shown in last 7 days. |
 | `scrape_issues`, `help_submissions` | Bug-reporting tables. |
 | `scraper_events` | Audit log of self-healing actions. See JOBS.md. |
 | `security_snapshots` | Weekly npm audit snapshot. See JOBS.md. |
 
 Indexes, exact column lists, and partial-index details live in the migrations + JOBS.md/ROUTES.md sidecars as needed.
+
+**Migrations live in `backend/migrations/YYYY-MM-DD-description.sql`** (folder added 2026-05-19). Run via Supabase MCP `apply_migration` or paste into SQL Editor.
+
+## Conventions
+
+- **Always use `listAllUsers()` from `backend/src/lib/listAllUsers.ts`**, never `supabase.auth.admin.listUsers()` directly. The raw call defaults to `perPage=50` — on 2026-05-20 this silently paginated the 16 oldest users (including admin) out of the daily email iteration. The helper does proper cursor pagination (`PAGE_SIZE=1000`, `MAX_PAGES=100` safety cap).
+- **`/api/admin/email-status` is the diagnostic for "did user X receive email Y?"** Queries Resend's `/emails` API directly. We do NOT log per-recipient sends to our DB (PII concern — user prefers email metadata stays in Resend).
 
 ## Performance Rules
 
@@ -133,7 +148,13 @@ Indexes, exact column lists, and partial-index details live in the migrations + 
 ## Cross-cutting Gotchas
 
 - **Supabase DDL**: Cannot run CREATE/ALTER TABLE via supabase-js. Use SQL Editor in dashboard or MCP `apply_migration`.
-- **NEXT_PUBLIC_ env vars**: Baked at build time. Must redeploy after changing in Vercel.
+- **Supabase `listUsers()` defaults to perPage=50.** Bit us on 2026-05-20 — admin (oldest user) silently dropped out of daily email. Use the `listAllUsers()` helper (see Conventions above).
+- **PostgREST nested-table ordering is silently ignored.** `order("seen_jobs.something", { foreignTable: "..." })` AND `{ referencedTable: "..." }` both no-op. For sort-by-nested, fetch and sort in Node (with a cap).
+- **PostgREST OR clause delimiter is comma.** Values containing commas must be wrapped in double-quotes. `or=field.eq."Holmdel, NJ"` not `or=field.eq.Holmdel, NJ`.
+- **`like` vs `ilike` in PostgREST is case-sensitivity, not glob.** `, NE` case-insensitive matches "Ne" in "New Jersey". For abbreviation matching use `like` (case-sensitive) + a country/state anchor.
+- **NEXT_PUBLIC_ env vars**: Baked at build time. Must redeploy after changing in Vercel. `NEXT_PUBLIC_LOGO_DEV_TOKEN` is a publishable key (safe to expose, like Stripe pk).
+- **Supabase SSR + Next.js redirects.** `NextResponse.redirect()` does NOT inherit cookies from supabaseResponse. Must copy cookies onto every redirect or session terminates. See `redirectPreservingSession()` helper in `frontend/middleware.ts`.
+- **CSP img-src must allowlist logo CDNs.** `https://icons.duckduckgo.com` + `https://img.logo.dev` are both needed. Lives in `frontend/next.config.ts`.
 - **Cloudflare proxy**: Must be OFF (grey cloud) for Vercel/Railway custom domains.
 - **Vercel project name**: `new-job-alert-tool` (not `frontend`).
 - **Windows sleep**: Use `powershell -command "Start-Sleep -Seconds N"` (not `timeout`).
