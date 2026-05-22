@@ -1401,3 +1401,164 @@ KPMG's 59 results are all engineering leads, SAP product costing managers, and c
 - **Trust foundation UI** — frontend changes to show `confidence` badges (high/medium/experimental) on company cards, surface `detection_method` to admin, build user-report button feeding the future triage agent inbox.
 - **Phase 1 Stripe billing** — 3-tier auth (anonymous browse / free login save / paid add-any-URL). Per existing monetization plan.
 - **eBay Phenom Vue stealth crawl** — if eBay subscribers grow, build a stealth-rendered Vue crawl that goes beyond the 10-job server-render cap. Defer indefinitely until demand justifies.
+
+---
+
+## 2026-05-19 → 2026-05-20 — /new-home Job-First Feed + Email Quality Overhaul + Critical Pagination Bug (16 PRs in 2 days)
+
+### Context
+
+Two themes drove this sprint. First, the catalog hit 244 companies after the targeted-curation work — enough density that the dashboard's "list of cards" UX was starting to feel like the wrong shape for someone job-hunting. The second was a slow-accumulating set of email-quality complaints: jobs flagged "new" that weren't, recommendation block repeating the same companies, daily email getting noisier as the catalog grew.
+
+The plan: build a parallel `/new-home` route as a data-first job feed (inspired by jobs.christran.gg's table layout), iterate on filters, and in parallel fix the email-quality issues. A bonus thread emerged late in the sprint: levels.fyi comp data was sitting in `comp_cache` mostly unused, so we plumbed it through both the feed (per-job comp tier + Min Comp filter) and the future email recommendation logic.
+
+Then a critical bug hit on the very last day: admin (user himself) stopped receiving the daily email. No Resend record at all. Root cause turned out to be a 1-line Supabase SDK default that had been silently true since the user count crossed 50 the day before.
+
+### What was decided
+
+**1. `/new-home` as parallel route, not a swap (PRs #24 → #28).** Built `frontend/src/app/new-home/page.tsx` rendering a new `JobFeed.tsx` component (~700 lines). Table layout: Company / Title / Location / Level / Comp / Posted / Track. Track button is auth-aware — anonymous visitors get redirected to `/login?next=/new-home`. The old `/` page (marketing landing for anon, dashboard for auth) stayed intact. When user greenlights the swap, `/new-home` becomes `/` and the marketing landing moves to its own route.
+
+Iterated through three rounds:
+- **Round 1 (PR #24)**: basic feed. User feedback: "needs filters, sort, logo column."
+- **Round 2 (PR #28)**: table layout + tiered logos (logo.dev → DuckDuckGo → Google → colored chip) + sort + company filter dropdown.
+- **Round 3 (PRs #29 → #32, four PRs of filter bug-fixes)**: region server-side, sort A→Z working, Remote option added. Each PR exposed a new edge case in PostgREST behavior — see "Alternatives considered."
+
+**2. `/api/feed` as public read endpoint (PR #24).** New router at `backend/src/routes/feed.ts`, mounted at `/api/feed` WITHOUT requireAuth (public read of shared catalog). Two endpoints: `GET /api/feed` (filtered jobs, enriched with comp tier from `comp_cache`) and `GET /api/feed/companies` (lightweight dropdown data). Server-side filter params: industry, level, region, city, company, min_comp, sort, include_closed. Track button still goes through auth-protected `/api/subscriptions` — public read, private write.
+
+**3. Industry column + email recommendation block (PRs #22 + #23).** Added `companies.industry` text column. Backfilled all 243 companies via migration. Enum-shaped: ai, dev_tools, fintech, biotech, banking, consulting, gaming, edtech, streaming, crypto. Drives both the `/new-home` industry filter and the email "Companies you may find interesting" section (3 companies from user's subscribed industries, with logo + comp + 1-click subscribe).
+
+**4. Per-company seniority threshold (PR #33).** Added `companies.min_relevant_seniority` (text, default 'mid'). FAANG titles are inflated industry-wide — "Google PM" is mid-level by Bay Area standards. Manually set Google/Meta/Apple/Amazon/Netflix/Microsoft to 'mid' so junior PM titles at FAANG don't email the user. New helper `passesSeniorityThreshold(jobTitle, threshold)` in `dailyCheck.ts`. Future path is comp-validated (use levels.fyi early-tier TC to set automatically) — backlogged as #28.
+
+**5. Comp on /new-home (PR #35).** Plumbed `comp_cache` enrichment into `/api/feed`. Per-job: read `comp_cache.data.tiers` (early/mid/director ranges) by company name, map the job's classified level to the matching tier, surface as a string. Added Min Comp filter (server-side `min_comp` param). Sort by comp also works.
+
+**6. Email quality overhaul (PRs #27, #34, #36):**
+- **PR #27 — Firehose sort**: companies with ≥10 new jobs pushed to the bottom of the email. High-signal/low-volume companies surface first.
+- **PR #34 — Zombie-return fix**: stopped pushing `returnedJobs` into the `newJobs` array. URL-flicker (job temporarily disappears + reappears next day) was flagging jobs first_seen in February as "new today." Also added day-of-month rotation for recommendations — wrong shape, user objected.
+- **PR #36 — 2-week return rule + recommendation history**: a returned job only counts as "new" if it's been removed ≥14 days. Added `seen_jobs.last_removed_at` column (stamped when status flips active→removed). Replaced day-of-month rotation with `recommendation_history` table: cron writes after picking recommendations, then excludes companies shown in last 7 days. If pool exhausted, falls back to older history.
+
+**7. logo.dev integration (PRs #37 + #38).** Added `NEXT_PUBLIC_LOGO_DEV_TOKEN` env var (publishable key, safe to expose like Stripe pk). When set, primary logo URL is `img.logo.dev/{domain}?token=...&size=64`; falls back to DuckDuckGo when unset. PR #38 fixed Workday subdomain extraction — `nvidia.wd5.myworkdayjobs.com` was returning full hostname, CDNs couldn't resolve. Added iCIMS + Oracle hostname patterns + `LOGO_DOMAIN_OVERRIDE` map for non-`.com` brands (linear.app, magic.dev, notion.so, confluent.io).
+
+**8. /api/admin/email-status (PR #39).** New admin route that proxies Resend's `/emails` list API. Optional `?email=` filter to investigate "did user X get the email?" Returns `{id, to, from, subject, last_event, created_at}` per email. Built specifically because user did NOT want per-recipient send logs in our own DB: *"I don't want the user emails living in my database, right? I want them to live secretly in [Resend] so that we don't have to worry about PII getting exchanged."* Lets us diagnose missing-email reports without compromising on data minimization.
+
+**9. CRITICAL: Supabase `listUsers()` pagination bug (PRs #40 → #41).** Admin stopped receiving the daily email on 2026-05-20. Resend showed ZERO record of an attempt. Investigation: `supabase.auth.admin.listUsers()` defaults to `perPage=50`. User count had crossed 50 on 2026-05-19 (66 total users). The 16 oldest users — including admin, who was the first to sign up — were silently paginated out of the daily cron iteration.
+
+- **PR #40 (one-line fix)**: passed `{ perPage: 1000 }` at all 5 call-sites. Immediate unblock.
+- **PR #41 (refactor)**: extracted `backend/src/lib/listAllUsers.ts` helper with proper cursor pagination (PAGE_SIZE=1000, MAX_PAGES=100 safety cap). All 5 call-sites migrated. **Convention from now on: never call `supabase.auth.admin.listUsers()` directly.**
+
+**10. Workday cluster investigation (sidequest).** Spawned scraper-doctor agent on 7 broken/zero Workday companies (BoA, BMS, Accenture, 23andMe, Eli Lilly, Chegg, Pfizer). Three distinct failure modes identified:
+- Misconfigured boardPath (BoA, BMS) → SQL fix applied via Supabase MCP.
+- ATS migration (Eli Lilly → Phenom) → applied.
+- Structural zero (Accenture all non-US locations, 23andMe in hiring freeze) → marked `is_verified_zero=true`.
+- Deprecated tenant (Chegg) → deferred.
+
+**11. CLAUDE.md sidecar migration (PR #18).** Trimmed the global CLAUDE.md from ~36KB to ~8KB. Subsystem detail moved to 5 sidecars (scraper, middleware, routes, jobs, components). PreToolUse hook at `.claude/hooks/sidecar-guard.js` blocks Edit/Write tool calls on those folders until the sidecar has been Read in the same session. Removes per-session re-derivation of subsystem rules.
+
+**12. Levels.fyi catalog growth research (research-only).** Downloaded all 75 sitemap shards (~2.2GB). Extracted 61,199 distinct levels.fyi company slugs via Python. Cross-referenced with our 243-company catalog: 90% match rate (218/243). The 60,980 unmatched slugs were mostly tiny businesses — wrong shape for our audience (same lesson as the Common Crawl detour). Recommended user reach out to levels.fyi for distribution partnership. Backlogged as task #29.
+
+### Alternatives considered
+
+**Swap `/` → `/new-home` immediately vs parallel route first.** Considered making `/new-home` the new home immediately. Rejected: the marketing landing has a known PostHog conversion rate and Lighthouse 100 score. Parallel route lets user see the new UX live, decide if it converts/feels right, then we swap. Cheap reversibility wins.
+
+**Client-side region filter vs server-side.** PR #28 shipped client-side: backend returned all jobs, frontend filtered. Looked instant but quickly broken when user clicked "Midwest" and saw "1 job (497 remaining)" — the page knew there were more but couldn't fetch them. Moved server-side in PR #29. Lesson: when the filter is on a big dimension (region cuts ~70% of jobs), client-only filtering is always wrong.
+
+**Day-of-month rotation for email recommendations vs history table.** PR #34 shipped deterministic day-of-month wraparound (day 1 = companies 1-3, day 2 = companies 4-6, etc.). User objected: *"You don't have to do ABC. It could be A C E... You keep a pool of eight candidates and show a different three each day. That doesn't make sense."* Replaced with `recommendation_history` table + 7-day exclusion window in PR #36. The history table is more expensive but matches user intent.
+
+**Log per-recipient sends to our DB vs query Resend.** Considered adding a `daily_email_sends` table to record who got what email when. Rejected: user explicitly does NOT want emails in our DB for PII reasons. Resend keeps the per-recipient send log anyway — we just need to query it. `/api/admin/email-status` proxies Resend directly. Zero new tables, zero new PII surface.
+
+**Patch `perPage` at every call-site vs extract helper.** PR #40 patched the 5 call-sites with `{ perPage: 1000 }` to unblock immediately. PR #41 followed up with the helper. Considered skipping PR #41 (1000 is plenty of headroom for years). Did it anyway because user explicitly: *"When I get over a thousand users, the same issue will happen again?"* The helper enforces correct behavior for future call-sites too.
+
+**Build comp-based seniority calibration vs manual FAANG seeding.** Considered using levels.fyi early-tier TC (e.g., Google early-PM TC = $183k) as input to per-company seniority threshold. Deferred: needed manual FAANG seeding NOW for the email to not be noisy; comp-validation is a separate backlogged build (task #28). Manual decision holds — FAANG titles are genuinely inflated and the threshold won't change frequently.
+
+**Run change-reviewer on every PR vs only non-trivial.** Skipped change-reviewer on PRs #29 → #32 (filter bug-fix PRs, each 1-2 line changes). Ran it on PR #36 (recommendation history was new table + new logic) and PR #41 (pagination helper). Cost-benefit holds — agents are valuable when scope is non-trivial.
+
+### Key insights
+
+- **The pagination bug is the lesson of the sprint.** Default values in SDKs are dangerous when the default looks reasonable until you cross the implicit boundary. perPage=50 looked fine for the first 50 days of growth. The 51st user was the cliff. Two takeaways: (a) ANY paginated SDK call needs explicit pagination handling — never trust the default, (b) when an external system (Resend) handles the actual delivery, query IT for ground truth, don't reinvent its log.
+- **Cheap reversibility beats perfect-on-first-try.** `/new-home` as parallel route, manual FAANG seniority seeding, suppressing emails via `is_verified_zero=true` rather than hard-delete — all cheap to roll back. The version that ships isn't required to be the version that lasts.
+- **PostgREST has multiple silent failure modes.** Three found in one sprint: (1) nested-table ordering silently no-ops with both `foreignTable` and `referencedTable` options, (2) OR clause delimiter is comma so values with commas need double-quotes, (3) `ilike` vs `like` is case-sensitivity. Each was a 1-2 line fix once known. The cost was knowing.
+- **Honest verification matters as much in feed UX as in scrapers.** Built the region filter, shipped it, "tested" by clicking the dropdown. Result: client-side filter that didn't actually filter. The verification gap was "does the visible row count match what the user expects." Same lesson as scraper verification: writing the code is necessary but not sufficient; running it against real data with real expectations is the check that matters.
+- **Email quality compounds.** Every bad signal (zombie return, repeated recommendation, junior FAANG noise) trains the user to skim the email faster. Each fix is small in isolation; together they shift the email from "noise I skim" to "signal I read." The fixes weren't individually exciting but the bundle moves the product meaningfully.
+
+### Files / artifacts
+
+- **16 merged PRs**: #18 (sidecar migration), #19 (admin digest analysis), #20 (add-batch slash command), #21 (admin digest kill switch), #22 (industry column + backfill), #23 (recommendation block), #24 (/new-home v1), #25 (/new-home public + ?next=), #26 (cookie propagation fix), #27 (firehose sort), #28 (/new-home v2 table), #29-#32 (filter fixes), #33 (seniority threshold), #34 (zombie filter + rotation), #35 (comp on /new-home), #36 (2-week return + history table), #37 (logo.dev), #38 (Workday logo fix), #39 (email-status endpoint), #40 (perPage=1000), #41 (listAllUsers helper).
+- **New backend files**: `backend/src/lib/listAllUsers.ts`, `backend/src/routes/feed.ts`.
+- **New frontend files**: `frontend/src/components/JobFeed.tsx`, `frontend/src/app/new-home/page.tsx`.
+- **New DB**: `companies.industry`, `companies.min_relevant_seniority`, `seen_jobs.last_removed_at` columns; `recommendation_history` table.
+- **Migrations folder created**: `backend/migrations/` with 3 dated SQL files.
+- **Slash command + hook**: `.claude/commands/add-batch.md`, `.claude/hooks/sidecar-guard.js`, `.claude/settings.json`.
+- **5 subsystem sidecars**: `backend/src/scraper/SCRAPER.md`, `middleware/AUTH.md`, `routes/ROUTES.md`, `jobs/JOBS.md`, `frontend/src/components/COMPONENTS.md`.
+- **2 memory files saved**: `feedback_response_style.md`, `feedback_pr_summary_format.md`.
+
+### Next batch — open ideas
+
+- **Swap `/new-home` → `/`** when user greenlights the new feed as the default surface.
+- **Comp-based email recommendations** (backlog #28) — mirror `/new-home`'s Min Comp filter inside the email recommendation picker.
+- **Levels.fyi distribution partnership** — research route deferred; outreach instead of scraping.
+- **Vercel preview env points to stable Railway preview backend** (backlog #19) — currently previews hit prod backend, which is risky for any backend-touching PR.
+- **Phase 1 Stripe billing** — 3-tier auth model from existing monetization plan.
+- **Comp-based auto-seniority calibration** — per-company `min_relevant_seniority` set automatically from levels.fyi early-tier TC.
+
+---
+
+## 2026-05-20 evening — Home Swap, Login Redesign, Dashboard Cleanup, ADMIN_EMAIL Pivot (PRs #42 → #51)
+
+### Context
+
+Earlier the same day we shipped the listUsers pagination fix (PR #41). With the JobFeed at `/new-home` having stabilized through the filter bug-fix cluster, the evening sprint pivoted to user-facing polish + the swap that retires `/new-home` as a parallel route and makes it the canonical homepage. A second mini-theme emerged: the Dashboard had operator-grade UI (Errors stat, four filter pills) that didn't fit a user-facing surface, and the login page was a blank "Sign In" header that felt jarring next to the visually-dense new home.
+
+### What was decided
+
+**1. `/new-home` hero + DST timestamps + login welcome (PR #42).** Extracted the existing landing hero into a reusable `LandingHero.tsx` component (~489 lines). `/new-home` now reuses it. Added DST-aware PT/ET label alongside the existing "14:00 UTC" via `Intl.DateTimeFormat`. Login page gained "Welcome to NewPMJobs" + value-prop checklist + "Free. No fees." Function filter added to JobFeed (Product Management only — placeholder for future functions).
+
+**2. Compact hero variant (PR #43).** Full-viewport hero was wrong; user wanted "2/3 hero + 1/3 jobs peek." Added `compact={true}` prop to `LandingHero` that drops min-height, tightens top padding, hides the "Tracking daily" company strip. `/new-home` consumes it; `/` stays full-bleed.
+
+**3. Global NavBar restoration + login dark gradient + stat strip (PR #44).** Fixed wrapper on `/new-home` had `z-30` which hid the global NavBar. Dropped to `z-0` with `pt-[54px]` to clear the NavBar. Login got dark gradient bg + two decorative radial orbs + colored glow shadow on the card + stat strip ("Tracking 240+ companies · Updated daily · Made by a PM").
+
+**4. Time format consistency (PR #45).** JobFeed scrape-time line was mixed-format: "14:00 UTC · 7am PT · 10am ET". Switched UTC to 12-hour via the same `Intl.DateTimeFormat` helper used for PT/ET — now uniform: "2pm UTC · 7am PT · 10am ET."
+
+**5. Login decorative cards (PR #46 + #47).** Filled the dark login bg with 10 floating company cards (3-2-2-3 corner arrangement, `lg:` only, `pointer-events:none + aria-hidden`). Different mix from the `/new-home` hero (Apple/Microsoft/Amazon/Meta/Anthropic/Linear/Notion/Moderna/Goldman/Tesla) so the two pages feel distinct. PR #47 upgraded the cards to real brand logos (logo.dev → DuckDuckGo fallback chain, same pattern as JobFeed) and swapped Moderna → Pfizer (more recognizable to general audience) + Meta → OpenAI. Added the same 60px grid texture overlay the hero uses (rgba 0.015 opacity) for depth.
+
+**6. The Home swap (PR #48).** The big one. `/` now renders the JobFeed home (was the LandingPage/Dashboard split). `/welcome` is a new route preserving the original marketing landing for rollback. `/companies` is a new route rendering Dashboard directly (the Tracked Companies view authed users used to see at `/`). `/new-home` deleted; `frontend/next.config.ts` gets a permanent 308 redirect `/new-home → /` so bookmarks keep working. AuthNav got a "Sign In" button for unauth visitors (was returning null). JobFeed Track button: redirect `?next=/new-home` → `?next=/` so post-login the user lands back on the new home. **Rollback path documented in the PR**: change `frontend/src/app/page.tsx` to render `LandingPage` again, drop the redirect, /welcome and /companies routes can stay.
+
+**7. Hotfix auth-aware Home (PR #49).** PR #48 shipped `/` as JobFeed for ALL users including authed. Authed users clicking "Home" in the NavBar dropped into the public feed instead of their own Tracked Companies. PR #49 restored the original auth-aware split: authed → Dashboard ("Tracked Companies" same as before the swap), unauth → JobFeed home. Both states still get the new global NavBar. `/companies` still renders Dashboard directly (redundant for authed-`/` but harmless; can dedupe later).
+
+**8. Dashboard colors + Starred page perf (PR #50).** Two unrelated UX fixes bundled because both small. (a) Extended `BRAND_COLORS` from 25 → ~70 hand-mapped companies (Snap, Visa, Capital One, Expedia, Adobe, Salesforce, Shopify, Snowflake, Notion, Linear, Pfizer, Moderna, Eli Lilly, J&J, Goldman, JPM, Morgan Stanley, Mastercard, Amex, Robinhood, Coinbase, Klarna, Tesla, Lyft, Pinterest, LinkedIn, Spotify, Twitch, HubSpot, Atlassian, Asana, GitHub, Databricks, Oracle, Intel, NVIDIA, Twilio, Dropbox, etc.). Added djb2 hash-based palette fallback (16-color brand-style palette) so unknown companies get a deterministic color instead of generic gray #6B7280. Same company = same color across refreshes. (b) New backend endpoint `GET /api/favorites/jobs` returns user's starred jobs already joined with company info. Replaces the "fetch ALL jobs across ALL subscriptions, filter client-side" flow which sent 1000+ rows to display ~10-50 stars. Frontend at `frontend/src/app/jobs/page.tsx` uses the new endpoint when `?filter=starred`. Saves a separate `/api/favorites` call too — favorite IDs derived from returned jobs. Expected ~5-10x faster first load on `/jobs?filter=starred` for users tracking many companies.
+
+**9. Dashboard cleanup + ADMIN_EMAIL → Gmail (PR #51).** Dashboard: added "Total Companies" stat box (left of Roles + New Today). Removed Errors stat box (operator metric, not user-facing). Removed All/New/Healthy/Errors filter pills next to Search. Dropped filter state, `filters` array, `FilterKey` type, `filterCompanies` helper, and the now-orphaned `errorCount` calc. Search bar stays. ADMIN_EMAIL: code fallback in `backend/src/lib/constants.ts` changed from `vik@viktoriousllc.com` → `vikrant.agar@gmail.com`. **CAVEAT shipped as a known follow-up:** Railway `ADMIN_EMAIL` and Vercel `NEXT_PUBLIC_ADMIN_EMAIL` env vars still explicitly set to the old VLLC address. Env vars override code fallback, so prod admin still resolves to VLLC until user updates both dashboards manually. Captured in `docs/backlog.md` Future Ideas as a P1 follow-up.
+
+### Alternatives considered
+
+**Swap `/` → JobFeed immediately vs keep `/new-home` parallel longer.** Considered keeping the parallel route for another week to gather more PostHog conversion data. Rejected: the iteration loop on `/new-home` had stabilized, the user had visually validated the hero in compact mode + NavBar restoration + login redesign, and continuing the parallel route was adding mental overhead ("which home is the real one?") without buying real signal. Cheap reversibility was the safety net — `/welcome` preserves the old landing and the rollback is a one-line change.
+
+**Bundle home-swap + login redesign vs sequence them.** Considered shipping home-swap first, then iterating on login over the next few days. Bundled them because the login redesign was driven by visual coherence with the new home — landing on a blank "Sign In" after the rich JobFeed felt jarring. Bundling kept the visual story coherent in one merge.
+
+**Manual brand-color extension vs algorithmic palette only.** Considered just shipping the djb2 hash palette as the universal fallback without hand-mapping the additional ~45 companies. Rejected: hand-mapping is high-leverage for known brands — Pfizer should be Pfizer-blue, not a hash-assigned random color. Did both: hand-mapped the top ~70 brands, palette fallback for the long tail.
+
+**Code-level ADMIN_EMAIL fallback only vs full env-var update.** Could have flipped both the code fallback AND the env vars in Railway/Vercel in one motion. Did only the code fallback because env-var changes require dashboard access we don't have via CLI in this session. Flagged the manual step explicitly in the PR description and end-of-task summary. User correctly noted that code-only didn't actually change prod behavior — captured as a feedback memory: `feedback_env_var_override_gotcha.md`.
+
+**Hotfix authed-Home in a separate PR vs amend PR #48.** Could have force-pushed an amendment to PR #48. Did a separate hotfix PR (#49) because PR #48 was already merged when the bug was caught. Standard pattern: hotfix forward, not rewrite history.
+
+### Key insights
+
+- **The swap is anticlimactic when the parallel route is honest.** Two days of `/new-home` running in parallel with the marketing landing meant the swap itself was a 4-file PR with documented rollback. The risk had been amortized across the build phase, not concentrated in the swap moment.
+- **Visual coherence drives UX work.** Once the JobFeed became the public face of the product, the gaps (blank login, Errors stat on Dashboard, gray brand bars) became visible in a way they weren't before. The polish PRs (#46, #47, #50, #51) weren't planned — they emerged from looking at the new home with fresh eyes.
+- **Env-var overrides code-level defaults silently.** This is the lesson of PR #51. A code-level change that looks like a config flip doesn't actually do anything in prod when an env var of the same name is set. Going forward: any `process.env.X || 'fallback'` change needs an explicit env-var-status check before reporting "done." Captured as a feedback memory so future-me doesn't re-ship the silent no-op.
+- **Bundle small unrelated UX fixes when scope is genuinely small.** PR #50 bundled brand colors + Starred perf — two unrelated changes, each small. The alternative (two separate PRs) would have been more orthodox but pointless friction. Same logic for PR #51 (Dashboard cleanup + ADMIN_EMAIL). The bundling rule: if both fit in one PR description without needing distinct test plans, ship together.
+
+### Files / artifacts
+
+- **10 merged PRs**: #42 (hero preamble + DST + login welcome), #43 (compact hero), #44 (NavBar restoration + login dark gradient), #45 (12-hour time format), #46 (login decorative cards), #47 (login real logos + Pfizer/OpenAI swaps), #48 (Home swap), #49 (hotfix auth-aware Home), #50 (brand colors + Starred perf), #51 (Dashboard cleanup + ADMIN_EMAIL Gmail).
+- **New frontend files**: `frontend/src/components/LandingHero.tsx` (extracted), `frontend/src/app/welcome/page.tsx` (rollback backup), `frontend/src/app/companies/page.tsx` (Dashboard direct).
+- **Deleted frontend files**: `frontend/src/app/new-home/page.tsx` (replaced by `/` + redirect).
+- **New backend route**: `GET /api/favorites/jobs` in `backend/src/routes/favorites.ts`.
+- **Frontend redirect**: `frontend/next.config.ts` permanent 308 `/new-home → /`.
+- **New memory file**: `feedback_env_var_override_gotcha.md`.
+
+### Next batch — open ideas
+
+- **Update Railway `ADMIN_EMAIL` + Vercel `NEXT_PUBLIC_ADMIN_EMAIL`** env vars to `vikrant.agar@gmail.com` so prod admin actually resolves to Gmail. ~2 min in dashboards. Backlogged as F.X.
+- **Dedupe `/` (authed Dashboard) and `/companies` (Dashboard direct)** — both render the same component for authed users. Consider whether `/companies` stays or redirects to `/`.
+- **PostHog conversion comparison** between the old marketing landing and the new JobFeed home. Should reveal whether the swap was a win.
+- **Add more Function filters** to JobFeed (Engineering, Design, Data) — the dropdown is currently single-option. Backlog item if user wants to expand audience beyond PMs.
+- **Login page swap-out for unauth `/` cards** — the marketing landing at `/welcome` could be retired once the new home has a few weeks of PostHog data validating it.
