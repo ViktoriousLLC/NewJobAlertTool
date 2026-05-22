@@ -91,7 +91,10 @@ GET    /api/compensation, /api/compensation/{companyName}
 GET    /api/feed, /api/feed/companies        (PUBLIC — no auth — drives the JobFeed home at /)
 GET    /api/admin/* (requires ADMIN_EMAIL)
 GET    /api/admin/email-status               (proxies Resend list-emails API; optional ?email= filter)
+GET    /api/admin/weekly-digest/preview      (returns { data, linkedinPost, emailHtml } — no send)
+POST   /api/admin/weekly-digest/send         (fires the weekly LinkedIn-draft email immediately)
 GET    /api/cron/trigger (requires CRON_SECRET; see JOBS.md)
+GET    /api/cron/weekly-digest (requires CRON_SECRET; see JOBS.md)
 ```
 
 `/api/feed` filters: `industry`, `level`, `region`, `city`, `company`, `min_comp`, `sort`, `include_closed`. Region filter is server-side; sort=company uses fetch-and-sort in Node because PostgREST silently ignores nested-table order. Comp tier enriched per-job from `comp_cache`.

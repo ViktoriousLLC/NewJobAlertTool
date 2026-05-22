@@ -14,6 +14,20 @@ This sidecar collects everything needed before touching `backend/src/jobs/dailyC
 - `?skipEmails=true` — skips per-user alerts (safe for manual re-runs)
 - `?forceMondayDigest=true` — forces the Monday-style weekly digest on any day
 
+## Weekly LinkedIn-Draft Digest (PR #52, added 2026-05-22)
+
+**Friday auto-trigger inside `runDailyCheck()`.** When UTC day-of-week === 5, after the consolidated admin digest, `sendWeeklyDigest()` from `backend/src/jobs/weeklyDigest.ts` fires. Owned by the existing 14:00 UTC daily Railway cron — no separate schedule.
+
+- **Module**: `backend/src/jobs/weeklyDigest.ts` — exports `computeWeeklyDigest`, `renderLinkedInPost`, `renderEmailHtml`, `sendWeeklyDigest`.
+- **Recipient**: `ADMIN_EMAIL` only (this is editorial content for Vik, not subscribers).
+- **Subject**: `Weekly LinkedIn draft — <date range> (<N> new PM roles)`.
+- **Body**: copy-paste-ready LinkedIn post + raw-data tables (industry breakdown, top 10 by volume, AI roles by company).
+- **Data window**: last 7 days of `seen_jobs` where `status = 'active'` AND `is_baseline = false` joined to `companies`.
+- **AI title regex**: `/\b(AI|ML|GenAI|LLM|Machine Learning|Generative|Agentforce|Agentic|Voice AI|Copilot|GPT)\b/i`. Conservative; misses titles that only imply AI.
+- **Expected fire time on Fridays**: ~14:25-14:35 UTC (after scrape + per-user alerts + comp_cache refresh + admin digest).
+- **Manual triggers**: `?forceWeeklyDigest=true` on `/api/cron/trigger`, `/api/cron/weekly-digest` (CRON_SECRET), `POST /api/admin/weekly-digest/send` (admin JWT), `GET /api/admin/weekly-digest/preview` (admin JWT, no send).
+- **LinkedIn post structure** is locked editorially (approved 2026-05-22): intro → banking takeaway with industry counts → top 10 companies by volume → top company example role areas → top 5 AI-PM-hiring companies with titles → reader question close. When editing the post text in `renderLinkedInPost()`, read `docs/Viks Voice/vik_voice_style_guide.md` first.
+
 ## Daily Self-Check Agent (PR #20+)
 
 Separate remote agent fires daily at 14:30 UTC via `CronCreate`. Reads:
