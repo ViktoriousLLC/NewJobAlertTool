@@ -2,13 +2,10 @@ import { Router, Request, Response } from "express";
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 import { createUserFeedbackIssue } from "../lib/linear";
+import { renderFeedbackEmail } from "../lib/feedbackEmail";
 import { ADMIN_EMAIL } from "../lib/constants";
 
 const router = Router();
-
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
 
 // POST /api/issues — report a scrape issue. Files a Linear issue in the
 // User Feedback team (Inbox) and emails ADMIN_EMAIL. Legacy scrape_issues
@@ -85,19 +82,24 @@ ${trimmedDescription || "*(no description provided)*"}`;
     if (process.env.RESEND_API_KEY) {
       const { Resend } = await import("resend");
       const resend = new Resend(process.env.RESEND_API_KEY);
-      const linearLine = linearIssueUrl
-        ? `<p><strong>Linear:</strong> <a href="${escapeHtml(linearIssueUrl)}">${escapeHtml(linearIssueUrl)}</a></p>`
-        : `<p><em>Linear issue creation failed — see Sentry. This email is the only record.</em></p>`;
       await resend.emails.send({
         from: "NewPMJobs <alerts@newpmjobs.com>",
         to: ADMIN_EMAIL,
         subject: `[NewPMJobs Scrape Issue] ${companyName} — ${issue_type}`,
-        html: `<p><strong>From:</strong> ${escapeHtml(submitterIdent)}</p>
-               <p><strong>Company:</strong> ${escapeHtml(companyName)} (<code>${escapeHtml(company_id)}</code>)</p>
-               <p><strong>Type:</strong> ${escapeHtml(issue_type)}</p>
-               ${linearLine}
-               <p><strong>Description:</strong></p>
-               <p>${trimmedDescription ? escapeHtml(trimmedDescription).replace(/\n/g, "<br>") : "<em>(none)</em>"}</p>`,
+        html: renderFeedbackEmail({
+          category: "Scrape Issue",
+          headline: `${companyName} — ${issue_type}`,
+          metadata: [
+            { label: "From", value: submitterIdent },
+            { label: "Company", value: companyName },
+            { label: "Company ID", value: company_id, mono: true },
+            { label: "Type", value: issue_type },
+          ],
+          linearUrl: linearIssueUrl,
+          linearIdentifier: linearIssueIdent,
+          message: trimmedDescription || "(no description provided)",
+          adminEmail: ADMIN_EMAIL,
+        }),
       });
     }
 
