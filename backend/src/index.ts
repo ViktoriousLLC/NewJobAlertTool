@@ -23,6 +23,7 @@ import { validateScrapeResults } from "./scraper/validateScrape";
 import { classifyJobLevel } from "./lib/classifyLevel";
 import { ADMIN_EMAIL } from "./lib/constants";
 import { createUserFeedbackIssue, type TypeLabel } from "./lib/linear";
+import { renderFeedbackEmail } from "./lib/feedbackEmail";
 
 
 dotenv.config();
@@ -108,11 +109,6 @@ app.use("/api/feed", feedRouter);
 app.use("/api/preferences", requireAuth, preferencesRouter);
 app.use("/api/admin", requireAuth, adminRouter);
 
-// HTML-escape user input to prevent XSS in emails
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
 // Help/feedback endpoint. Creates a Linear issue in the User Feedback team
 // (status=Inbox) and emails ADMIN_EMAIL. Linear is the source of truth for
 // new feedback; legacy help_submissions / scrape_issues rows are preserved
@@ -153,6 +149,7 @@ app.post("/api/help", requireAuth, async (req, res) => {
 ${trimmedMessage}`;
 
     let linearIssueUrl: string | null = null;
+    let linearIssueIdent: string | null = null;
     try {
       const issue = await createUserFeedbackIssue({
         title: `[${safeType}] ${titleSnippet || "(empty)"}`,
@@ -161,6 +158,7 @@ ${trimmedMessage}`;
         sourceLabel: "in-app",
       });
       linearIssueUrl = issue?.url ?? null;
+      linearIssueIdent = issue?.identifier ?? null;
     } catch (linearErr) {
       // Don't block the user-facing flow on a Linear outage — log and continue
       // so the email path still delivers the feedback to admin.
@@ -171,19 +169,23 @@ ${trimmedMessage}`;
     if (process.env.RESEND_API_KEY) {
       const { Resend } = await import("resend");
       const resend = new Resend(process.env.RESEND_API_KEY);
-      const linearLine = linearIssueUrl
-        ? `<p><strong>Linear:</strong> <a href="${escapeHtml(linearIssueUrl)}">${escapeHtml(linearIssueUrl)}</a></p>`
-        : `<p><em>Linear issue creation failed — see Sentry. This email is the only record.</em></p>`;
       await resend.emails.send({
         from: "NewPMJobs <alerts@newpmjobs.com>",
         to: ADMIN_EMAIL,
-        subject: `[NewPMJobs Feedback] ${safeType}`,
-        html: `<p><strong>From:</strong> ${escapeHtml(submitterIdent)}</p>
-               <p><strong>Type:</strong> ${escapeHtml(safeType)}</p>
-               <p><strong>Page:</strong> ${escapeHtml(safePageUrl || "unknown")}</p>
-               ${linearLine}
-               <p><strong>Message:</strong></p>
-               <p>${escapeHtml(trimmedMessage).replace(/\n/g, "<br>")}</p>`,
+        subject: `[NewPMJobs Feedback] ${safeType} — ${titleSnippet || "(empty)"}`.slice(0, 120),
+        html: renderFeedbackEmail({
+          category: "User Feedback",
+          headline: `[${safeType}] ${titleSnippet || "(empty)"}`,
+          metadata: [
+            { label: "From", value: submitterIdent },
+            { label: "Type", value: safeType },
+            { label: "Page", value: safePageUrl || "unknown" },
+          ],
+          linearUrl: linearIssueUrl,
+          linearIdentifier: linearIssueIdent,
+          message: trimmedMessage,
+          adminEmail: ADMIN_EMAIL,
+        }),
       });
     }
 
