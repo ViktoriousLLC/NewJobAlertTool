@@ -22,6 +22,7 @@ import { detectPlatform } from "./scraper/detectPlatform";
 import { validateScrapeResults } from "./scraper/validateScrape";
 import { classifyJobLevel } from "./lib/classifyLevel";
 import { ADMIN_EMAIL } from "./lib/constants";
+import { createUserFeedbackIssue, type TypeLabel } from "./lib/linear";
 
 
 dotenv.config();
@@ -112,7 +113,10 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// Help/feedback endpoint (sends email to admin + stores in DB)
+// Help/feedback endpoint. Creates a Linear issue in the User Feedback team
+// (status=Inbox) and emails ADMIN_EMAIL. Linear is the source of truth for
+// new feedback; legacy help_submissions / scrape_issues rows are preserved
+// in Supabase as historical backup but no new rows are written there.
 app.post("/api/help", requireAuth, async (req, res) => {
   try {
     const { issue_type, message, page_url } = req.body;
@@ -127,29 +131,59 @@ app.post("/api/help", requireAuth, async (req, res) => {
     const validHelpTypes = ["bug", "missing_data", "other"];
     const safeType = validHelpTypes.includes(issue_type) ? issue_type : "other";
 
-    // Store in DB for admin dashboard visibility
-    const { error: dbError } = await supabase.from("help_submissions").insert({
-      user_id: req.userId!,
-      user_email: req.userEmail || null,
-      issue_type: safeType,
-      message: message.slice(0, 5000),
-      page_url: typeof page_url === "string" ? page_url.slice(0, 2000) : null,
-    });
-    if (dbError) console.error("Failed to store help submission:", dbError);
+    const helpTypeToLinearLabel: Record<string, TypeLabel | undefined> = {
+      "bug": "bug-report",
+      "missing_data": "scraper-issue",
+      "other": undefined,
+    };
+    const typeLabel = helpTypeToLinearLabel[safeType];
 
-    // Send email to admin via Resend
+    const submitterIdent = req.userEmail || req.userId || "unknown";
+    const safePageUrl = typeof page_url === "string" ? page_url.slice(0, 2000) : null;
+    const trimmedMessage = message.slice(0, 5000);
+    const titleSnippet = trimmedMessage.split("\n")[0].slice(0, 80).trim();
+
+    const issueDescription = `**From:** ${submitterIdent}
+**Submitted:** ${new Date().toISOString()} via \`POST /api/help\`
+**Page:** ${safePageUrl || "unknown"}
+**Original issue_type:** ${safeType}
+
+---
+
+${trimmedMessage}`;
+
+    let linearIssueUrl: string | null = null;
+    try {
+      const issue = await createUserFeedbackIssue({
+        title: `[${safeType}] ${titleSnippet || "(empty)"}`,
+        description: issueDescription,
+        typeLabel,
+        sourceLabel: "in-app",
+      });
+      linearIssueUrl = issue?.url ?? null;
+    } catch (linearErr) {
+      // Don't block the user-facing flow on a Linear outage — log and continue
+      // so the email path still delivers the feedback to admin.
+      Sentry.captureException(linearErr);
+      console.error("[/api/help] Linear createUserFeedbackIssue failed:", linearErr);
+    }
+
     if (process.env.RESEND_API_KEY) {
       const { Resend } = await import("resend");
       const resend = new Resend(process.env.RESEND_API_KEY);
+      const linearLine = linearIssueUrl
+        ? `<p><strong>Linear:</strong> <a href="${escapeHtml(linearIssueUrl)}">${escapeHtml(linearIssueUrl)}</a></p>`
+        : `<p><em>Linear issue creation failed — see Sentry. This email is the only record.</em></p>`;
       await resend.emails.send({
         from: "NewPMJobs <alerts@newpmjobs.com>",
         to: ADMIN_EMAIL,
         subject: `[NewPMJobs Feedback] ${safeType}`,
-        html: `<p><strong>From:</strong> ${escapeHtml(req.userEmail || req.userId || "unknown")}</p>
+        html: `<p><strong>From:</strong> ${escapeHtml(submitterIdent)}</p>
                <p><strong>Type:</strong> ${escapeHtml(safeType)}</p>
-               <p><strong>Page:</strong> ${escapeHtml(typeof page_url === "string" ? page_url : "unknown")}</p>
+               <p><strong>Page:</strong> ${escapeHtml(safePageUrl || "unknown")}</p>
+               ${linearLine}
                <p><strong>Message:</strong></p>
-               <p>${escapeHtml(message).replace(/\n/g, "<br>")}</p>`,
+               <p>${escapeHtml(trimmedMessage).replace(/\n/g, "<br>")}</p>`,
       });
     }
 

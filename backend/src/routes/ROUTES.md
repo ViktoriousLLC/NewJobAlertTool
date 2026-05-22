@@ -78,8 +78,8 @@ DELETE /api/favorites/{jobId}            — Unstar
 # Preferences / Help / Issues
 GET    /api/preferences                  — Get email prefs (creates default if none)
 PUT    /api/preferences                  — Body: {email_frequency: "daily|weekly|off"}
-POST   /api/help                         — Feedback email + DB. Body: {issue_type, message, page_url}
-POST   /api/issues                       — Scrape issue. Body: {company_id, issue_type, description}
+POST   /api/help                         — Filed to Linear (User Feedback, Inbox) + email to admin. Body: {issue_type, message, page_url}
+POST   /api/issues                       — Filed to Linear (User Feedback, Inbox) + email to admin. Body: {company_id, issue_type, description}
 
 # Compensation (levels.fyi, 3-tier cache: memory 1hr → DB 24hr → live fetch)
 GET    /api/compensation                 — Batch comp for subscribed companies
@@ -103,6 +103,16 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 - HTTPS-only careers URLs.
 - LinkedIn URLs blocked.
 - SSRF protection: no private IPs (`10.x`, `192.168.x`, `172.16-31.x`, `127.x`, `0.0.0.0`, `[::1]`, `.internal`, `.local`).
+
+## Feedback Sink (Linear, not Supabase)
+
+As of 2026-05-22, `POST /api/help` and `POST /api/issues` file a Linear issue in the **User Feedback** team (status=Inbox / Backlog state) and email `ADMIN_EMAIL`. They no longer write to `help_submissions` / `scrape_issues` — those tables hold pre-cutover history only. `GET /api/admin/issues` still reads them so historical entries remain visible, but the working surface for triage is now Linear.
+
+- Helper: `backend/src/lib/linear.ts` — minimal GraphQL client. Team / state / label IDs hardcoded; refresh via Linear MCP if Vik renames any of them.
+- Required env var: `LINEAR_API_KEY` (Personal API Key from https://linear.app/viktorious-llc/settings/api-keys). Without it, both endpoints log a warning, skip the Linear write, but still email admin so feedback isn't lost.
+- Type-label mapping for `/api/help.issue_type`: `bug → bug-report`, `missing_data → scraper-issue`, `other → (no type label, admin triages from Inbox)`.
+- `/api/issues` always labels `scraper-issue` (endpoint is scope-locked to subscribed companies).
+- Source label: always `in-app` from these endpoints.
 
 ## Gotchas
 
