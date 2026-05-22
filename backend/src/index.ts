@@ -124,11 +124,12 @@ app.post("/api/help", requireAuth, async (req, res) => {
       res.status(400).json({ error: "Message too long (max 5000 characters)" });
       return;
     }
-    const validHelpTypes = ["bug", "missing_data", "other"];
+    const validHelpTypes = ["bug", "feature_request", "missing_data", "other"];
     const safeType = validHelpTypes.includes(issue_type) ? issue_type : "other";
 
     const helpTypeToLinearLabel: Record<string, TypeLabel | undefined> = {
       "bug": "bug-report",
+      "feature_request": "feature-request",
       "missing_data": "scraper-issue",
       "other": undefined,
     };
