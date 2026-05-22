@@ -101,7 +101,7 @@ router.get("/companies", async (_req: Request, res: Response) => {
   try {
     const { data, error } = await supabase
       .from("companies")
-      .select("id, name, industry")
+      .select("id, name, industry, total_product_jobs")
       .order("name", { ascending: true });
     if (error) throw error;
     res.set("Cache-Control", "public, max-age=300"); // 5 min

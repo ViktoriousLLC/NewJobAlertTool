@@ -55,7 +55,8 @@ function DashboardContent() {
   const searchParams = useSearchParams();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [subscribedIds, setSubscribedIds] = useState<Set<string>>(new Set());
-  const [catalogTotal, setCatalogTotal] = useState<number | null>(null);
+  const [catalogCompanies, setCatalogCompanies] = useState<number | null>(null);
+  const [catalogRoles, setCatalogRoles] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
@@ -84,8 +85,8 @@ function DashboardContent() {
   async function fetchCompanies() {
     try {
       // /api/feed/companies is the public lightweight catalog list — used
-      // here just for the "Total Available" stat. Parallelizes with the
-      // two auth-protected per-user fetches.
+      // here for the "Available" and catalog-wide "Total Roles" stats.
+      // Parallelizes with the two auth-protected per-user fetches.
       const [compRes, subRes, catalogRes] = await Promise.all([
         apiFetch("/api/companies"),
         apiFetch("/api/subscriptions"),
@@ -93,11 +94,14 @@ function DashboardContent() {
       ]);
       const data = await compRes.json();
       const subIds: string[] = await subRes.json();
-      const catalogList: unknown = await catalogRes.json();
+      const catalogList: Array<{ id: string; name: string; total_product_jobs?: number }> = await catalogRes.json();
       setCompanies(data);
       setSubscribedIds(new Set(subIds));
       if (Array.isArray(catalogList)) {
-        setCatalogTotal(catalogList.length);
+        setCatalogCompanies(catalogList.length);
+        setCatalogRoles(
+          catalogList.reduce((sum, c) => sum + (c.total_product_jobs ?? 0), 0)
+        );
       }
     } catch (err) {
       console.error("Failed to fetch companies:", err);
@@ -189,17 +193,31 @@ function DashboardContent() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between mb-6">
         <div>
           <h1 className="text-[22px] font-[700] text-[#1A1A2E]">
-            Tracked Companies
+            You are tracking {companies.length} companies
           </h1>
-          <p className="text-[13px] text-[#6B7280] mt-0.5">
-            {companies.length} companies being monitored
-          </p>
         </div>
 
-        {/* Stat boxes — Tracked / Available in catalog / Total Roles / New Today.
-            Errors box removed per UX feedback (operator metric, not user-facing). */}
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-3 w-full sm:w-auto">
-          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#F3F5FA", border: "1px solid #D9DEEA" }}>
+        {/* Stat boxes — catalog-wide stats on the left (Available / Total Roles),
+            then user-scoped on the right (Tracked / Roles Tracked / New Today).
+            3-col mobile grid → 3+2 layout. Single row on sm+. */}
+        <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center sm:gap-3 w-full sm:w-auto">
+          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[88px]" style={{ backgroundColor: "#F0F9FF", border: "1px solid #BAE6FD" }}>
+            <div className="text-[16px] sm:text-[20px] font-bold text-[#0C4A6E]">
+              {catalogCompanies ?? "—"}
+            </div>
+            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#0369A1", opacity: 0.75 }}>
+              Available
+            </div>
+          </div>
+          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[88px]" style={{ backgroundColor: "#F0F9FF", border: "1px solid #BAE6FD" }}>
+            <div className="text-[16px] sm:text-[20px] font-bold text-[#0C4A6E]">
+              {catalogRoles ?? "—"}
+            </div>
+            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#0369A1", opacity: 0.75 }}>
+              Total Roles
+            </div>
+          </div>
+          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[88px]" style={{ backgroundColor: "#F3F5FA", border: "1px solid #D9DEEA" }}>
             <div className="text-[16px] sm:text-[20px] font-bold text-[#1A1A2E]">
               {companies.length}
             </div>
@@ -207,23 +225,15 @@ function DashboardContent() {
               Tracked
             </div>
           </div>
-          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#F0F9FF", border: "1px solid #BAE6FD" }}>
-            <div className="text-[16px] sm:text-[20px] font-bold text-[#0C4A6E]">
-              {catalogTotal ?? "—"}
-            </div>
-            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#0369A1", opacity: 0.75 }}>
-              Available
-            </div>
-          </div>
-          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#FAF8F5", border: "1px solid #E8E4DF" }}>
+          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[88px]" style={{ backgroundColor: "#F3F5FA", border: "1px solid #D9DEEA" }}>
             <div className="text-[16px] sm:text-[20px] font-bold text-[#1A1A2E]">
               {totalRoles}
             </div>
-            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#9494A8", opacity: 0.7 }}>
-              Total Roles
+            <div className="text-[9px] font-medium uppercase" style={{ letterSpacing: "0.06em", color: "#5F6478", opacity: 0.85 }}>
+              Roles Tracked
             </div>
           </div>
-          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[90px]" style={{ backgroundColor: "#F0FAF4", border: "1px solid #C8E6D5" }}>
+          <div className="rounded-lg px-3 py-2 sm:px-4 sm:py-2.5 text-center sm:min-w-[88px]" style={{ backgroundColor: "#F0FAF4", border: "1px solid #C8E6D5" }}>
             <div className="text-[16px] sm:text-[20px] font-bold text-[#16874D]">
               {newToday}
             </div>
