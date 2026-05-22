@@ -161,6 +161,32 @@ app.post("/api/help", requireAuth, async (req, res) => {
   }
 });
 
+// Weekly digest cron endpoint (Friday 14:15 UTC, set in Railway).
+// Same CRON_SECRET pattern as /api/cron/trigger. Idempotent — safe to fire
+// manually for test sends. Always sends (no Friday gate in code) so Railway
+// schedule owns the cadence.
+app.get("/api/cron/weekly-digest", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const secret = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : null;
+
+  if (!safeCompareSecret(secret, process.env.CRON_SECRET)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  try {
+    const { sendWeeklyDigest } = await import("./jobs/weeklyDigest");
+    const result = await sendWeeklyDigest();
+    res.json({ message: "Weekly digest complete", ...result });
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("Weekly digest failed:", err);
+    res.status(500).json({ error: "Weekly digest failed" });
+  }
+});
+
 // Manual trigger for daily check (protected by secret)
 app.get("/api/cron/trigger", async (req, res) => {
   const authHeader = req.headers.authorization;
@@ -176,8 +202,9 @@ app.get("/api/cron/trigger", async (req, res) => {
   try {
     const skipEmails = req.query.skipEmails === "true";
     const forceMondayDigest = req.query.forceMondayDigest === "true";
-    await runDailyCheck({ skipEmails, forceMondayDigest });
-    res.json({ message: "Daily check completed", skipEmails, forceMondayDigest });
+    const forceWeeklyDigest = req.query.forceWeeklyDigest === "true";
+    await runDailyCheck({ skipEmails, forceMondayDigest, forceWeeklyDigest });
+    res.json({ message: "Daily check completed", skipEmails, forceMondayDigest, forceWeeklyDigest });
   } catch (err) {
     Sentry.captureException(err);
     console.error("Daily check failed:", err);
