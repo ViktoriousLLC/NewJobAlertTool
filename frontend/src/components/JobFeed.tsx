@@ -558,7 +558,7 @@ export default function JobFeed() {
                       </td>
                       <td className="px-4 py-3 text-[12px] whitespace-nowrap">
                         {job.comp && job.comp.median ? (
-                          <span className="font-medium text-stone-700" title={`${formatComp(job.comp.min)} – ${formatComp(job.comp.max)} range`}>
+                          <span className="font-medium text-stone-700" title={`${formatComp(job.comp.min)} to ${formatComp(job.comp.max)} range`}>
                             {formatComp(job.comp.median)}
                           </span>
                         ) : (
