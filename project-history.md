@@ -1562,3 +1562,82 @@ Earlier the same day we shipped the listUsers pagination fix (PR #41). With the 
 - **PostHog conversion comparison** between the old marketing landing and the new JobFeed home. Should reveal whether the swap was a win.
 - **Add more Function filters** to JobFeed (Engineering, Design, Data) — the dropdown is currently single-option. Backlog item if user wants to expand audience beyond PMs.
 - **Login page swap-out for unauth `/` cards** — the marketing landing at `/welcome` could be retired once the new home has a few weeks of PostHog data validating it.
+
+---
+
+## 2026-05-22 — Weekly LinkedIn-draft Digest Email + Voice Infrastructure (PR #52)
+
+### Context
+
+Vik wanted to start producing a weekly LinkedIn post off the catalog data. There's already a "by level" jobs poster on LinkedIn the user follows; Vik wanted differentiation. The brainstorm produced 5 candidate cards: by vertical, by hiring velocity, by comp, by level, by AI cut.
+
+After exploring each card with real numbers from the past 7 days (524 new PM roles across the 244 tracked companies — Capital One alone posted 121, banking took 45% of all new hiring, 43 AI-tagged roles), Vik landed on a **single weekly post with multiple sections** rather than rotating one card per week. Rationale: a single rich post is a better content artifact and gives him room to audible to the strongest lead each week from the same data.
+
+A separate thread: Vik dropped his **voice style guide + calibration samples** into `docs/Viks Voice/` (gitignored, ~35KB across 2 files). The voice work matters because I literally violated his anti-slop list in the first draft attempt — "That's not a backfill week. That's a company scaling a function" is the banned "X. It's about Y" false-dichotomy reframe. Vik flamed it correctly. The voice files are now required reading before drafting any user-voice content.
+
+### What was decided
+
+**1. Single weekly post format (locked editorially).** Approved 2026-05-22 structure:
+
+> Intro: "I track 244 companies' PM job postings every day at newpmjobs.com. Starting this week, I'll share the highlights every Friday."
+>
+> "This week, N new PM roles were posted. Here are the key insights:"
+>
+> **Banking is on a tear.** 45% in banking. (Industry breakdown inline)
+>
+> **Top 10 companies by volume:** (numbered list, raw counts)
+>
+> Top company sample role areas (Capital One: Card Partnerships, AI Acceleration, Enterprise Platform, Payment Networks, Financial Ledger)
+>
+> **Where the new AI PM roles landed (N this week):** (top 5 companies, example titles)
+>
+> "Where are you applying right now? And what else would you want to see in next week's summary?"
+
+The reader-question close serves double duty: standard LinkedIn engagement driver + crowdsources future content angles.
+
+**2. Auto-trigger inside the daily cron (not a separate Railway schedule).** Embedded `sendWeeklyDigest()` inside `runDailyCheck()` after the consolidated admin digest with a `new Date().getUTCDay() === 5` gate. Railway daily cron at 14:00 UTC → scrape ~15-25 min → per-user alerts → comp_cache refresh ~3 min → admin digest → weekly digest. Email fires around 14:25-14:35 UTC on Fridays. This is the canonical pattern for any future weekly job — don't add new Railway cron entries.
+
+**3. Three manual triggers.** `POST /api/admin/weekly-digest/send` (admin JWT) for ad-hoc fires from devtools, `GET /api/admin/weekly-digest/preview` (admin JWT) to inspect the computed data + rendered post + HTML without sending, `GET /api/cron/weekly-digest` (CRON_SECRET) as an alternative entrypoint. `/api/cron/trigger` also accepts `?forceWeeklyDigest=true`.
+
+**4. Voice file infrastructure.** Saved `memory/reference_vik_voice_files.md` as a reference memory linked from MEMORY.md's index. The pattern: don't inline voice content into memory (the files are big and will evolve); instead, save a pointer that says "READ these two files before drafting any user-voice content." MEMORY.md is loaded at every session start, so the pointer surfaces automatically.
+
+**5. Framing rule Vik insisted on.** Always say "the N companies I track at newpmjobs.com" — never just "companies I track" (omits the brand) and never frame the numbers as if they're exhaustive ("236 banking PM roles posted this week" implies all of banking; "236 of the roles tracked at newpmjobs.com" is honestly curated).
+
+### Alternatives considered
+
+**5-week rotation vs single weekly post.** Initial proposal: rotate one card per week (velocity → by-level → AI → vertical → state-of-month). Rejected by Vik: he wanted a richer dashboard each Friday with the option to audible. Single-post-with-sections won. Tradeoff: less content runway per data window (vs 5 weeks from one week's data), but each post is heavier and harder to ignore in a LinkedIn feed.
+
+**Comp-led post vs comp as supporting data.** Earlier draft led with "Top 10 highest-paying new PM roles this week — $840k ServiceNow, $631k Salesforce..." Vik rejected: comp data only exists for ~34% of roles (the levels.fyi-tracked set), and leading with comp risks calling out specific companies for being LOW (e.g., Instacart, where he's interviewing). Comp moved to supporting data, not a lead.
+
+**By-level post vs the cross-cuts.** The competitor on LinkedIn already does pure by-level (VP/Director/Sr Director/Group PM/Principal). Vik decided to differentiate via cross-cuts (industry, AI) rather than compete directly. By-level is parked as a possible future post.
+
+**Inline voice samples into memory vs reference pointer.** Considered putting Vik's voice patterns directly into memory entries. Rejected: voice files are large (35KB) and will be edited by Vik over time. Pointer in MEMORY.md is the right shape — always loaded at session start, always points to the latest version of the files.
+
+**Trigger via separate Friday cron vs embed in daily cron.** Could have added a second Railway cron entry for Fridays. Rejected: Railway cron is an operational surface that should be minimized. One canonical entry point (`/api/cron/trigger`) with day-of-week gates inside the code is cleaner.
+
+### Key insights
+
+- **Voice work is required reading, not aesthetic preference.** I violated the anti-slop list (banned "X. It's about Y" template, contrived retrospection) on the first draft, despite having saved a memory pointer to the voice files moments earlier. Saving the pointer didn't change my behavior — only reading the files would have. New rule: when about to draft user-voice content, the first tool call is `Read` against both voice files. Not "Hmm, do I know Vik's voice?" — just read them.
+- **Editorial structure should be locked once approved.** Spent multiple turns iterating with Vik on the post structure. Once he said "this is pretty perfect," the structure is now fixed in `renderLinkedInPost()`. Future edits to that function need re-approval. Documented this in JOBS.md.
+- **The pointer pattern for memory is correct for large/evolving reference content.** Voice files, prior-art research dumps, vendor docs — all should live in `docs/` (or equivalent) with a reference memory pointing at them. Saves memory context budget and keeps the source of truth singular.
+- **Verification gap when the action lives in an external system.** I cannot directly verify "did Resend send the weekly email" from this terminal because the admin endpoint requires Vik's admin JWT (which lives in his browser session, not in CLI). Fallback pattern: schedule a `CronCreate` one-shot at fire-time + 10min, plus give Vik a devtools snippet he can paste to verify directly. Same pattern applies for any future "did vendor X do Y" verification.
+- **Cron-day-of-week gate inside `runDailyCheck()` is the new canonical pattern.** For any future weekly task (Sunday retention email, Monday leaderboard, etc.), embed inside `runDailyCheck()` with a UTC day gate + a `forceXDigest` option. Don't add new Railway cron entries.
+
+### Files / artifacts
+
+- **Merged**: PR #52 (Weekly LinkedIn-draft digest) + PR #53 (savecc docs for PRs #42-#51).
+- **New backend module**: `backend/src/jobs/weeklyDigest.ts` (256 lines) — `computeWeeklyDigest`, `renderLinkedInPost`, `renderEmailHtml`, `sendWeeklyDigest`.
+- **New endpoints**: `GET /api/cron/weekly-digest`, `POST /api/admin/weekly-digest/send`, `GET /api/admin/weekly-digest/preview`. `/api/cron/trigger` accepts `?forceWeeklyDigest=true`.
+- **Modified**: `backend/src/jobs/dailyCheck.ts` — Friday auto-trigger after admin digest; `forceWeeklyDigest` option in `runDailyCheck`.
+- **JOBS.md sidecar updated** with the Weekly Digest section.
+- **New voice files** (gitignored): `docs/Viks Voice/vik_voice_style_guide.md` + `vik_calibration_samples.md`.
+- **New memory**: `memory/reference_vik_voice_files.md` (pointer to voice files, indexed in MEMORY.md).
+- **Scheduled task**: `CronCreate` one-shot at 07:43 PDT 2026-05-22 (session-only — verifies the natural Friday cron fired the digest; session may close before fire time).
+
+### Next batch — open ideas
+
+- **Watch the first 2-3 weekly emails land** and tune the post text based on what Vik actually wants to copy-paste vs edit by hand.
+- **By-level cross-cut** as a separate occasional post — what we already have data for (`seen_jobs.job_level`), just not part of the weekly recurring format. Use for one-off LinkedIn posts when the level distribution shifts.
+- **Resend dashboard link** in the email footer so Vik can verify delivery in one click without devtools.
+- **Track engagement on the weekly LinkedIn posts** — manually for the first month, then add a column to a tracking sheet if it grows into a real channel.
+- **Voice file enforcement via hook?** Currently the reference memory + MEMORY.md pointer is honor-system. A PreToolUse hook that blocks user-voice drafting unless the voice files have been Read in the current session would be belt-and-suspenders. Defer unless I slip again.
