@@ -83,7 +83,7 @@ export async function computeWeeklyDigest(now: Date = new Date()): Promise<Weekl
     .slice(0, AI_TOP_COMPANIES)
     .map(([name, titles]) => ({ name, titles }));
 
-  const weekLabel = `${weekAgo.toLocaleDateString("en-US", { month: "short", day: "numeric" })}–${now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
+  const weekLabel = `${weekAgo.toLocaleDateString("en-US", { month: "short", day: "numeric" })} to ${now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
 
   return {
     weekLabel,
@@ -134,7 +134,7 @@ export function renderLinkedInPost(d: WeeklyDigestData): string {
     .join(" · ");
 
   const topCoLines = d.topCompanies
-    .map((c, i) => `${i + 1}. ${c.name} — ${c.count}`)
+    .map((c, i) => `${i + 1}. ${c.name}: ${c.count}`)
     .join("\n");
 
   const topCo = d.topCompanies[0];
@@ -149,7 +149,7 @@ export function renderLinkedInPost(d: WeeklyDigestData): string {
   }
 
   const aiLines = d.aiRoles.topCompanies
-    .map((c, i) => `${i + 1}. ${c.name} — ${c.titles.slice(0, 2).join(" · ")}`)
+    .map((c, i) => `${i + 1}. ${c.name}: ${c.titles.slice(0, 2).join("; ")}`)
     .join("\n");
 
   return [
@@ -237,7 +237,7 @@ export async function sendWeeklyDigest(now: Date = new Date()): Promise<{ sent: 
   }
 
   const resend = new Resend(process.env.RESEND_API_KEY);
-  const subject = `Weekly LinkedIn draft — ${data.weekLabel} (${data.totalNewJobs} new PM roles)`;
+  const subject = `Weekly LinkedIn draft: ${data.weekLabel} (${data.totalNewJobs} new PM roles)`;
 
   try {
     await resend.emails.send({

@@ -19,7 +19,7 @@ const checkLimiter = rateLimit({
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Too many check requests. Please try again after 15 minutes — and if you think this is a bug, use the help button (bottom-right) to let us know." },
+  message: { error: "Too many check requests. Please try again after 15 minutes. If you think this is a bug, use the help button (bottom-right) to let us know." },
 });
 
 function checkLimiterWithAdminBypass(req: Request, res: Response, next: NextFunction) {

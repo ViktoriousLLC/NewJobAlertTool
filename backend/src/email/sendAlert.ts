@@ -343,7 +343,7 @@ export function buildAlertEmailPayload(
 
   const subject = period === "weekly"
     ? `Weekly PM Digest: ${totalNewJobs} new job${totalNewJobs === 1 ? "" : "s"} this week`
-    : `Job Alert: ${totalNewJobs} new PM job${totalNewJobs === 1 ? "" : "s"} — ${now}`;
+    : `Job Alert: ${totalNewJobs} new PM job${totalNewJobs === 1 ? "" : "s"} (${now})`;
 
   return {
     from: "NewPMJobs <alerts@newpmjobs.com>",
@@ -529,7 +529,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
   } else {
     // Monday-only with no action items — pure weekly digest
     const date = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric" });
-    subject = `NewPMJobs weekly digest — ${date}`;
+    subject = `NewPMJobs weekly digest: ${date}`;
   }
 
   let html = `<div style="font-family:${font};max-width:700px;color:#1A1A2E;">`;
@@ -541,7 +541,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
     const rollupParts: string[] = [];
     if (input.failedCompanies.length > 0) {
       const withDoctorHint = input.failedCompanies.filter((f) => f.consecutiveFailures >= 3).length;
-      const hint = withDoctorHint > 0 ? ` (${withDoctorHint} ≥3 streak — consider scraper-doctor)` : "";
+      const hint = withDoctorHint > 0 ? ` (${withDoctorHint} ≥3 streak, consider scraper-doctor)` : "";
       rollupParts.push(`<span style="color:#dc2626;font-weight:bold;">🔴 ${input.failedCompanies.length} broken${hint}</span>`);
     }
     if (input.autoDisabled.length > 0) {
@@ -614,7 +614,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
   }
 
   if (input.watchList.length > 0) {
-    html += `<h3 style="margin:16px 0 6px 0;color:#ea580c;">Watch list — heading toward auto-disable (${input.watchList.length})</h3>`;
+    html += `<h3 style="margin:16px 0 6px 0;color:#ea580c;">Watch list: heading toward auto-disable (${input.watchList.length})</h3>`;
     html += `<p style="font-size:13px;color:#6b7280;margin:4px 0 8px 0;">These companies have failed multiple days in a row. Auto-disables at 7 strikes.</p>`;
     html += `<table style="border-collapse:collapse;width:100%;font-size:13px;">
       <tr style="background:#fff7ed;">
@@ -671,7 +671,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
     const shown = input.unverifiedZeros.slice(0, UNVERIFIED_ZERO_DISPLAY_CAP);
     const overflow = input.unverifiedZeros.length - shown.length;
 
-    html += `<h3 style="margin:16px 0 6px 0;color:#dc2626;">Unverified zeros — confirm legitimate (${input.unverifiedZeros.length})</h3>`;
+    html += `<h3 style="margin:16px 0 6px 0;color:#dc2626;">Unverified zeros: confirm legitimate (${input.unverifiedZeros.length})</h3>`;
     html += `<p style="font-size:13px;color:#6b7280;margin:4px 0 8px 0;">These companies returned 0 PM jobs. Either the scraper is silently broken, or the company genuinely has no open PM roles. Mark each as <code>is_verified_zero = true</code> in the <code>companies</code> table once you've confirmed it. Sorted by subscriber count.</p>`;
     html += `<table style="border-collapse:collapse;width:100%;font-size:13px;">
       <tr style="background:#fef2f2;">
@@ -680,7 +680,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
         <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Last checked</th>
       </tr>`;
     for (const z of shown) {
-      const checked = z.lastCheckedAt ? new Date(z.lastCheckedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
+      const checked = z.lastCheckedAt ? new Date(z.lastCheckedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "n/a";
       const subColor = z.subscribers > 0 ? "#dc2626" : "#78716c";
       html += `<tr>
         <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(z.name)}${trendAnnotation(input.perCompanyTrends, z.name)}</td>
@@ -737,7 +737,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
         html += `<ul style="margin:4px 0 0 0;padding-left:20px;font-size:13px;">`;
         for (const e of list) {
           const when = new Date(e.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-          const detailsStr = e.details ? ` — ${escapeHtml(JSON.stringify(e.details).slice(0, 120))}` : "";
+          const detailsStr = e.details ? `: ${escapeHtml(JSON.stringify(e.details).slice(0, 120))}` : "";
           html += `<li style="margin:2px 0;color:#374151;">${escapeHtml(e.company_name)} <span style="color:#9ca3af;font-size:12px;">(${when})</span>${detailsStr}</li>`;
         }
         html += `</ul>`;
@@ -750,7 +750,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
     if (input.reEnabled.length > 0) {
       html += `<h3 style="margin:16px 0 6px 0;color:#16a34a;">Re-enabled today (${input.reEnabled.length})</h3>`;
       html += `<ul style="font-size:13px;">`;
-      for (const r of input.reEnabled) html += `<li>${escapeHtml(r.name)} — ${r.jobCount} jobs</li>`;
+      for (const r of input.reEnabled) html += `<li>${escapeHtml(r.name)}: ${r.jobCount} jobs</li>`;
       html += `</ul>`;
     }
 
@@ -785,7 +785,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
             const fixBadge = v.fixAvailable
               ? ` <span style="color:#16a34a;font-size:11px;">(npm audit fix available)</span>`
               : ` <span style="color:#ea580c;font-size:11px;">(no automatic fix)</span>`;
-            html += `<li style="margin:2px 0;"><strong>${escapeHtml(v.package)}</strong> <span style="color:${sevColors[v.severity] || "#6b7280"};">[${escapeHtml(v.severity)}]</span> — ${escapeHtml(v.via.slice(0, 120))}${fixBadge}</li>`;
+            html += `<li style="margin:2px 0;"><strong>${escapeHtml(v.package)}</strong> <span style="color:${sevColors[v.severity] || "#6b7280"};">[${escapeHtml(v.severity)}]</span>: ${escapeHtml(v.via.slice(0, 120))}${fixBadge}</li>`;
           }
           html += `</ul>`;
         }
@@ -804,7 +804,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
         }
 
         if (s.isFirstSnapshot) {
-          html += `<p style="font-size:11px;color:#9ca3af;font-style:italic;margin:8px 0 0 0;">First snapshot — next Monday will show what changed.</p>`;
+          html += `<p style="font-size:11px;color:#9ca3af;font-style:italic;margin:8px 0 0 0;">First snapshot. Next Monday will show what changed.</p>`;
         }
       }
 

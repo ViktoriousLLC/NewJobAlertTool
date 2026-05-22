@@ -67,7 +67,7 @@ ${trimmedDescription || "*(no description provided)*"}`;
     let linearIssueIdent: string | null = null;
     try {
       const issue = await createUserFeedbackIssue({
-        title: `${companyName} — ${issue_type}`,
+        title: `${companyName}: ${issue_type}`,
         description: issueDescription,
         typeLabel: "scraper-issue",
         sourceLabel: "in-app",
@@ -85,10 +85,10 @@ ${trimmedDescription || "*(no description provided)*"}`;
       await resend.emails.send({
         from: "NewPMJobs <alerts@newpmjobs.com>",
         to: ADMIN_EMAIL,
-        subject: `[NewPMJobs Scrape Issue] ${companyName} — ${issue_type}`,
+        subject: `[NewPMJobs Scrape Issue] ${companyName}: ${issue_type}`,
         html: renderFeedbackEmail({
           category: "Scrape Issue",
-          headline: `${companyName} — ${issue_type}`,
+          headline: `${companyName}: ${issue_type}`,
           metadata: [
             { label: "From", value: submitterIdent },
             { label: "Company", value: companyName },
