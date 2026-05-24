@@ -346,9 +346,9 @@ export function renderLinkedInPost(d: WeeklyDigestData): string {
     .join("\n");
 
   return [
-    `I track ${d.trackedCompanies} companies' PM job postings every day at newpmjobs.com. Starting this week, I'll share the highlights every Friday.`,
+    `Are you looking for a new PM job? I track PM job postings at ${d.trackedCompanies} companies every day at newpmjobs.com. Here are the highlights for the week ending ${d.fridayDate}.`,
     "",
-    `This week, ${d.totalNewJobs} new PM roles were posted. Here are the key insights:`,
+    `${d.totalNewJobs} new PM roles were posted this week. The key insights:`,
     "",
     `**Banking is on a tear.**`,
     `${bankingPct}% of all new PM roles posted this week were in banking.`,
