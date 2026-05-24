@@ -20,8 +20,8 @@ This sidecar collects everything needed before touching `backend/src/jobs/dailyC
 
 - **Module**: `backend/src/jobs/weeklyDigest.ts` — exports `computeWeeklyDigest`, `renderLinkedInPost`, `renderEmailHtml`, `sendWeeklyDigest`.
 - **Recipient**: `ADMIN_EMAIL` only (this is editorial content for Vik, not subscribers).
-- **Subject**: `Weekly LinkedIn draft — <date range> (<N> new PM roles)`.
-- **Body**: copy-paste-ready LinkedIn post + raw-data tables (industry breakdown, top 10 by volume, AI roles by company).
+- **Subject**: `𝗪𝗘𝗘𝗞𝗟𝗬: LinkedIn Job Summary for <Mon DD>` (Unicode-bold "WEEKLY" prefix; falls back gracefully to plain caps in clients that don't render it). Updated 2026-05-23.
+- **Body**: copy-paste-ready LinkedIn post + raw-data tables (industry breakdown, top 10 by volume, AI roles by company) + an Appendix with 6 additional cuts (top cities + remote share; seniority split; top-paying companies hiring; surge vs 4-week trailing average; daily posting velocity).
 - **Data window**: last 7 days of `seen_jobs` where `status = 'active'` AND `is_baseline = false` joined to `companies`.
 - **AI title regex**: `/\b(AI|ML|GenAI|LLM|Machine Learning|Generative|Agentforce|Agentic|Voice AI|Copilot|GPT)\b/i`. Conservative; misses titles that only imply AI.
 - **Expected fire time on Fridays**: ~14:25-14:35 UTC (after scrape + per-user alerts + comp_cache refresh + admin digest).
