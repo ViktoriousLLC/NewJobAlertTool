@@ -1,0 +1,32 @@
+# DEV-11 v1: daily heuristic audit of recent commits.
+# Runs once a day, scans the last 24h of diffs for known risk patterns
+# (auth template, cookie-drop, JWT-in-source, unguarded route handlers).
+# Emails admin only if any pattern hits.
+
+name: Daily code audit
+
+on:
+  schedule:
+    # 15:00 UTC — 30 min after the daily scrape cron at 14:00 UTC, so the
+    # audit reflects everything that landed today.
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so git log --since works
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Resend SDK
+        run: npm install --no-save resend@4
+      - name: Run audit
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL || 'vikrant.agar@gmail.com' }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node .github/ci/daily-code-audit.mjs
