@@ -78,7 +78,7 @@ ea.com, atlassian.com, netflix.net, netflix.com, uber.com, google.com,
 amazon.jobs, intuit.com, rivian.com, costco.com, coinbase.com, apple.com,
 metacareers.com, tiktok.com, tesla.com, wayfair.com, shopify.com,
 ebayinc.com, higher.gs.com, gs.com, jobs.deel.com, kpmguscareers.com,
-revolut.com, bcg.com, careers.ey.com
+revolut.com, bcg.com, careers.ey.com, careers.lilly.com
 ```
 
 ## Key Rules

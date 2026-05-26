@@ -260,7 +260,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       // Zero-result fallback: try broad ATS discovery to auto-remediate
       // Covers both generic companies AND companies whose known platform broke (e.g., Ashby → Greenhouse)
       // Never run broadATSDiscovery on custom scraper companies — their URLs don't map to standard ATS
-      const CUSTOM_SCRAPER_HOSTS = ["ea.com", "atlassian.com", "netflix.net", "netflix.com", "uber.com", "google.com", "amazon.jobs", "intuit.com", "rivian.com", "costco.com", "coinbase.com", "apple.com", "metacareers.com", "tiktok.com", "tesla.com", "wayfair.com", "shopify.com", "ebayinc.com", "higher.gs.com", "gs.com", "jobs.deel.com", "kpmguscareers.com", "revolut.com", "bcg.com", "careers.ey.com"];
+      const CUSTOM_SCRAPER_HOSTS = ["ea.com", "atlassian.com", "netflix.net", "netflix.com", "uber.com", "google.com", "amazon.jobs", "intuit.com", "rivian.com", "costco.com", "coinbase.com", "apple.com", "metacareers.com", "tiktok.com", "tesla.com", "wayfair.com", "shopify.com", "ebayinc.com", "higher.gs.com", "gs.com", "jobs.deel.com", "kpmguscareers.com", "revolut.com", "bcg.com", "careers.ey.com", "careers.lilly.com"];
       const companyHost = new URL(company.careers_url).hostname;
       const isCustomScraper = CUSTOM_SCRAPER_HOSTS.some((h) => companyHost.includes(h));
       if (sourceEmpty && !isCustomScraper) {

@@ -2941,7 +2941,11 @@ async function scrapePhenomCareers(
   stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   if (!/^https:\/\/[a-z0-9.-]+\.[a-z]{2,}$/i.test(baseDomain)) {
-    throw new Error(`${companyLabel}: Invalid Phenom baseDomain: ${baseDomain}`);
+    // Return [] instead of throwing so self-healing tiers 2+3 can run.
+    // A missing https:// prefix is a misconfigured platform_config, not a
+    // transient network error — self-healing may auto-detect the right platform.
+    console.warn(`${companyLabel}: Invalid Phenom baseDomain (expected https://... URL): ${baseDomain} — yielding to self-healing`);
+    return [];
   }
 
   const searchUrl = `${baseDomain}/us/en/search-results?keywords=product+manager`;
