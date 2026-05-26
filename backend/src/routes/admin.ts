@@ -220,6 +220,49 @@ router.get("/email-status", async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/admin/users/send-magic-link — trigger a fresh magic-link email
+// to an existing user. Built to recover users stuck post-incident (template
+// bug 2026-05-22 + cookie bug DEV-3 fixed 2026-05-25). Reusable for the
+// stuck-user reminder system (DEV-14) and any future "user lost their link"
+// scenario.
+//
+// Body: { email: string }
+// Auth: requireAdmin (top of file).
+// Behavior: calls supabase.auth.signInWithOtp with shouldCreateUser=false,
+// which uses the (just-fixed) Supabase Auth email template + SMTP path.
+// Will reject if the email doesn't already exist as an auth user.
+//
+// Returns: { success: true, email } on send. Errors bubble through 4xx/5xx.
+router.post("/users/send-magic-link", async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body || {};
+    if (typeof email !== "string" || !email.includes("@") || email.length > 320) {
+      res.status(400).json({ error: "Valid email required in body" });
+      return;
+    }
+
+    // Don't auto-create users via this admin path — recovery only, not bulk
+    // onboarding. shouldCreateUser=false makes Supabase return user-not-found.
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: false },
+    });
+
+    if (error) {
+      // Common: user doesn't exist (would-be new signup). Surface clearly.
+      const status = /not found|does not exist/i.test(error.message) ? 404 : 500;
+      res.status(status).json({ error: error.message });
+      return;
+    }
+
+    res.json({ success: true, email });
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("POST /api/admin/users/send-magic-link error:", err);
+    res.status(500).json({ error: "Failed to send magic link" });
+  }
+});
+
 // POST /api/admin/weekly-digest/send — trigger the weekly LinkedIn-draft
 // email send manually. Useful for test sends + ad-hoc runs without waiting
 // for the Friday cron. Returns the computed data so the caller can preview
