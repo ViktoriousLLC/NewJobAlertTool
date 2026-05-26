@@ -32,7 +32,13 @@ export async function GET(request: NextRequest) {
     const { error } = await supabase.auth.exchangeCodeForSession(code);
 
     if (!error) {
-      return NextResponse.redirect(`${origin}/`);
+      // Same cookie-propagation gotcha as /auth/confirm: NextResponse.redirect
+      // doesn't inherit cookies from the SSR cookieStore. Copy explicitly.
+      const response = NextResponse.redirect(`${origin}/`);
+      for (const cookie of cookieStore.getAll()) {
+        response.cookies.set(cookie);
+      }
+      return response;
     }
 
     // PKCE exchange failed — likely opened in a different browser/device than where
