@@ -12,7 +12,39 @@
 //   auth.signin_success         (server-side, /auth/confirm/route.ts)
 //   auth.signin_failure         (server-side, /auth/confirm/route.ts)
 
+import type { ReadonlyRequestCookies } from "next/dist/server/web/spec-extension/adapters/request-cookies";
+
 const POSTHOG_HOST = process.env.NEXT_PUBLIC_POSTHOG_HOST || "https://us.i.posthog.com";
+
+/**
+ * Read the persistent PostHog distinct_id from the user's PostHog browser
+ * cookie. Returns null if the cookie is missing or malformed.
+ *
+ * The posthog-js SDK persists state in a cookie named `ph_<apiKey>_posthog`
+ * (default persistence is `localStorage+cookie`). The value is a URL-encoded
+ * JSON blob with at minimum a `distinct_id` field.
+ *
+ * Without this, server-side `captureServerEvent` calls would fall back to a
+ * fresh anonymous UUID per call — the funnel can never stitch the client-side
+ * `signin_email_sent` (real distinct_id) to the server-side
+ * `signin_link_clicked` / `signin_success` (anonymous UUIDs), so step-2→3
+ * conversion always shows 0%. DEV-13 follow-up.
+ */
+export function getPostHogDistinctId(
+  cookieStore: ReadonlyRequestCookies,
+): string | null {
+  const apiKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
+  if (!apiKey) return null;
+  const cookie = cookieStore.get(`ph_${apiKey}_posthog`);
+  if (!cookie?.value) return null;
+  try {
+    const decoded = decodeURIComponent(cookie.value);
+    const parsed = JSON.parse(decoded);
+    return typeof parsed?.distinct_id === "string" ? parsed.distinct_id : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Send a PostHog event from a server-side context (route handlers, middleware).
