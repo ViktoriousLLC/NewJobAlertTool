@@ -42,6 +42,21 @@ Investigates each issue (spawns scraper-doctor), pushes curated report only if a
 
 Three-tier recovery → auto-disable threshold (7 days) → Monday watch-list probe → re-enable. Tracked in `scraper_events` table for the weekly digest's self-heal log.
 
+### Proactive Auto-Fix Layer (DEV-19, added 2026-05-26)
+
+**Where:** `backend/src/jobs/autoFixRules.ts` (rule catalog) + `dailyCheck.ts` per-company loop (calls `tryProactiveAutoFix(company, supabase)` before each scrape).
+
+**Purpose:** Catch config-state failures BEFORE they throw. Each rule is a pure function of `company.platform_type` + `platform_config` + `careers_url`. If a rule's `detect()` returns true, its `fix()` runs an UPDATE on the companies row and the local company state is refreshed so the same-day scrape uses the corrected config.
+
+**Current rules:**
+- `phenom_basedomain_missing_https` — prepends `https://` when `platform_config.baseDomain` lacks a scheme. Catches the 2026-05-26 Eli Lilly class of bug (5 days of failure before manual intervention).
+
+**Adding a rule:** Append to `RULES` in `autoFixRules.ts`. Each rule has `id`, `description`, `detect(company)`, `fix(company, supabase)`. Detect must be pure (no network calls). Fix returns `{ ok, message, before, after }`.
+
+**Audit log:** Successful fixes write to `scraper_events` with `event_type='auto_fix_applied'`. Visible in the Monday digest's self-heal log + the same-day digest's dedicated "🤖 Auto-fixed today" section.
+
+**Not yet implemented:** reactive (error-message-based) rules. Today the proactive layer only catches config-state issues detectable without running the scraper. If you need to fix-and-retry on a caught exception, that's a separate `autoFixReactiveRules.ts` module — file a follow-up.
+
 ## Email Delivery
 
 - **Per-user alerts**: filtered by subscriptions + `user_preferences.email_frequency`. Batch send via `resend.batch.send()` (100/call, 1s delay).
