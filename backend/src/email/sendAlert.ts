@@ -455,6 +455,9 @@ export interface AdminDigestInput {
   unverifiedZeros: { name: string; subscribers: number; lastCheckedAt: string | null }[];
   autoRemediated: { name: string; from: string; to: string }[];
   stealthRecovered: { name: string; jobCount: number }[];
+  // DEV-19: proactive auto-fix layer. Rule-based DB fixes applied during this
+  // cron run. Falls under self-healing in the green-section rollup.
+  autoFixed?: { name: string; ruleId: string; description: string; message: string }[];
   reEnabled: { name: string; jobCount: number }[];
   emailBatchResult: BatchSendResult;
   isMondayDigest: boolean;
@@ -564,9 +567,13 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
     if (input.reEnabled.length > 0) {
       rollupParts.push(`<span style="color:#16a34a;">✅ ${input.reEnabled.length} re-enabled today</span>`);
     }
-    if (input.autoRemediated.length > 0 || input.stealthRecovered.length > 0) {
-      const selfHealCount = input.autoRemediated.length + input.stealthRecovered.length;
+    const autoFixedCount = input.autoFixed?.length ?? 0;
+    if (input.autoRemediated.length > 0 || input.stealthRecovered.length > 0 || autoFixedCount > 0) {
+      const selfHealCount = input.autoRemediated.length + input.stealthRecovered.length + autoFixedCount;
       rollupParts.push(`<span style="color:#16a34a;">🛠 ${selfHealCount} self-healed today</span>`);
+    }
+    if (autoFixedCount > 0) {
+      rollupParts.push(`<span style="color:#16a34a;">🤖 ${autoFixedCount} auto-fixed by rule</span>`);
     }
     const healthyCount = input.weeklyHealth ? input.weeklyHealth.healthy : input.totalCompanies - input.failedCompanies.length - input.autoDisabled.length - input.watchList.length;
     rollupParts.push(`<span style="color:#16a34a;">💚 ${healthyCount} / ${input.totalCompanies} healthy</span>`);
@@ -694,6 +701,28 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
     }
   }
 
+  // DEV-19: rule-based auto-fixes applied during this run. Show them on every
+  // day they fire (not just Monday) so the admin sees the system fixed
+  // something without needing to dig through scraper_events.
+  if (input.autoFixed && input.autoFixed.length > 0) {
+    html += `<h3 style="margin:16px 0 6px 0;color:#16a34a;">🤖 Auto-fixed today (${input.autoFixed.length})</h3>`;
+    html += `<p style="font-size:13px;color:#374151;margin:4px 0 8px 0;">Rule-based fixes applied to broken company configs. No human intervention needed.</p>`;
+    html += `<table style="border-collapse:collapse;width:100%;font-size:13px;">
+      <tr style="background:#f0fdf4;">
+        <th style="text-align:left;padding:6px 8px;border-bottom:1px solid #bbf7d0;color:#166534;">Company</th>
+        <th style="text-align:left;padding:6px 8px;border-bottom:1px solid #bbf7d0;color:#166534;">Rule</th>
+        <th style="text-align:left;padding:6px 8px;border-bottom:1px solid #bbf7d0;color:#166534;">What changed</th>
+      </tr>`;
+    for (const f of input.autoFixed) {
+      html += `<tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;font-weight:600;">${escapeHtml(f.name)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;"><code style="font-size:11px;color:#6b7280;">${escapeHtml(f.ruleId)}</code></td>
+        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#374151;">${escapeHtml(f.message)}</td>
+      </tr>`;
+    }
+    html += `</table>`;
+  }
+
   if (input.emailBatchResult.failed > 0) {
     html += `<h3 style="margin:16px 0 6px 0;color:#dc2626;">Email delivery failures (${input.emailBatchResult.failed})</h3>`;
     html += `<p style="font-size:13px;">${input.emailBatchResult.sent} sent, <strong style="color:#dc2626;">${input.emailBatchResult.failed} failed</strong>.</p>`;
@@ -726,6 +755,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
       const eventTypeLabels: Record<string, { label: string; color: string }> = {
         auto_remediation: { label: "Platform auto-fixed", color: "#16a34a" },
         stealth_recovery: { label: "Stealth fallback recovered jobs", color: "#16a34a" },
+        auto_fix_applied: { label: "Rule-based auto-fix applied", color: "#16a34a" },
         auto_re_enabled: { label: "Re-enabled by Monday probe", color: "#16a34a" },
         auto_disabled: { label: "Auto-disabled", color: "#ea580c" },
       };

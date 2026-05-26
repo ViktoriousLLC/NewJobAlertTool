@@ -9,6 +9,7 @@ import { getCompData } from "../lib/levelsFyi";
 import { CompanyQualityData } from "../scraper/dailyEval";
 import { runSecurityCheck } from "./securityCheck";
 import { listAllUsers } from "../lib/listAllUsers";
+import { tryProactiveAutoFix, AutoFixResult } from "./autoFixRules";
 
 // Log a self-healing event to the scraper_events table. Used to power the
 // Monday weekly digest. Best-effort: failures are swallowed so they never
@@ -16,7 +17,7 @@ import { listAllUsers } from "../lib/listAllUsers";
 async function logScraperEvent(
   companyId: string,
   companyName: string,
-  eventType: "auto_remediation" | "stealth_recovery" | "auto_disabled" | "auto_re_enabled",
+  eventType: "auto_remediation" | "stealth_recovery" | "auto_disabled" | "auto_re_enabled" | "auto_fix_applied",
   details: Record<string, unknown>
 ): Promise<void> {
   try {
@@ -217,6 +218,9 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
   const stealthRecovered: { name: string; jobCount: number }[] = [];
   const autoDisabled: { name: string; reason: string }[] = [];
   const reEnabled: { name: string; jobCount: number }[] = [];
+  // DEV-19: proactive auto-fix layer. Each entry = a rule that fired this run.
+  // Surfaces in the daily digest's "🤖 Auto-fixed today" section.
+  const autoFixed: { name: string; ruleId: string; description: string; message: string }[] = [];
 
   // Collect quality data for daily eval
   const qualityData: Map<string, CompanyQualityData> = new Map();
@@ -240,6 +244,42 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     }
 
     try {
+      // DEV-19: proactive auto-fix layer — check the company's stored config
+      // against known-broken patterns BEFORE scraping. If a rule applies, the
+      // fix updates the DB and we refresh local state so the scrape this run
+      // uses the corrected config. Skipped when probing (auto-disabled
+      // companies need a real attempt to verify the probe; auto-fix masks that).
+      let autoFixApplied: AutoFixResult | null = null;
+      if (!isProbing) {
+        autoFixApplied = await tryProactiveAutoFix(company, supabase);
+      }
+      if (autoFixApplied?.ok) {
+        autoFixed.push({
+          name: company.name,
+          ruleId: autoFixApplied.ruleId,
+          description: autoFixApplied.description,
+          message: autoFixApplied.message,
+        });
+        await logScraperEvent(company.id, company.name, "auto_fix_applied", {
+          ruleId: autoFixApplied.ruleId,
+          message: autoFixApplied.message,
+          before: autoFixApplied.before,
+          after: autoFixApplied.after,
+        });
+        // Refresh local company state so the rest of this iteration uses the
+        // fixed config. The fix() implementation has already written to the DB;
+        // local merge is just a mirror so we don't re-fetch the row.
+        if (autoFixApplied.after) {
+          company.platform_config = { ...(company.platform_config || {}), ...autoFixApplied.after };
+          company.consecutive_failure_count = 0;
+          company.auto_disabled = false;
+        }
+        Sentry.captureMessage(`Auto-fix applied to ${company.name}: ${autoFixApplied.message}`, {
+          level: "info",
+          tags: { company: company.name, phase: "auto-fix", ruleId: autoFixApplied.ruleId },
+        });
+      }
+
       console.log(`Scraping: ${company.name} (${company.careers_url})`);
       // Filter-heavy scrapers (Greenhouse/Workday/Ashby) write their pre-PM-filter
       // job count into stats. Lets us distinguish "API returned 50 jobs, 0 PMs"
@@ -678,6 +718,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     failedCompanies,
     autoRemediated,
     stealthRecovered,
+    autoFixed,
     autoDisabled,
     reEnabled,
     qualityData,
@@ -920,6 +961,7 @@ async function sendConsolidatedAdminDigest(input: {
   failedCompanies: { name: string; error: string; consecutiveFailures: number }[];
   autoRemediated: { name: string; from: string; to: string }[];
   stealthRecovered: { name: string; jobCount: number }[];
+  autoFixed: { name: string; ruleId: string; description: string; message: string }[];
   autoDisabled: { name: string; reason: string }[];
   reEnabled: { name: string; jobCount: number }[];
   qualityData: Map<string, CompanyQualityData>;
@@ -1041,6 +1083,7 @@ async function sendConsolidatedAdminDigest(input: {
       unverifiedZeros,
       autoRemediated: input.autoRemediated,
       stealthRecovered: input.stealthRecovered,
+      autoFixed: input.autoFixed,
       reEnabled: input.reEnabled,
       emailBatchResult: input.emailBatchResult,
       isMondayDigest,
