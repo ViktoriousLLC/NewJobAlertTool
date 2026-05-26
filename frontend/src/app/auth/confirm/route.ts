@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
 import * as Sentry from "@sentry/nextjs";
-import { captureServerEvent } from "@/lib/serverAnalytics";
+import { captureServerEvent, getPostHogDistinctId } from "@/lib/serverAnalytics";
 
 /**
  * Token-hash based auth confirmation — works cross-device (no PKCE code verifier needed).
@@ -23,10 +23,13 @@ export async function GET(request: NextRequest) {
   const next = rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : "/";
 
   if (token_hash && type) {
-    // DEV-13: funnel step — user clicked the magic link.
-    captureServerEvent("auth.signin_link_clicked", null, { type });
-
     const cookieStore = await cookies();
+    // DEV-13: read the PostHog distinct_id from the user's browser cookie so
+    // server-side funnel steps stitch to the client-side signin_email_sent
+    // event. Falls back to anonymous if the cookie is absent (e.g., user
+    // opened the link in a different browser).
+    const phDistinctId = getPostHogDistinctId(cookieStore);
+    captureServerEvent("auth.signin_link_clicked", phDistinctId, { type });
     // DEV-17: capture cookies Supabase wants to set so we can re-apply them
     // onto the redirect response WITH FULL ATTRIBUTES (maxAge, expires,
     // sameSite, etc.). PR #62 originally read from cookieStore.getAll()
@@ -69,14 +72,14 @@ export async function GET(request: NextRequest) {
         response.cookies.set(c.name, c.value, c.options);
       }
       // DEV-13: funnel terminal — session established successfully.
-      captureServerEvent("auth.signin_success", null, { type });
+      captureServerEvent("auth.signin_success", phDistinctId, { type });
       return response;
     }
 
     console.error("Auth confirm verifyOtp failed:", error.message);
     Sentry.captureMessage(`Magic link verify failed: ${error.message}`, "warning");
     // DEV-13: funnel failure — verifyOtp errored. Reason in props.
-    captureServerEvent("auth.signin_failure", null, { type, reason: error.message });
+    captureServerEvent("auth.signin_failure", phDistinctId, { type, reason: error.message });
   }
 
   // Verification failed — redirect to login with error
