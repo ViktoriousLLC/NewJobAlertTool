@@ -27,6 +27,13 @@ export async function GET(request: NextRequest) {
     captureServerEvent("auth.signin_link_clicked", null, { type });
 
     const cookieStore = await cookies();
+    // DEV-17: capture cookies Supabase wants to set so we can re-apply them
+    // onto the redirect response WITH FULL ATTRIBUTES (maxAge, expires,
+    // sameSite, etc.). PR #62 originally read from cookieStore.getAll()
+    // which strips attributes, turning persistent sessions into session-only
+    // cookies that died on browser close. Same pattern as middleware.ts
+    // redirectPreservingSession.
+    const cookiesToApply: Array<{ name: string; value: string; options: Record<string, unknown> }> = [];
 
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -36,11 +43,12 @@ export async function GET(request: NextRequest) {
           getAll() {
             return cookieStore.getAll();
           },
-          setAll(cookiesToSet) {
-            cookiesToSet.forEach(({ name, value, options }) => {
-              // Keep Supabase's defaults: HttpOnly + Secure + SameSite=Lax.
+          setAll(toSet) {
+            toSet.forEach(({ name, value, options }) => {
+              // Keep Supabase's defaults: HttpOnly + Secure + SameSite=Lax + maxAge.
               // Browser JS reads the token via /api/auth/token instead.
               cookieStore.set(name, value, options);
+              cookiesToApply.push({ name, value, options: options || {} });
             });
           },
         },
@@ -50,16 +58,15 @@ export async function GET(request: NextRequest) {
     const { error } = await supabase.auth.verifyOtp({ type, token_hash });
 
     if (!error) {
-      // Supabase SSR writes session cookies onto cookieStore via the setAll
-      // callback above, but NextResponse.redirect() is a fresh response object
-      // and inherits none of them. Copy them onto the redirect explicitly,
-      // otherwise the browser receives a 302 with no Set-Cookie and the user
-      // lands at `next` as an unauthenticated visitor (last_sign_in_at stays
-      // NULL). This is the same class of bug PR #26 fixed in middleware.ts
-      // via redirectPreservingSession() but never backported here.
+      // Re-apply the cookies Supabase wrote during verifyOtp onto the redirect
+      // response, preserving every attribute. NextResponse.redirect() is a
+      // fresh response and inherits nothing from cookieStore by default — the
+      // user would land at `next` without a session (PR #62's original fix
+      // copied from cookieStore.getAll() which silently dropped maxAge, making
+      // sessions die on browser close — DEV-17).
       const response = NextResponse.redirect(`${origin}${next}`);
-      for (const cookie of cookieStore.getAll()) {
-        response.cookies.set(cookie);
+      for (const c of cookiesToApply) {
+        response.cookies.set(c.name, c.value, c.options);
       }
       // DEV-13: funnel terminal — session established successfully.
       captureServerEvent("auth.signin_success", null, { type });
