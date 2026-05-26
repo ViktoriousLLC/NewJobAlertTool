@@ -46,7 +46,18 @@ export async function GET(request: NextRequest) {
     const { error } = await supabase.auth.verifyOtp({ type, token_hash });
 
     if (!error) {
-      return NextResponse.redirect(`${origin}${next}`);
+      // Supabase SSR writes session cookies onto cookieStore via the setAll
+      // callback above, but NextResponse.redirect() is a fresh response object
+      // and inherits none of them. Copy them onto the redirect explicitly,
+      // otherwise the browser receives a 302 with no Set-Cookie and the user
+      // lands at `next` as an unauthenticated visitor (last_sign_in_at stays
+      // NULL). This is the same class of bug PR #26 fixed in middleware.ts
+      // via redirectPreservingSession() but never backported here.
+      const response = NextResponse.redirect(`${origin}${next}`);
+      for (const cookie of cookieStore.getAll()) {
+        response.cookies.set(cookie);
+      }
+      return response;
     }
 
     console.error("Auth confirm verifyOtp failed:", error.message);
