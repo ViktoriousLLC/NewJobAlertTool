@@ -1,4 +1,4 @@
-// DEV-11 v1: daily heuristic audit of recent code changes.
+// DEV-11 v1.1: daily heuristic audit of recent code changes.
 // Scans the last 24h of commits for known risk patterns and emails admin
 // if anything trips. Silent success days are the norm.
 //
@@ -13,6 +13,14 @@
 //      service-role key leak
 //   4. New backend route handlers under backend/src/routes/ that lack
 //      `requireAuth` / `requireAdmin` in the same file — auth-bypass risk
+//   5. `cookieStore.getAll()` paired with `response.cookies.set(...)` inside
+//      `frontend/src/app/auth/**/route.ts` — DEV-17 cookie-attribute-strip
+//      bug. RequestCookie[] only has {name, value}; copying them onto a
+//      redirect drops maxAge/expires/sameSite/secure, silently turning
+//      Supabase's persistent refresh-token cookie into a session-only one
+//      that dies on browser close. Capture attributes inside the setAll
+//      callback instead. See AUTH.md gotchas + middleware.ts
+//      redirectPreservingSession.
 //
 // Required env (GitHub Actions step `env` block injects these):
 //   RESEND_API_KEY       — for sending the admin email on findings
@@ -193,6 +201,43 @@ for (const [file, lines] of Object.entries(byFile)) {
       0,
       addedRoutes[0].trim(),
       "New route in backend/src/routes/ lacks requireAuth or requireAdmin. See ROUTES.md Data Isolation pattern."
+    );
+  }
+}
+
+// 5. Auth cookie attributes stripped (DEV-17 regression class)
+//
+// Catches the WRONG PRESENCE variant of the cookie pattern: when an auth
+// route handler copies `cookieStore.getAll()` onto a `response.cookies.set(...)`
+// call. `getAll()` returns RequestCookie[] (name+value only), so the resulting
+// cookies lose maxAge/expires/sameSite/secure and become session-only.
+//
+// Heuristic: in the same diff hunk, look for an added line containing
+// `cookieStore.getAll()` AND any added line within the same file containing
+// `response.cookies.set(`. Scoped to `frontend/src/app/auth/**/route.ts`
+// because the universe of files where this matters is narrow.
+//
+// Note this fires even when the intent looks correct — we want a human to
+// sanity-check that the cookie attributes are coming from inside the setAll
+// callback (full options) and NOT from cookieStore.getAll() (stripped).
+for (const [file, lines] of Object.entries(byFile)) {
+  if (!/^frontend\/src\/app\/auth\/.+\/route\.ts$/.test(file)) continue;
+  if (isMetaFile(file)) continue;
+  const nonComment = lines.filter((t) => !isCommentLine(t));
+  const hasGetAll = nonComment.some((t) => /cookieStore\.getAll\(\)/.test(t));
+  const hasResponseSet = nonComment.some((t) =>
+    /\bresponse\.cookies\.set\s*\(/.test(t)
+  );
+  if (hasGetAll && hasResponseSet) {
+    const snippet =
+      nonComment.find((t) => /cookieStore\.getAll\(\)/.test(t))?.trim() || "cookieStore.getAll()";
+    flag(
+      "HIGH",
+      "auth-cookie-attrs-stripped",
+      file,
+      0,
+      snippet.slice(0, 200),
+      "cookieStore.getAll() returns RequestCookie[] (name+value only). Copying onto response.cookies.set strips maxAge/expires and breaks session persistence (DEV-17). Capture cookies INSIDE the setAll callback into a local array with full {name, value, options}, then re-apply onto the redirect."
     );
   }
 }
