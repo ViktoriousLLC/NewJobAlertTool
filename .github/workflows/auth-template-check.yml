@@ -1,0 +1,39 @@
+# Tier 1 of DEV-12 [CI auth smoke test]: static check that the deployed
+# Supabase Auth email templates match the URL format documented in
+# backend/src/middleware/AUTH.md. Catches the regression class that broke
+# logins for 18 users between 2026-05-22 and 2026-05-25.
+#
+# Tier 2 (full end-to-end sign-up flow with Playwright + real email check)
+# is a separate workflow if/when we want it.
+
+name: Auth template check
+
+on:
+  pull_request:
+    paths:
+      - 'backend/src/middleware/**'
+      - 'backend/src/scripts/update-auth-templates.mjs'
+      - 'frontend/src/app/auth/**'
+      - 'frontend/src/app/login/**'
+      - 'frontend/middleware.ts'
+      - '.github/ci/check-auth-templates.mjs'
+      - '.github/workflows/auth-template-check.yml'
+  schedule:
+    # Daily 15:05 UTC — 5 min after the daily scraper self-check. Catches
+    # template drift from manual Supabase Dashboard edits between PRs.
+    - cron: '5 15 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-templates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check deployed Supabase Auth templates against AUTH.md format
+        env:
+          SUPABASE_PAT: ${{ secrets.SUPABASE_PAT_CI }}
+          SUPABASE_PROJECT_ID: lrmxjqijaenyzdjjzmmo
+        run: node .github/ci/check-auth-templates.mjs
