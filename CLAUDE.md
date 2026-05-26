@@ -93,6 +93,7 @@ GET    /api/admin/* (requires ADMIN_EMAIL)
 GET    /api/admin/email-status               (proxies Resend list-emails API; optional ?email= filter)
 GET    /api/admin/weekly-digest/preview      (returns { data, linkedinPost, emailHtml } — no send)
 POST   /api/admin/weekly-digest/send         (fires the weekly LinkedIn-draft email immediately)
+POST   /api/admin/users/send-magic-link      (admin JWT; body: {email}; sends fresh magic link to existing user; powers stuck-user recovery + DEV-14 reminder system)
 GET    /api/cron/trigger (requires CRON_SECRET; see JOBS.md)
 GET    /api/cron/weekly-digest (requires CRON_SECRET; see JOBS.md)
 ```
@@ -120,6 +121,15 @@ GET    /api/cron/weekly-digest (requires CRON_SECRET; see JOBS.md)
 Indexes, exact column lists, and partial-index details live in the migrations + JOBS.md/ROUTES.md sidecars as needed.
 
 **Migrations live in `backend/migrations/YYYY-MM-DD-description.sql`** (folder added 2026-05-19). Run via Supabase MCP `apply_migration` or paste into SQL Editor.
+
+## CI Workflows (.github/workflows/)
+
+- **`auth-template-check.yml`** (DEV-12) — on every PR touching auth code + nightly at 15:05 UTC. Fetches deployed Supabase Auth config via Management API. Fails build if templates don't use `{{ .TokenHash }}` format documented in AUTH.md. **Requires `SUPABASE_PAT_CI` GitHub repo secret.**
+- **`daily-code-audit.yml`** (DEV-11) — daily at 15:00 UTC. Heuristic scan of last 24h diff for 4 risk patterns (auth template anti-pattern, cookie-drop, JWT-in-source, unguarded routes). Emails admin only on findings. Uses existing `RESEND_API_KEY` secret.
+
+## Feedback Workflow
+
+User feedback (`POST /api/help`, `POST /api/issues`) files Linear issues in the User Feedback team (USRFDBK-N) + emails admin with Linear URL inline. Legacy `help_submissions` / `scrape_issues` tables hold pre-2026-05-22 history only — no new rows written. **Required env var: `LINEAR_API_KEY`** (Personal API Key with Full access; set on Railway).
 
 ## Conventions
 
