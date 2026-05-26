@@ -9,6 +9,11 @@ export async function GET(request: NextRequest) {
 
   if (code) {
     const cookieStore = await cookies();
+    // DEV-17: track cookies via setAll so we can re-apply onto the redirect
+    // WITH FULL ATTRIBUTES (maxAge, expires, etc.). PR #62's original fix
+    // read from cookieStore.getAll() which strips attributes and broke
+    // session persistence. Same pattern as middleware.ts redirectPreservingSession.
+    const cookiesToApply: Array<{ name: string; value: string; options: Record<string, unknown> }> = [];
 
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -18,11 +23,11 @@ export async function GET(request: NextRequest) {
           getAll() {
             return cookieStore.getAll();
           },
-          setAll(cookiesToSet) {
-            cookiesToSet.forEach(({ name, value, options }) => {
-              // Keep Supabase's defaults: HttpOnly + Secure + SameSite=Lax.
-              // Browser JS reads the token via /api/auth/token instead.
+          setAll(toSet) {
+            toSet.forEach(({ name, value, options }) => {
+              // Keep Supabase's defaults: HttpOnly + Secure + SameSite=Lax + maxAge.
               cookieStore.set(name, value, options);
+              cookiesToApply.push({ name, value, options: options || {} });
             });
           },
         },
@@ -32,11 +37,11 @@ export async function GET(request: NextRequest) {
     const { error } = await supabase.auth.exchangeCodeForSession(code);
 
     if (!error) {
-      // Same cookie-propagation gotcha as /auth/confirm: NextResponse.redirect
-      // doesn't inherit cookies from the SSR cookieStore. Copy explicitly.
+      // Re-apply with FULL attributes (DEV-17 fix). See /auth/confirm for the
+      // explanation of why cookieStore.getAll() can't be used here.
       const response = NextResponse.redirect(`${origin}/`);
-      for (const cookie of cookieStore.getAll()) {
-        response.cookies.set(cookie);
+      for (const c of cookiesToApply) {
+        response.cookies.set(c.name, c.value, c.options);
       }
       return response;
     }
