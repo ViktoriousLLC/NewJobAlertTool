@@ -60,6 +60,12 @@ function DashboardContent() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
+  // DEV-16: once the user explicitly closes the onboarding modal, don't
+  // re-open it for the rest of the session. Without this, a new user with
+  // 0 subs gets trapped — the auto-open effect fires every time showModal
+  // flips false. Resets on full reload (which is fine; intent is "stop
+  // nagging during this visit").
+  const [modalDismissed, setModalDismissed] = useState(false);
   const [removeToast, setRemoveToast] = useState<string | null>(null);
   const { showToast } = useToast();
 
@@ -71,16 +77,18 @@ function DashboardContent() {
   useEffect(() => {
     if (searchParams.get("addCompany") === "true") {
       setShowModal(true);
+      setModalDismissed(false);
       window.history.replaceState({}, "", "/");
     }
   }, [searchParams]);
 
   useEffect(() => {
-    if (!loading && companies.length === 0 && !showModal) {
-      // Onboarding: auto-open modal for new users with no subscriptions
+    if (!loading && companies.length === 0 && !modalDismissed) {
+      // Onboarding: auto-open modal for new users with no subscriptions.
+      // Guarded by modalDismissed so closing the modal doesn't re-trap them.
       setShowModal(true);
     }
-  }, [loading, companies.length, showModal]);
+  }, [loading, companies.length, modalDismissed]);
 
   async function fetchCompanies() {
     try {
@@ -469,7 +477,10 @@ function DashboardContent() {
       {/* Add Company Modal */}
       <AddCompanyModal
         isOpen={showModal}
-        onClose={() => setShowModal(false)}
+        onClose={() => {
+          setShowModal(false);
+          setModalDismissed(true);
+        }}
         onCompanyAdded={fetchCompanies}
         subscribedIds={subscribedIds}
       />
