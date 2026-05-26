@@ -30,6 +30,19 @@ const SCRAPER_UA =
   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 /**
+ * iCIMS deployments that expose a public `/api/jobs` REST endpoint. These
+ * companies have `platform_type='icims'` in the DB but their baseUrl points at
+ * a custom domain (not `*.icims.com`) that serves clean JSON via the public
+ * iCIMS API. Routing them through `scrapeICIMSAPICareers` skips the Puppeteer
+ * scraper, which only knows the legacy iCIMS template — not the modern Jibe
+ * SPA used by most current iCIMS tenants. DEV-18.
+ */
+const ICIMS_API_HOSTS = [
+  "careers.rivian.com",
+  "careers.costco.com",
+];
+
+/**
  * Known ATS hosts whose URL paths embed the company slug (e.g.
  * api.greenhouse.io/v1/boards/{slug}). For these, a cross-domain sniff is
  * legitimate — inferPlatformFromSniffedUrl re-anchors the data to the right
@@ -3468,8 +3481,19 @@ export async function scrapeCompanyCareers(
           return scrapeSmartRecruitersCareers(platformConfig.company, label);
         }
         break;
-      case "icims":
-        return scrapeICIMSCareers(platformConfig.company || label, platformConfig.baseUrl || careersUrl, label);
+      case "icims": {
+        // Some iCIMS deployments expose a public /api/jobs endpoint that
+        // returns clean JSON — much faster and more reliable than the
+        // Puppeteer DOM scraper. Route those by hostname before falling
+        // through to the legacy Puppeteer path. DEV-18: keeps Rivian
+        // working in spite of the modern Jibe template (which the
+        // Puppeteer selectors don't recognize).
+        const baseUrl = platformConfig.baseUrl || careersUrl;
+        if (ICIMS_API_HOSTS.some((host) => baseUrl.includes(host))) {
+          return scrapeICIMSAPICareers(baseUrl.replace(/\/+$/, ""), label, "product manager");
+        }
+        return scrapeICIMSCareers(platformConfig.company || label, baseUrl, label);
+      }
       case "oracle_hcm":
         if (platformConfig.tenantUrl && platformConfig.siteNumber) {
           return scrapeOracleHCMCareers(platformConfig.tenantUrl, platformConfig.siteNumber, label);
