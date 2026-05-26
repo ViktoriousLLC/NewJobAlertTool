@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { supabase } from "@/lib/supabase";
+import { trackEvent } from "@/lib/analytics";
 import { getFaviconUrl, getFaviconFallbackUrl } from "@/lib/brandColors";
 
 // Mix a hex color toward white by `pct` percent. Inlined (not imported from
@@ -162,6 +163,8 @@ function LoginForm() {
         });
 
         if (!authError) {
+          // DEV-13: funnel start — magic link email queued at Supabase.
+          trackEvent("auth.signin_email_sent", { attempt: attempt + 1 });
           setLoading(false);
           setSent(true);
           return;

@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
 import * as Sentry from "@sentry/nextjs";
+import { captureServerEvent } from "@/lib/serverAnalytics";
 
 /**
  * Token-hash based auth confirmation — works cross-device (no PKCE code verifier needed).
@@ -22,6 +23,9 @@ export async function GET(request: NextRequest) {
   const next = rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : "/";
 
   if (token_hash && type) {
+    // DEV-13: funnel step — user clicked the magic link.
+    captureServerEvent("auth.signin_link_clicked", null, { type });
+
     const cookieStore = await cookies();
 
     const supabase = createServerClient(
@@ -57,11 +61,15 @@ export async function GET(request: NextRequest) {
       for (const cookie of cookieStore.getAll()) {
         response.cookies.set(cookie);
       }
+      // DEV-13: funnel terminal — session established successfully.
+      captureServerEvent("auth.signin_success", null, { type });
       return response;
     }
 
     console.error("Auth confirm verifyOtp failed:", error.message);
     Sentry.captureMessage(`Magic link verify failed: ${error.message}`, "warning");
+    // DEV-13: funnel failure — verifyOtp errored. Reason in props.
+    captureServerEvent("auth.signin_failure", null, { type, reason: error.message });
   }
 
   // Verification failed — redirect to login with error
