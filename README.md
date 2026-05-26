@@ -77,7 +77,7 @@ Under the hood, the system auto-detects which ATS platform a company uses (Green
 
 ## How This Product Evolved
 
-The full story of how this went from a localhost script to a production SaaS is in [docs/product-development-journey.md](docs/product-development-journey.md). It covers 14 phases of product decisions, tradeoffs, and lessons learned, including multi-platform scraper architecture, multi-user auth, performance optimization (Lighthouse 49 to 100), security hardening, and building the entire product with AI coding tools.
+The full story of how this went from a localhost script to a production SaaS is in [product-development-journey.md](product-development-journey.md). It covers 14 phases of product decisions, tradeoffs, and lessons learned, including multi-platform scraper architecture, multi-user auth, performance optimization (Lighthouse 49 to 100), security hardening, and building the entire product with AI coding tools.
 
 ## Built By
 
