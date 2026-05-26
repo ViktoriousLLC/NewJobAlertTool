@@ -16,7 +16,7 @@ on:
       - 'frontend/src/app/auth/**'
       - 'frontend/src/app/login/**'
       - 'frontend/middleware.ts'
-      - '.github/scripts/check-auth-templates.mjs'
+      - '.github/ci/check-auth-templates.mjs'
       - '.github/workflows/auth-template-check.yml'
   schedule:
     # Daily 15:05 UTC — 5 min after the daily scraper self-check. Catches
@@ -36,4 +36,4 @@ jobs:
         env:
           SUPABASE_PAT: ${{ secrets.SUPABASE_PAT_CI }}
           SUPABASE_PROJECT_ID: lrmxjqijaenyzdjjzmmo
-        run: node .github/scripts/check-auth-templates.mjs
+        run: node .github/ci/check-auth-templates.mjs
