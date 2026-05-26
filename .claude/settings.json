@@ -1,5 +1,12 @@
 {
   "enabledPlugins": {
     "postgres-best-practices@supabase-agent-skills": true
+  },
+  "permissions": {
+    "allow": [
+      "mcp__supabase__list_projects",
+      "mcp__linear-server__list_issues",
+      "mcp__linear-server__get_issue"
+    ]
   }
 }
