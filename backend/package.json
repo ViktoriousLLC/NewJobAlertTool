@@ -9,6 +9,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.99.0",
+    "@elevenlabs/elevenlabs-js": "^2.49.1",
     "@sentry/node": "^10.38.0",
     "@supabase/supabase-js": "^2.49.0",
     "cors": "^2.8.5",
