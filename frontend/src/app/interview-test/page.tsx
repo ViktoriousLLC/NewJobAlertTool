@@ -57,6 +57,9 @@ export default function InterviewTestPage() {
 
   const convoRef = useRef<Awaited<ReturnType<typeof Conversation.startSession>> | null>(null);
   const volumePollRef = useRef<number | null>(null);
+  const micTestRef = useRef<{ stream: MediaStream; ctx: AudioContext; analyser: AnalyserNode } | null>(null);
+  const [micTesting, setMicTesting] = useState(false);
+  const [micTestPeak, setMicTestPeak] = useState(0);
 
   // Enumerate audio input devices on mount. Note: device labels are only
   // populated AFTER the user grants mic permission once. We trigger a no-op
@@ -163,16 +166,32 @@ export default function InterviewTestPage() {
           setStatus("connected");
           setStartedAt(Date.now());
         },
-        onMessage: ({ source, message }) => {
-          console.log("[interview] onMessage", source, message);
-          setTranscript((prev) => [
-            ...prev,
-            { role: source === "ai" ? "agent" : "user", text: message, ts: Date.now() },
-          ]);
+        onMessage: (payload) => {
+          // Log the full payload so we can see exactly what shape the SDK emits.
+          console.log("[interview] onMessage payload", payload);
+          const { source, role, message } = payload as { source?: string; role?: string; message: string };
+          const r: "agent" | "user" =
+            role === "agent" || source === "ai" ? "agent" : "user";
+          setTranscript((prev) => [...prev, { role: r, text: message, ts: Date.now() }]);
         },
         onModeChange: ({ mode }) => {
           console.log("[interview] mode", mode);
           setMode(mode);
+        },
+        onVadScore: ({ vadScore }) => {
+          // Voice activity score: 0 = silence, 1 = strong speech. If this never
+          // goes above 0 while the user talks, audio is not reaching the SDK.
+          if (vadScore > 0.5) console.log("[interview] vadScore", vadScore.toFixed(2));
+        },
+        onAgentChatResponsePart: (part) => {
+          // Some agent text streams via this callback instead of onMessage.
+          console.log("[interview] agentChatResponsePart", part);
+        },
+        onAudio: () => {
+          // Fires for every audio chunk the agent sends back; logging just count.
+        },
+        onDebug: (info) => {
+          console.log("[interview] debug", info);
         },
         onError: (message, context) => {
           console.error("[interview] onError", message, context);
@@ -183,6 +202,8 @@ export default function InterviewTestPage() {
           console.log("[interview] disconnected", details);
         },
       });
+
+      console.log("[interview] session started, convo:", convo);
 
       convoRef.current = convo;
     } catch (err) {
@@ -234,6 +255,54 @@ export default function InterviewTestPage() {
     }
   }, [selected, startedAt, transcript]);
 
+  // Pre-flight mic test: opens the mic, runs an AnalyserNode for ~10 seconds
+  // showing live volume. Pure browser audio path; if bars don't move here, the
+  // SDK has no chance. Useful to isolate "is it my mic/OS" from "is it the SDK".
+  const handleMicTest = useCallback(async () => {
+    if (micTesting) return;
+    setMicTesting(true);
+    setMicTestPeak(0);
+    try {
+      const constraints: MediaStreamConstraints = selectedDeviceId
+        ? { audio: { deviceId: { exact: selectedDeviceId } } }
+        : { audio: true };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      micTestRef.current = { stream, ctx, analyser };
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        if (!micTestRef.current) return;
+        analyser.getByteFrequencyData(buf);
+        // Average across the human voice band
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) sum += buf[i];
+        const avg = sum / buf.length / 255;
+        setMicTestPeak((prev) => Math.max(prev, avg));
+        setInputVolume(avg);
+        requestAnimationFrame(tick);
+      };
+      tick();
+      // Auto-stop after 10s
+      setTimeout(() => {
+        if (micTestRef.current) {
+          micTestRef.current.stream.getTracks().forEach((t) => t.stop());
+          micTestRef.current.ctx.close();
+          micTestRef.current = null;
+        }
+        setMicTesting(false);
+        setInputVolume(0);
+      }, 10000);
+    } catch (err) {
+      console.error("[mic-test] failed:", err);
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+      setMicTesting(false);
+    }
+  }, [selectedDeviceId, micTesting]);
+
   const handleReset = useCallback(() => {
     setStatus("idle");
     setSelected(null);
@@ -276,22 +345,66 @@ export default function InterviewTestPage() {
       {status === "idle" && (
         <>
           {devices.length > 0 && (
-            <div className="mb-4 bg-stone-50 border border-stone-200 rounded-lg p-3">
-              <label className="block text-xs uppercase text-stone-400 mb-1">Microphone</label>
-              <select
-                value={selectedDeviceId}
-                onChange={(e) => setSelectedDeviceId(e.target.value)}
-                className="w-full text-sm bg-white border border-stone-200 rounded-md px-3 py-2"
-              >
-                <option value="">System default</option>
-                {devices.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label}
-                  </option>
-                ))}
-              </select>
-              <div className="text-xs text-stone-400 mt-1">
-                Pick the mic you&apos;re actually talking into. System default isn&apos;t always right (especially with AirPods or headsets connected).
+            <div className="mb-4 bg-stone-50 border border-stone-200 rounded-lg p-3 space-y-3">
+              <div>
+                <label className="block text-xs uppercase text-stone-400 mb-1">Microphone</label>
+                <select
+                  value={selectedDeviceId}
+                  onChange={(e) => setSelectedDeviceId(e.target.value)}
+                  className="w-full text-sm bg-white border border-stone-200 rounded-md px-3 py-2"
+                >
+                  <option value="">System default</option>
+                  {devices.map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+                <div className="text-xs text-stone-400 mt-1">
+                  Pick the mic you&apos;re actually talking into. System default isn&apos;t always right.
+                </div>
+              </div>
+              <div>
+                <button
+                  onClick={handleMicTest}
+                  disabled={micTesting}
+                  className="bg-stone-900 hover:bg-stone-800 disabled:bg-stone-400 text-white text-sm font-medium px-3 py-2 rounded-md"
+                >
+                  {micTesting ? "Testing mic... talk now" : "Test mic (10 sec)"}
+                </button>
+                {micTesting && (
+                  <div className="mt-2">
+                    <div className="flex items-end gap-0.5 h-8">
+                      {Array.from({ length: 20 }).map((_, i) => {
+                        const threshold = (i + 1) / 20;
+                        const active = inputVolume >= threshold * 0.6;
+                        return (
+                          <div
+                            key={i}
+                            className={`w-1.5 rounded-sm transition-all duration-75 ${
+                              active ? "bg-emerald-500" : "bg-stone-200"
+                            }`}
+                            style={{ height: `${20 + i * 4}%` }}
+                          ></div>
+                        );
+                      })}
+                    </div>
+                    <div className="text-xs text-stone-500 mt-1">
+                      Talk into your mic. Bars should jump. Peak so far: {(micTestPeak * 100).toFixed(0)}%
+                    </div>
+                  </div>
+                )}
+                {!micTesting && micTestPeak > 0 && (
+                  <div className="text-xs mt-1">
+                    {micTestPeak > 0.1 ? (
+                      <span className="text-emerald-700">✓ Mic working. Peak: {(micTestPeak * 100).toFixed(0)}%</span>
+                    ) : (
+                      <span className="text-rose-700">
+                        ✗ Mic barely registered (peak {(micTestPeak * 100).toFixed(0)}%). Try a different device above, or check OS mic permissions.
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
