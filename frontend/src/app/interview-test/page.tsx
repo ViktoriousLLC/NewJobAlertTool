@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import { Conversation } from "@elevenlabs/client";
 
 type InterviewType = "behavioral" | "product_sense" | "analytics";
+type Mode = "listening" | "speaking";
 
 interface TranscriptTurn {
   role: "agent" | "user";
@@ -36,6 +37,8 @@ export default function InterviewTestPage() {
     "idle" | "starting" | "connected" | "ending" | "evaluating" | "done" | "error" | "denied"
   >("idle");
   const [selected, setSelected] = useState<InterviewType | null>(null);
+  const [mode, setMode] = useState<Mode>("listening");
+  const [inputVolume, setInputVolume] = useState(0);
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
   const [evaluations, setEvaluations] = useState<{
     claude: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
@@ -46,6 +49,35 @@ export default function InterviewTestPage() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
 
   const convoRef = useRef<Awaited<ReturnType<typeof Conversation.startSession>> | null>(null);
+  const volumePollRef = useRef<number | null>(null);
+
+  // Poll input volume at ~60fps when connected, so the mic level meter
+  // updates smoothly while the user is speaking.
+  useEffect(() => {
+    if (status !== "connected") {
+      if (volumePollRef.current !== null) {
+        cancelAnimationFrame(volumePollRef.current);
+        volumePollRef.current = null;
+      }
+      setInputVolume(0);
+      return;
+    }
+    const tick = () => {
+      if (convoRef.current) {
+        try {
+          const v = convoRef.current.getInputVolume();
+          setInputVolume(v);
+        } catch {
+          // SDK may throw if not fully connected; ignore.
+        }
+      }
+      volumePollRef.current = requestAnimationFrame(tick);
+    };
+    volumePollRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (volumePollRef.current !== null) cancelAnimationFrame(volumePollRef.current);
+    };
+  }, [status]);
 
   const handleStart = useCallback(async (type: InterviewType) => {
     setSelected(type);
@@ -76,36 +108,36 @@ export default function InterviewTestPage() {
         overrides: object;
       };
 
-      // Request mic permission early so the user gets a clear browser prompt
-      // before we try to connect.
+      // Get mic permission before startSession; some SDK versions assume the
+      // permission has already been granted and fail silently otherwise.
       await navigator.mediaDevices.getUserMedia({ audio: true });
 
       const convo = await Conversation.startSession({
         signedUrl: signed_url,
         overrides,
-        onMessage: (msg: { source: "ai" | "user"; message: string }) => {
+        onConnect: ({ conversationId }) => {
+          console.log("[interview] connected", conversationId);
+          setStatus("connected");
+          setStartedAt(Date.now());
+        },
+        onMessage: ({ source, message }) => {
+          console.log("[interview] onMessage", source, message);
           setTranscript((prev) => [
             ...prev,
-            {
-              role: msg.source === "ai" ? "agent" : "user",
-              text: msg.message,
-              ts: Date.now(),
-            },
+            { role: source === "ai" ? "agent" : "user", text: message, ts: Date.now() },
           ]);
         },
-        onError: (err: unknown) => {
-          console.error("ElevenLabs error:", err);
-          setErrorMsg(err instanceof Error ? err.message : String(err));
+        onModeChange: ({ mode }) => {
+          console.log("[interview] mode", mode);
+          setMode(mode);
+        },
+        onError: (message, context) => {
+          console.error("[interview] onError", message, context);
+          setErrorMsg(message);
           setStatus("error");
         },
-        onStatusChange: (s: { status: string }) => {
-          if (s.status === "connected") {
-            setStatus("connected");
-            setStartedAt(Date.now());
-          }
-        },
-        onDisconnect: () => {
-          // Disconnect handled in handleEnd; ignore stray callbacks
+        onDisconnect: (details) => {
+          console.log("[interview] disconnected", details);
         },
       });
 
@@ -126,6 +158,7 @@ export default function InterviewTestPage() {
       convoRef.current = null;
 
       if (transcript.length === 0) {
+        console.warn("[interview] ended with empty transcript");
         setStatus("done");
         return;
       }
@@ -165,6 +198,8 @@ export default function InterviewTestPage() {
     setEvaluations({ claude: null, gemini: null, openai: null });
     setErrorMsg(null);
     setStartedAt(null);
+    setMode("listening");
+    setInputVolume(0);
   }, []);
 
   if (status === "denied") {
@@ -179,12 +214,19 @@ export default function InterviewTestPage() {
     );
   }
 
+  // Visual feedback: bars rendered from inputVolume (0-1). 12 bars across.
+  const meterBars = Array.from({ length: 12 }, (_, i) => {
+    const threshold = (i + 1) / 12;
+    const active = inputVolume >= threshold * 0.6; // amplify low signals
+    return active;
+  });
+
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
       <header className="mb-8">
         <h1 className="text-2xl font-bold text-[#1A1A2E] mb-1">Interview Test</h1>
         <p className="text-stone-500 text-sm">
-          Admin-only test page for the ElevenLabs + Claude mock interview pipeline. Pick a type, talk to the AI, get an evaluation in Vik&apos;s voice. ElevenLabs minutes are real money; close the session when done.
+          Admin-only test page for the ElevenLabs + Claude/Gemini/GPT mock interview pipeline. Pick a type, talk to the AI, get evaluations from 3 models side-by-side. ElevenLabs minutes are real money; end the session when done.
         </p>
       </header>
 
@@ -206,14 +248,52 @@ export default function InterviewTestPage() {
       {(status === "starting" || status === "connected" || status === "ending" || status === "evaluating") && (
         <div className="space-y-4">
           <div className="flex items-center justify-between bg-white border border-stone-200 rounded-lg p-4">
-            <div>
+            <div className="flex-1">
               <div className="text-xs uppercase text-stone-400 mb-1">Now running</div>
               <div className="font-semibold">{selected && TYPE_META[selected].label}</div>
-              <div className="text-xs text-stone-500 mt-1">
-                {status === "starting" && "Connecting to ElevenLabs..."}
-                {status === "connected" && "Connected. Talk into your mic."}
-                {status === "ending" && "Ending session..."}
-                {status === "evaluating" && "Asking Claude for an evaluation..."}
+              <div className="flex items-center gap-3 mt-2">
+                {status === "starting" && (
+                  <span className="inline-flex items-center gap-1.5 text-xs text-stone-500">
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                    Connecting to ElevenLabs...
+                  </span>
+                )}
+                {status === "connected" && (
+                  <>
+                    <span
+                      className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded ${
+                        mode === "speaking"
+                          ? "bg-sky-100 text-sky-800"
+                          : "bg-emerald-100 text-emerald-800"
+                      }`}
+                    >
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          mode === "speaking" ? "bg-sky-500" : "bg-emerald-500 animate-pulse"
+                        }`}
+                      ></span>
+                      {mode === "speaking" ? "AI speaking" : "Listening to you"}
+                    </span>
+                    <div className="flex items-end gap-0.5 h-5">
+                      {meterBars.map((active, i) => (
+                        <div
+                          key={i}
+                          className={`w-1 rounded-sm transition-all duration-75 ${
+                            active ? "bg-emerald-500" : "bg-stone-200"
+                          }`}
+                          style={{ height: `${30 + i * 6}%` }}
+                        ></div>
+                      ))}
+                    </div>
+                  </>
+                )}
+                {status === "ending" && <span className="text-xs text-stone-500">Ending session...</span>}
+                {status === "evaluating" && (
+                  <span className="inline-flex items-center gap-1.5 text-xs text-stone-500">
+                    <span className="w-2 h-2 rounded-full bg-violet-400 animate-pulse"></span>
+                    Running Claude + Gemini + GPT evaluations...
+                  </span>
+                )}
               </div>
             </div>
             {status === "connected" && (
@@ -226,10 +306,15 @@ export default function InterviewTestPage() {
             )}
           </div>
 
-          {transcript.length > 0 && (
-            <div className="bg-stone-50 border border-stone-200 rounded-lg p-4 max-h-96 overflow-y-auto">
-              <div className="text-xs uppercase text-stone-400 mb-2">Live transcript</div>
-              {transcript.map((t, i) => (
+          {/* Always-visible transcript panel, even when empty, so user knows we're listening */}
+          <div className="bg-stone-50 border border-stone-200 rounded-lg p-4 max-h-96 overflow-y-auto">
+            <div className="text-xs uppercase text-stone-400 mb-2">Live transcript</div>
+            {transcript.length === 0 ? (
+              <div className="text-sm text-stone-400 italic">
+                Transcript will appear as you and the AI talk...
+              </div>
+            ) : (
+              transcript.map((t, i) => (
                 <div key={i} className="mb-2 text-sm">
                   <span
                     className={`font-semibold ${
@@ -240,9 +325,9 @@ export default function InterviewTestPage() {
                   </span>{" "}
                   {t.text}
                 </div>
-              ))}
-            </div>
-          )}
+              ))
+            )}
+          </div>
         </div>
       )}
 
