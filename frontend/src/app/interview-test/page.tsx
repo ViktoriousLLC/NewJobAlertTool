@@ -32,6 +32,11 @@ const TYPE_META: Record<InterviewType, { label: string; blurb: string; tint: str
   },
 };
 
+interface AudioDevice {
+  deviceId: string;
+  label: string;
+}
+
 export default function InterviewTestPage() {
   const [status, setStatus] = useState<
     "idle" | "starting" | "connected" | "ending" | "evaluating" | "done" | "error" | "denied"
@@ -39,6 +44,8 @@ export default function InterviewTestPage() {
   const [selected, setSelected] = useState<InterviewType | null>(null);
   const [mode, setMode] = useState<Mode>("listening");
   const [inputVolume, setInputVolume] = useState(0);
+  const [devices, setDevices] = useState<AudioDevice[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
   const [evaluations, setEvaluations] = useState<{
     claude: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
@@ -50,6 +57,31 @@ export default function InterviewTestPage() {
 
   const convoRef = useRef<Awaited<ReturnType<typeof Conversation.startSession>> | null>(null);
   const volumePollRef = useRef<number | null>(null);
+
+  // Enumerate audio input devices on mount. Note: device labels are only
+  // populated AFTER the user grants mic permission once. We trigger a no-op
+  // getUserMedia to unlock the labels, then enumerate.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        const all = await navigator.mediaDevices.enumerateDevices();
+        if (cancelled) return;
+        const audioInputs: AudioDevice[] = all
+          .filter((d) => d.kind === "audioinput")
+          .map((d) => ({ deviceId: d.deviceId, label: d.label || "Unnamed device" }));
+        console.log("[interview] audio input devices:", audioInputs);
+        setDevices(audioInputs);
+      } catch (err) {
+        console.warn("[interview] device enumeration failed:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Poll input volume at ~60fps when connected, so the mic level meter
   // updates smoothly while the user is speaking.
@@ -110,11 +142,22 @@ export default function InterviewTestPage() {
 
       // Get mic permission before startSession; some SDK versions assume the
       // permission has already been granted and fail silently otherwise.
-      await navigator.mediaDevices.getUserMedia({ audio: true });
+      const constraints: MediaStreamConstraints = selectedDeviceId
+        ? { audio: { deviceId: { exact: selectedDeviceId } } }
+        : { audio: true };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const tracks = stream.getAudioTracks();
+      console.log(
+        "[interview] mic track:",
+        tracks.map((t) => ({ label: t.label, deviceId: t.getSettings().deviceId, muted: t.muted, enabled: t.enabled }))
+      );
+      // Stop our exploratory stream; SDK will open its own with the deviceId.
+      tracks.forEach((t) => t.stop());
 
       const convo = await Conversation.startSession({
         signedUrl: signed_url,
         overrides,
+        ...(selectedDeviceId ? { inputDeviceId: selectedDeviceId } : {}),
         onConnect: ({ conversationId }) => {
           console.log("[interview] connected", conversationId);
           setStatus("connected");
@@ -231,18 +274,40 @@ export default function InterviewTestPage() {
       </header>
 
       {status === "idle" && (
-        <div className="grid sm:grid-cols-3 gap-3">
-          {(Object.keys(TYPE_META) as InterviewType[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => handleStart(t)}
-              className={`text-left border rounded-lg p-4 transition ${TYPE_META[t].tint}`}
-            >
-              <div className="font-semibold mb-1">{TYPE_META[t].label}</div>
-              <div className="text-xs opacity-80">{TYPE_META[t].blurb}</div>
-            </button>
-          ))}
-        </div>
+        <>
+          {devices.length > 0 && (
+            <div className="mb-4 bg-stone-50 border border-stone-200 rounded-lg p-3">
+              <label className="block text-xs uppercase text-stone-400 mb-1">Microphone</label>
+              <select
+                value={selectedDeviceId}
+                onChange={(e) => setSelectedDeviceId(e.target.value)}
+                className="w-full text-sm bg-white border border-stone-200 rounded-md px-3 py-2"
+              >
+                <option value="">System default</option>
+                {devices.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+              <div className="text-xs text-stone-400 mt-1">
+                Pick the mic you&apos;re actually talking into. System default isn&apos;t always right (especially with AirPods or headsets connected).
+              </div>
+            </div>
+          )}
+          <div className="grid sm:grid-cols-3 gap-3">
+            {(Object.keys(TYPE_META) as InterviewType[]).map((t) => (
+              <button
+                key={t}
+                onClick={() => handleStart(t)}
+                className={`text-left border rounded-lg p-4 transition ${TYPE_META[t].tint}`}
+              >
+                <div className="font-semibold mb-1">{TYPE_META[t].label}</div>
+                <div className="text-xs opacity-80">{TYPE_META[t].blurb}</div>
+              </button>
+            ))}
+          </div>
+        </>
       )}
 
       {(status === "starting" || status === "connected" || status === "ending" || status === "evaluating") && (
