@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import * as Sentry from "@sentry/node";
 import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import { ADMIN_EMAIL } from "../lib/constants";
 import { INTERVIEW_PROMPTS, type InterviewType } from "../lib/interviewPrompts";
 import { VIK_VOICE_EVAL_SYSTEM_PROMPT } from "../lib/vikVoiceEvalPrompt";
@@ -21,6 +22,7 @@ router.use(requireAdmin);
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 function isValidInterviewType(t: string): t is InterviewType {
   return t === "behavioral" || t === "product_sense" || t === "analytics";
@@ -92,15 +94,42 @@ router.post("/token", async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/interviews/evaluate — runs Claude over the captured transcript
-// to produce a Vik-voice evaluation.
+async function evaluateWithClaude(userMsg: string): Promise<string> {
+  if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY missing");
+  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  const completion = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 1500,
+    system: VIK_VOICE_EVAL_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: userMsg }],
+  });
+  const textBlock = completion.content.find((b) => b.type === "text");
+  return textBlock && textBlock.type === "text" ? textBlock.text : "";
+}
+
+async function evaluateWithGemini(userMsg: string): Promise<string> {
+  if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY missing");
+  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-pro",
+    contents: [{ role: "user", parts: [{ text: userMsg }] }],
+    config: {
+      systemInstruction: VIK_VOICE_EVAL_SYSTEM_PROMPT,
+      maxOutputTokens: 1500,
+    },
+  });
+  return response.text || "";
+}
+
+// POST /api/interviews/evaluate — runs BOTH Claude and Gemini in parallel
+// over the same transcript for side-by-side A/B comparison.
 // Body: { interview_type, transcript: [{role, text}], duration_sec }
 router.post("/evaluate", async (req: Request, res: Response) => {
   try {
-    if (!ANTHROPIC_API_KEY) {
+    if (!ANTHROPIC_API_KEY && !GEMINI_API_KEY) {
       res.status(503).json({
         error:
-          "Anthropic not configured. Set ANTHROPIC_API_KEY in Railway env (https://console.anthropic.com).",
+          "No LLM configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY in Railway env.",
       });
       return;
     }
@@ -122,7 +151,6 @@ router.post("/evaluate", async (req: Request, res: Response) => {
 
     const prompt = INTERVIEW_PROMPTS[interview_type];
 
-    // Render transcript as plain text for Claude.
     const rendered = transcript
       .map((t) => `${t.role === "agent" ? "Interviewer" : "Candidate"}: ${t.text}`)
       .join("\n\n");
@@ -137,23 +165,31 @@ ${rendered}
 
 Write the evaluation now.`;
 
-    const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
-    const completion = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1500,
-      system: VIK_VOICE_EVAL_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: userMsg }],
-    });
+    // Run both models in parallel. If one key is missing, skip that model
+    // gracefully; we still surface whichever worked.
+    const [claudeResult, geminiResult] = await Promise.allSettled([
+      ANTHROPIC_API_KEY ? evaluateWithClaude(userMsg) : Promise.reject(new Error("no key")),
+      GEMINI_API_KEY ? evaluateWithGemini(userMsg) : Promise.reject(new Error("no key")),
+    ]);
 
-    const textBlock = completion.content.find((b) => b.type === "text");
-    const evaluation = textBlock && textBlock.type === "text" ? textBlock.text : "";
+    const claude =
+      claudeResult.status === "fulfilled"
+        ? { ok: true as const, text: claudeResult.value, model: "claude-sonnet-4-6" }
+        : { ok: false as const, error: String((claudeResult.reason as Error)?.message || claudeResult.reason) };
 
-    if (!evaluation) {
-      res.status(502).json({ error: "Empty response from Claude" });
+    const gemini =
+      geminiResult.status === "fulfilled"
+        ? { ok: true as const, text: geminiResult.value, model: "gemini-2.5-pro" }
+        : { ok: false as const, error: String((geminiResult.reason as Error)?.message || geminiResult.reason) };
+
+    // If both failed, log + 502. If at least one worked, 200 with both panels.
+    if (!claude.ok && !gemini.ok) {
+      Sentry.captureMessage(`Both evaluators failed. Claude: ${claude.error}; Gemini: ${gemini.error}`);
+      res.status(502).json({ error: "Both LLMs failed", claude, gemini });
       return;
     }
 
-    res.json({ evaluation, model: completion.model });
+    res.json({ claude, gemini });
   } catch (err) {
     Sentry.captureException(err);
     console.error("POST /api/interviews/evaluate error:", err);

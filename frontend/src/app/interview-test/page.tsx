@@ -37,7 +37,10 @@ export default function InterviewTestPage() {
   >("idle");
   const [selected, setSelected] = useState<InterviewType | null>(null);
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
-  const [evaluation, setEvaluation] = useState<string | null>(null);
+  const [evaluations, setEvaluations] = useState<{
+    claude: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
+    gemini: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
+  }>({ claude: null, gemini: null });
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
 
@@ -46,7 +49,7 @@ export default function InterviewTestPage() {
   const handleStart = useCallback(async (type: InterviewType) => {
     setSelected(type);
     setTranscript([]);
-    setEvaluation(null);
+    setEvaluations({ claude: null, gemini: null });
     setErrorMsg(null);
     setStatus("starting");
 
@@ -144,8 +147,8 @@ export default function InterviewTestPage() {
         throw new Error(body.error || `Evaluation failed (${evalResp.status})`);
       }
 
-      const { evaluation: text } = (await evalResp.json()) as { evaluation: string };
-      setEvaluation(text);
+      const data = (await evalResp.json()) as typeof evaluations;
+      setEvaluations(data);
       setStatus("done");
     } catch (err) {
       console.error("Interview end failed:", err);
@@ -158,7 +161,7 @@ export default function InterviewTestPage() {
     setStatus("idle");
     setSelected(null);
     setTranscript([]);
-    setEvaluation(null);
+    setEvaluations({ claude: null, gemini: null });
     setErrorMsg(null);
     setStartedAt(null);
   }, []);
@@ -244,10 +247,37 @@ export default function InterviewTestPage() {
 
       {status === "done" && (
         <div className="space-y-4">
-          {evaluation ? (
-            <div className="bg-white border border-stone-200 rounded-lg p-5">
-              <div className="text-xs uppercase text-stone-400 mb-3">Evaluation (in Vik&apos;s voice)</div>
-              <div className="prose prose-sm max-w-none whitespace-pre-wrap text-stone-800">{evaluation}</div>
+          {(evaluations.claude || evaluations.gemini) ? (
+            <div>
+              <div className="text-xs uppercase text-stone-400 mb-3">Evaluations (A/B: Claude vs Gemini, in Vik&apos;s voice)</div>
+              <div className="grid lg:grid-cols-2 gap-4">
+                <div className="bg-white border border-orange-200 rounded-lg p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="text-xs font-semibold uppercase text-orange-700">Claude Sonnet 4.6</div>
+                    <div className="text-xs text-stone-400">~$0.02/eval</div>
+                  </div>
+                  {evaluations.claude && evaluations.claude.ok ? (
+                    <div className="prose prose-sm max-w-none whitespace-pre-wrap text-stone-800">{evaluations.claude.text}</div>
+                  ) : (
+                    <div className="text-sm text-rose-700">
+                      Failed: {evaluations.claude && !evaluations.claude.ok ? evaluations.claude.error : "no response"}
+                    </div>
+                  )}
+                </div>
+                <div className="bg-white border border-blue-200 rounded-lg p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="text-xs font-semibold uppercase text-blue-700">Gemini 2.5 Pro</div>
+                    <div className="text-xs text-stone-400">free tier</div>
+                  </div>
+                  {evaluations.gemini && evaluations.gemini.ok ? (
+                    <div className="prose prose-sm max-w-none whitespace-pre-wrap text-stone-800">{evaluations.gemini.text}</div>
+                  ) : (
+                    <div className="text-sm text-rose-700">
+                      Failed: {evaluations.gemini && !evaluations.gemini.ok ? evaluations.gemini.error : "no response"}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           ) : (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
