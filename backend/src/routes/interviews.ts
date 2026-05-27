@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import * as Sentry from "@sentry/node";
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import { ADMIN_EMAIL } from "../lib/constants";
 import { INTERVIEW_PROMPTS, type InterviewType } from "../lib/interviewPrompts";
 import { VIK_VOICE_EVAL_SYSTEM_PROMPT } from "../lib/vikVoiceEvalPrompt";
@@ -21,6 +22,8 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
 router.use(requireAdmin);
 
@@ -32,7 +35,9 @@ export function interviewsDiagnosticsHandler(_req: Request, res: Response): void
     elevenlabs_agent_id: !!ELEVENLABS_AGENT_ID,
     anthropic_api_key: !!ANTHROPIC_API_KEY,
     gemini_api_key: !!GEMINI_API_KEY,
-    ready: !!(ELEVENLABS_API_KEY && ELEVENLABS_AGENT_ID && (ANTHROPIC_API_KEY || GEMINI_API_KEY)),
+    openai_api_key: !!OPENAI_API_KEY,
+    openai_model: OPENAI_MODEL,
+    ready: !!(ELEVENLABS_API_KEY && ELEVENLABS_AGENT_ID && (ANTHROPIC_API_KEY || GEMINI_API_KEY || OPENAI_API_KEY)),
   });
 }
 
@@ -133,15 +138,29 @@ async function evaluateWithGemini(userMsg: string): Promise<string> {
   return response.text || "";
 }
 
+async function evaluateWithOpenAI(userMsg: string): Promise<string> {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+  const client = new OpenAI({ apiKey: OPENAI_API_KEY });
+  const response = await client.chat.completions.create({
+    model: OPENAI_MODEL,
+    max_tokens: 1500,
+    messages: [
+      { role: "system", content: VIK_VOICE_EVAL_SYSTEM_PROMPT },
+      { role: "user", content: userMsg },
+    ],
+  });
+  return response.choices[0]?.message?.content || "";
+}
+
 // POST /api/interviews/evaluate — runs BOTH Claude and Gemini in parallel
 // over the same transcript for side-by-side A/B comparison.
 // Body: { interview_type, transcript: [{role, text}], duration_sec }
 router.post("/evaluate", async (req: Request, res: Response) => {
   try {
-    if (!ANTHROPIC_API_KEY && !GEMINI_API_KEY) {
+    if (!ANTHROPIC_API_KEY && !GEMINI_API_KEY && !OPENAI_API_KEY) {
       res.status(503).json({
         error:
-          "No LLM configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY in Railway env.",
+          "No LLM configured. Set ANTHROPIC_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY in Railway env.",
       });
       return;
     }
@@ -177,11 +196,12 @@ ${rendered}
 
 Write the evaluation now.`;
 
-    // Run both models in parallel. If one key is missing, skip that model
-    // gracefully; we still surface whichever worked.
-    const [claudeResult, geminiResult] = await Promise.allSettled([
+    // Run all three models in parallel. If one key is missing, skip that
+    // model gracefully; we still surface whichever worked.
+    const [claudeResult, geminiResult, openaiResult] = await Promise.allSettled([
       ANTHROPIC_API_KEY ? evaluateWithClaude(userMsg) : Promise.reject(new Error("no key")),
       GEMINI_API_KEY ? evaluateWithGemini(userMsg) : Promise.reject(new Error("no key")),
+      OPENAI_API_KEY ? evaluateWithOpenAI(userMsg) : Promise.reject(new Error("no key")),
     ]);
 
     const claude =
@@ -194,14 +214,21 @@ Write the evaluation now.`;
         ? { ok: true as const, text: geminiResult.value, model: "gemini-2.5-pro" }
         : { ok: false as const, error: String((geminiResult.reason as Error)?.message || geminiResult.reason) };
 
-    // If both failed, log + 502. If at least one worked, 200 with both panels.
-    if (!claude.ok && !gemini.ok) {
-      Sentry.captureMessage(`Both evaluators failed. Claude: ${claude.error}; Gemini: ${gemini.error}`);
-      res.status(502).json({ error: "Both LLMs failed", claude, gemini });
+    const openai =
+      openaiResult.status === "fulfilled"
+        ? { ok: true as const, text: openaiResult.value, model: OPENAI_MODEL }
+        : { ok: false as const, error: String((openaiResult.reason as Error)?.message || openaiResult.reason) };
+
+    // If all failed, log + 502. Otherwise 200 with whichever panels worked.
+    if (!claude.ok && !gemini.ok && !openai.ok) {
+      Sentry.captureMessage(
+        `All evaluators failed. Claude: ${claude.error}; Gemini: ${gemini.error}; OpenAI: ${openai.error}`
+      );
+      res.status(502).json({ error: "All LLMs failed", claude, gemini, openai });
       return;
     }
 
-    res.json({ claude, gemini });
+    res.json({ claude, gemini, openai });
   } catch (err) {
     Sentry.captureException(err);
     console.error("POST /api/interviews/evaluate error:", err);

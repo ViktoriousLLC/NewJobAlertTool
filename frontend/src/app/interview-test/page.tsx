@@ -40,7 +40,8 @@ export default function InterviewTestPage() {
   const [evaluations, setEvaluations] = useState<{
     claude: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
     gemini: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
-  }>({ claude: null, gemini: null });
+    openai: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
+  }>({ claude: null, gemini: null, openai: null });
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
 
@@ -49,7 +50,7 @@ export default function InterviewTestPage() {
   const handleStart = useCallback(async (type: InterviewType) => {
     setSelected(type);
     setTranscript([]);
-    setEvaluations({ claude: null, gemini: null });
+    setEvaluations({ claude: null, gemini: null, openai: null });
     setErrorMsg(null);
     setStatus("starting");
 
@@ -161,7 +162,7 @@ export default function InterviewTestPage() {
     setStatus("idle");
     setSelected(null);
     setTranscript([]);
-    setEvaluations({ claude: null, gemini: null });
+    setEvaluations({ claude: null, gemini: null, openai: null });
     setErrorMsg(null);
     setStartedAt(null);
   }, []);
@@ -247,10 +248,10 @@ export default function InterviewTestPage() {
 
       {status === "done" && (
         <div className="space-y-4">
-          {(evaluations.claude || evaluations.gemini) ? (
+          {(evaluations.claude || evaluations.gemini || evaluations.openai) ? (
             <div>
-              <div className="text-xs uppercase text-stone-400 mb-3">Evaluations (A/B: Claude vs Gemini, in Vik&apos;s voice)</div>
-              <div className="grid lg:grid-cols-2 gap-4">
+              <div className="text-xs uppercase text-stone-400 mb-3">Evaluations (A/B/C: Claude vs Gemini vs GPT, in Vik&apos;s voice)</div>
+              <div className="grid xl:grid-cols-3 gap-4">
                 <div className="bg-white border border-orange-200 rounded-lg p-5">
                   <div className="flex items-center gap-2 mb-3">
                     <div className="text-xs font-semibold uppercase text-orange-700">Claude Sonnet 4.6</div>
@@ -274,6 +275,21 @@ export default function InterviewTestPage() {
                   ) : (
                     <div className="text-sm text-rose-700">
                       Failed: {evaluations.gemini && !evaluations.gemini.ok ? evaluations.gemini.error : "no response"}
+                    </div>
+                  )}
+                </div>
+                <div className="bg-white border border-emerald-200 rounded-lg p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="text-xs font-semibold uppercase text-emerald-700">
+                      {evaluations.openai && evaluations.openai.ok ? evaluations.openai.model : "OpenAI"}
+                    </div>
+                    <div className="text-xs text-stone-400">~$0.02/eval</div>
+                  </div>
+                  {evaluations.openai && evaluations.openai.ok ? (
+                    <div className="prose prose-sm max-w-none whitespace-pre-wrap text-stone-800">{evaluations.openai.text}</div>
+                  ) : (
+                    <div className="text-sm text-rose-700">
+                      Failed: {evaluations.openai && !evaluations.openai.ok ? evaluations.openai.error : "no response"}
                     </div>
                   )}
                 </div>
