@@ -17,12 +17,26 @@ function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-router.use(requireAdmin);
-
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+// GET /api/interviews/diagnostics — public env-var presence check.
+// Returns booleans only (never values). Lets the operator + Claude verify
+// Railway env vars are set on each deployment without admin auth.
+// Mounted BEFORE requireAdmin so it's accessible without credentials.
+router.get("/diagnostics", (_req: Request, res: Response) => {
+  res.json({
+    elevenlabs_api_key: !!ELEVENLABS_API_KEY,
+    elevenlabs_agent_id: !!ELEVENLABS_AGENT_ID,
+    anthropic_api_key: !!ANTHROPIC_API_KEY,
+    gemini_api_key: !!GEMINI_API_KEY,
+    ready: !!(ELEVENLABS_API_KEY && ELEVENLABS_AGENT_ID && (ANTHROPIC_API_KEY || GEMINI_API_KEY)),
+  });
+});
+
+router.use(requireAdmin);
 
 function isValidInterviewType(t: string): t is InterviewType {
   return t === "behavioral" || t === "product_sense" || t === "analytics";
