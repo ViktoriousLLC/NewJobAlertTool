@@ -95,12 +95,13 @@ router.post("/token", async (req: Request, res: Response) => {
     // overrides to ElevenLabs in the first "conversation_initiation_client_data"
     // WebSocket frame. (Per ElevenLabs Agents API: overrides go from the client,
     // not the URL minter, so the agent can be reused across interview types.)
+    // SDK expects camelCase `firstMessage`; snake_case is silently dropped.
     res.json({
       signed_url: data.signed_url,
       overrides: {
         agent: {
           prompt: { prompt: prompt.systemPrompt },
-          first_message: prompt.firstMessage,
+          firstMessage: prompt.firstMessage,
         },
       },
     });
