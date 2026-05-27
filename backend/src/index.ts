@@ -14,6 +14,7 @@ import catalogRouter from "./routes/catalog";
 import feedRouter from "./routes/feed";
 import preferencesRouter from "./routes/preferences";
 import adminRouter from "./routes/admin";
+import interviewsRouter, { interviewsDiagnosticsHandler } from "./routes/interviews";
 import { runDailyCheck } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
@@ -108,6 +109,10 @@ app.use("/api/catalog", requireAuth, catalogRouter);
 app.use("/api/feed", feedRouter);
 app.use("/api/preferences", requireAuth, preferencesRouter);
 app.use("/api/admin", requireAuth, adminRouter);
+// Mount /api/interviews/diagnostics BEFORE the auth chain so env-var
+// presence can be verified externally without admin auth.
+app.get("/api/interviews/diagnostics", interviewsDiagnosticsHandler);
+app.use("/api/interviews", requireAuth, interviewsRouter);
 
 // Help/feedback endpoint. Creates a Linear issue in the User Feedback team
 // (status=Inbox) and emails ADMIN_EMAIL. Linear is the source of truth for
