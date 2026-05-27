@@ -13,7 +13,10 @@ const supabaseWss = supabaseUrl.replace("https://", "wss://");
 
 const csp = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  // blob: required for ElevenLabs AudioWorklet modules (rawAudioProcessor,
+  // audioConcatProcessor) loaded as blob URLs by their client SDK.
+  "script-src 'self' 'unsafe-inline' blob:",
+  "worker-src 'self' blob:",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https://www.google.com https://icons.duckduckgo.com https://img.logo.dev",
   "font-src 'self'",
