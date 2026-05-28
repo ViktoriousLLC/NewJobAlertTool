@@ -216,9 +216,18 @@ async function evaluateWithGemini(userMsg: string): Promise<string> {
     contents: [{ role: "user", parts: [{ text: userMsg }] }],
     config: {
       systemInstruction: VIK_VOICE_EVAL_SYSTEM_PROMPT,
-      maxOutputTokens: 1500,
+      maxOutputTokens: 2500,
     },
   });
+  // Check whether Gemini stopped naturally or got cut off (safety filter,
+  // max tokens, recitation block). Without this we silently return truncated
+  // text and the user wonders why the eval ends mid-sentence.
+  const finishReason = response.candidates?.[0]?.finishReason;
+  if (finishReason && finishReason !== "STOP") {
+    throw new Error(
+      `Gemini stopped with reason: ${finishReason}. Output may be incomplete. Common: SAFETY (filter blocked), MAX_TOKENS (response too long), RECITATION (matched training data).`
+    );
+  }
   return response.text || "";
 }
 
