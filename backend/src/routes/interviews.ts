@@ -4,8 +4,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import { ADMIN_EMAIL } from "../lib/constants";
+import { supabase } from "../lib/supabase";
 import { INTERVIEW_PROMPTS, type InterviewType } from "../lib/interviewPrompts";
 import { VIK_VOICE_EVAL_SYSTEM_PROMPT } from "../lib/vikVoiceEvalPrompt";
+import { INTERVIEW_SUMMARY_SYSTEM_PROMPT } from "../lib/interviewSummaryPrompt";
 
 const router = Router();
 
@@ -21,8 +23,9 @@ function requireAdmin(req: Request, res: Response, next: NextFunction): void {
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-pro";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
@@ -68,6 +71,26 @@ router.post("/token", async (req: Request, res: Response) => {
 
     const prompt = INTERVIEW_PROMPTS[interview_type];
 
+    // Fetch this user's rolling profile summary (if any) and append to the
+    // system prompt so the agent can adapt to past sessions.
+    let userMemory = "";
+    if (req.userId) {
+      const { data: summaryRow, error: summaryErr } = await supabase
+        .from("interview_user_summary")
+        .select("summary, session_count")
+        .eq("user_id", req.userId)
+        .single();
+      if (summaryErr && summaryErr.code !== "PGRST116") {
+        // PGRST116 = no rows, which is fine (first-ever session).
+        Sentry.captureMessage(`Failed to fetch user summary: ${summaryErr.message}`);
+      }
+      if (summaryRow?.summary) {
+        userMemory = `\n\n<user_profile_from_past_sessions session_count="${summaryRow.session_count}">\n${summaryRow.summary}\n</user_profile_from_past_sessions>\n\nUse the profile above to tailor your questions, follow-ups, and tone. Probe weaknesses; build on strengths; don't ask questions whose answers are already in the profile.`;
+      }
+    }
+
+    const augmentedSystemPrompt = prompt.systemPrompt + userMemory;
+
     // Mint a signed URL from ElevenLabs. Their endpoint:
     // GET /v1/convai/conversation/get-signed-url?agent_id=...
     // Auth via xi-api-key header.
@@ -101,7 +124,7 @@ router.post("/token", async (req: Request, res: Response) => {
       signed_url: data.signed_url,
       overrides: {
         agent: {
-          prompt: { prompt: prompt.systemPrompt },
+          prompt: { prompt: augmentedSystemPrompt },
           firstMessage: prompt.firstMessage,
         },
       },
@@ -117,7 +140,7 @@ async function evaluateWithClaude(userMsg: string): Promise<string> {
   if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY missing");
   const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
   const completion = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model: ANTHROPIC_MODEL,
     max_tokens: 1500,
     system: VIK_VOICE_EVAL_SYSTEM_PROMPT,
     messages: [{ role: "user", content: userMsg }],
@@ -208,7 +231,7 @@ Write the evaluation now.`;
 
     const claude =
       claudeResult.status === "fulfilled"
-        ? { ok: true as const, text: claudeResult.value, model: "claude-sonnet-4-6" }
+        ? { ok: true as const, text: claudeResult.value, model: ANTHROPIC_MODEL }
         : { ok: false as const, error: String((claudeResult.reason as Error)?.message || claudeResult.reason) };
 
     const gemini =
@@ -228,6 +251,89 @@ Write the evaluation now.`;
       );
       res.status(502).json({ error: "All LLMs failed", claude, gemini, openai });
       return;
+    }
+
+    // Persist raw session + regenerate user's rolling profile summary.
+    // Errors here are logged but do NOT fail the response — Vik still sees
+    // the evaluations even if persistence breaks.
+    if (req.userId) {
+      try {
+        const { data: sessionRow, error: insertErr } = await supabase
+          .from("interview_sessions")
+          .insert({
+            user_id: req.userId,
+            interview_type,
+            transcript,
+            duration_sec: duration_sec || null,
+            evaluations: { claude, gemini, openai },
+          })
+          .select("id")
+          .single();
+
+        if (insertErr) {
+          Sentry.captureMessage(`Failed to insert interview_session: ${insertErr.message}`);
+        } else if (sessionRow) {
+          // Regenerate the user's rolling profile summary.
+          const sessionForSummary = `
+INTERVIEW TYPE: ${interview_type}
+DURATION: ${Math.round((duration_sec || 0) / 60)} minutes
+
+TRANSCRIPT:
+${rendered}
+
+EVALUATIONS:
+${claude.ok ? "[Claude] " + claude.text + "\n\n" : ""}${gemini.ok ? "[Gemini] " + gemini.text + "\n\n" : ""}${openai.ok ? "[OpenAI] " + openai.text + "\n\n" : ""}
+`.trim();
+
+          // Read existing summary
+          const { data: existingSummary } = await supabase
+            .from("interview_user_summary")
+            .select("summary, session_count")
+            .eq("user_id", req.userId)
+            .single();
+
+          const existingText = existingSummary?.summary || "";
+          const newCount = (existingSummary?.session_count || 0) + 1;
+
+          // Regenerate via Claude
+          try {
+            if (ANTHROPIC_API_KEY) {
+              const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+              const summaryCompletion = await anthropic.messages.create({
+                model: ANTHROPIC_MODEL,
+                max_tokens: 800,
+                system: INTERVIEW_SUMMARY_SYSTEM_PROMPT,
+                messages: [
+                  {
+                    role: "user",
+                    content: `EXISTING PROFILE SUMMARY (may be empty if this is the first session):\n${existingText || "(none yet)"}\n\n---\n\nNEW SESSION:\n${sessionForSummary}\n\nReturn the updated profile summary now.`,
+                  },
+                ],
+              });
+              const block = summaryCompletion.content.find((b) => b.type === "text");
+              const newSummary = block && block.type === "text" ? block.text : existingText;
+
+              await supabase.from("interview_user_summary").upsert(
+                {
+                  user_id: req.userId,
+                  summary: newSummary,
+                  session_count: newCount,
+                  last_session_id: sessionRow.id,
+                  last_session_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "user_id" }
+              );
+            }
+          } catch (summaryErr) {
+            Sentry.captureException(summaryErr);
+            console.error("Summary regeneration failed:", summaryErr);
+          }
+        }
+      } catch (persistErr) {
+        Sentry.captureException(persistErr);
+        console.error("Session persistence failed:", persistErr);
+      }
     }
 
     res.json({ claude, gemini, openai });
