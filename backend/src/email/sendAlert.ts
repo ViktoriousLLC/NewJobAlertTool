@@ -452,7 +452,6 @@ export interface AdminDigestInput {
   watchList: { name: string; consecutiveFailures: number }[];
   autoDisabled: { name: string; reason: string }[];
   subscribedZeroDrops: { name: string; prevCount: number; subscribers: number }[];
-  unverifiedZeros: { name: string; subscribers: number; lastCheckedAt: string | null }[];
   autoRemediated: { name: string; from: string; to: string }[];
   stealthRecovered: { name: string; jobCount: number }[];
   // DEV-19: proactive auto-fix layer. Rule-based DB fixes applied during this
@@ -504,7 +503,6 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
     input.watchList.length > 0 ||
     input.autoDisabled.length > 0 ||
     input.subscribedZeroDrops.length > 0 ||
-    input.unverifiedZeros.length > 0 ||
     input.emailBatchResult.failed > 0;
 
   // Daily silence: no email when nothing needs attention.
@@ -523,7 +521,6 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
   if (input.autoDisabled.length > 0) subjectParts.push(`${input.autoDisabled.length} auto-disabled`);
   if (input.watchList.length > 0) subjectParts.push(`${input.watchList.length} on watch`);
   if (input.subscribedZeroDrops.length > 0) subjectParts.push(`${input.subscribedZeroDrops.length} dropped to 0`);
-  if (input.unverifiedZeros.length > 0) subjectParts.push(`${input.unverifiedZeros.length} unverified zeros`);
   if (input.emailBatchResult.failed > 0) subjectParts.push(`${input.emailBatchResult.failed} email send failures`);
 
   let subject: string;
@@ -555,11 +552,6 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
     }
     if (input.watchList.length > 0) {
       rollupParts.push(`<span style="color:#ea580c;font-weight:bold;">🟡 ${input.watchList.length} on watch</span>`);
-    }
-    if (input.unverifiedZeros.length > 0) {
-      const withSubs = input.unverifiedZeros.filter((z) => z.subscribers > 0).length;
-      const subsNote = withSubs > 0 ? ` (${withSubs} with subscribers)` : "";
-      rollupParts.push(`<span style="color:#a16207;">⚪ ${input.unverifiedZeros.length} unverified zeros${subsNote}</span>`);
     }
     if (input.emailBatchResult.failed > 0) {
       rollupParts.push(`<span style="color:#dc2626;font-weight:bold;">📨 ${input.emailBatchResult.failed} email send failures</span>`);
@@ -673,33 +665,10 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
     html += `</table>`;
   }
 
-  if (input.unverifiedZeros.length > 0) {
-    const UNVERIFIED_ZERO_DISPLAY_CAP = 25;
-    const shown = input.unverifiedZeros.slice(0, UNVERIFIED_ZERO_DISPLAY_CAP);
-    const overflow = input.unverifiedZeros.length - shown.length;
-
-    html += `<h3 style="margin:16px 0 6px 0;color:#dc2626;">Unverified zeros: confirm legitimate (${input.unverifiedZeros.length})</h3>`;
-    html += `<p style="font-size:13px;color:#6b7280;margin:4px 0 8px 0;">These companies returned 0 PM jobs. Either the scraper is silently broken, or the company genuinely has no open PM roles. Mark each as <code>is_verified_zero = true</code> in the <code>companies</code> table once you've confirmed it. Sorted by subscriber count.</p>`;
-    html += `<table style="border-collapse:collapse;width:100%;font-size:13px;">
-      <tr style="background:#fef2f2;">
-        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Company</th>
-        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Subscribers</th>
-        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #fecaca;">Last checked</th>
-      </tr>`;
-    for (const z of shown) {
-      const checked = z.lastCheckedAt ? new Date(z.lastCheckedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "n/a";
-      const subColor = z.subscribers > 0 ? "#dc2626" : "#78716c";
-      html += `<tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;">${escapeHtml(z.name)}${trendAnnotation(input.perCompanyTrends, z.name)}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:${subColor};font-weight:bold;">${z.subscribers}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e7e5e4;color:#6b7280;font-size:12px;">${checked}</td>
-      </tr>`;
-    }
-    html += `</table>`;
-    if (overflow > 0) {
-      html += `<p style="font-size:12px;color:#6b7280;margin:6px 0 0 0;font-style:italic;">…and ${overflow} more. Query <code>companies WHERE total_product_jobs = 0 AND is_verified_zero = FALSE</code> for the full list.</p>`;
-    }
-  }
+  // (Unverified-zeros section retired 2026-05-28. The cron now auto-confirms
+  // zeros after 7 days from a verified scraper, and auto-disables silent zeros
+  // after 14 days from a never-verified scraper. Both surface in the Monday
+  // self-heal log via scraper_events.)
 
   // DEV-19: rule-based auto-fixes applied during this run. Show them on every
   // day they fire (not just Monday) so the admin sees the system fixed
