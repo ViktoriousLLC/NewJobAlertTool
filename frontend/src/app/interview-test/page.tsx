@@ -492,10 +492,17 @@ export default function InterviewTestPage() {
                 )}
                 {status === "ending" && <span className="text-xs text-stone-500">Ending session...</span>}
                 {status === "evaluating" && (
-                  <span className="inline-flex items-center gap-1.5 text-xs text-stone-500">
-                    <span className="w-2 h-2 rounded-full bg-violet-400 animate-pulse"></span>
-                    Running Claude + Gemini + GPT evaluations...
-                  </span>
+                  <div className="inline-flex flex-col gap-1">
+                    <span className="inline-flex items-center gap-1.5 text-sm font-medium text-violet-700">
+                      <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
+                      </svg>
+                      Generating your evaluations
+                    </span>
+                    <span className="text-xs text-stone-500 ml-6">
+                      Running Claude, Gemini, and GPT in parallel. Usually 5-15 seconds.
+                    </span>
+                  </div>
                 )}
               </div>
             </div>
@@ -539,7 +546,7 @@ export default function InterviewTestPage() {
           {(evaluations.claude || evaluations.gemini || evaluations.openai) ? (
             <div>
               <div className="text-xs uppercase text-stone-400 mb-3">Evaluations (A/B/C: Claude vs Gemini vs GPT, in Vik&apos;s voice)</div>
-              <div className="grid xl:grid-cols-3 gap-4">
+              <div className="grid md:grid-cols-3 gap-4">
                 <div className="bg-white border border-orange-200 rounded-lg p-5">
                   <div className="flex items-center gap-2 mb-3">
                     <div className="text-xs font-semibold uppercase text-orange-700">Claude Sonnet 4.6</div>
@@ -555,7 +562,9 @@ export default function InterviewTestPage() {
                 </div>
                 <div className="bg-white border border-blue-200 rounded-lg p-5">
                   <div className="flex items-center gap-2 mb-3">
-                    <div className="text-xs font-semibold uppercase text-blue-700">Gemini 2.5 Pro</div>
+                    <div className="text-xs font-semibold uppercase text-blue-700">
+                      {evaluations.gemini && evaluations.gemini.ok ? evaluations.gemini.model : "Gemini"}
+                    </div>
                     <div className="text-xs text-stone-400">free tier</div>
                   </div>
                   {evaluations.gemini && evaluations.gemini.ok ? (
