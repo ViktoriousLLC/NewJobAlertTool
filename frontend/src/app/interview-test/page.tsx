@@ -549,7 +549,9 @@ export default function InterviewTestPage() {
               <div className="grid md:grid-cols-3 gap-4">
                 <div className="bg-white border border-orange-200 rounded-lg p-5">
                   <div className="flex items-center gap-2 mb-3">
-                    <div className="text-xs font-semibold uppercase text-orange-700">Claude Sonnet 4.6</div>
+                    <div className="text-xs font-semibold uppercase text-orange-700">
+                      {evaluations.claude && evaluations.claude.ok ? evaluations.claude.model : "Claude"}
+                    </div>
                     <div className="text-xs text-stone-400">~$0.02/eval</div>
                   </div>
                   {evaluations.claude && evaluations.claude.ok ? (
