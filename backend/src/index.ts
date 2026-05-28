@@ -38,6 +38,11 @@ Sentry.init({
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Railway sits behind a reverse proxy that sets X-Forwarded-For. Trust 1 hop
+// so express-rate-limit can identify clients accurately. Without this:
+//   ValidationError: ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on startup.
+app.set("trust proxy", 1);
+
 // Middleware
 const allowedOrigins = [
   process.env.FRONTEND_URL || "http://localhost:3000",
