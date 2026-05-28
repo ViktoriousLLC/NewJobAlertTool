@@ -31,6 +31,61 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
 router.use(requireAdmin);
 
+// POST /api/interviews/test-evaluators — fires a tiny "respond with OK" prompt
+// to each LLM. Returns success/fail per model so Vik can verify keys + quota
+// without burning a full interview session.
+router.post("/test-evaluators", async (_req: Request, res: Response) => {
+  const testPrompt = "Respond with exactly one word: OK";
+
+  const [claudeResult, geminiResult, openaiResult] = await Promise.allSettled([
+    ANTHROPIC_API_KEY
+      ? (async () => {
+          const a = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+          const r = await a.messages.create({
+            model: ANTHROPIC_MODEL,
+            max_tokens: 10,
+            messages: [{ role: "user", content: testPrompt }],
+          });
+          const b = r.content.find((x) => x.type === "text");
+          return b && b.type === "text" ? b.text.trim() : "";
+        })()
+      : Promise.reject(new Error("no key")),
+    GEMINI_API_KEY
+      ? (async () => {
+          const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+          const r = await ai.models.generateContent({
+            model: GEMINI_MODEL,
+            contents: [{ role: "user", parts: [{ text: testPrompt }] }],
+            config: { maxOutputTokens: 10 },
+          });
+          return (r.text || "").trim();
+        })()
+      : Promise.reject(new Error("no key")),
+    OPENAI_API_KEY
+      ? (async () => {
+          const c = new OpenAI({ apiKey: OPENAI_API_KEY });
+          const r = await c.chat.completions.create({
+            model: OPENAI_MODEL,
+            max_tokens: 10,
+            messages: [{ role: "user", content: testPrompt }],
+          });
+          return (r.choices[0]?.message?.content || "").trim();
+        })()
+      : Promise.reject(new Error("no key")),
+  ]);
+
+  const fmt = (r: PromiseSettledResult<string>, model: string) =>
+    r.status === "fulfilled"
+      ? { ok: true as const, model, response: r.value }
+      : { ok: false as const, model, error: String((r.reason as Error)?.message || r.reason) };
+
+  res.json({
+    claude: fmt(claudeResult, ANTHROPIC_MODEL),
+    gemini: fmt(geminiResult, GEMINI_MODEL),
+    openai: fmt(openaiResult, OPENAI_MODEL),
+  });
+});
+
 // Diagnostics handler is exported separately so it can be mounted in index.ts
 // BEFORE the auth chain. Returns booleans only; never values.
 export function interviewsDiagnosticsHandler(_req: Request, res: Response): void {
@@ -336,7 +391,17 @@ ${claude.ok ? "[Claude] " + claude.text + "\n\n" : ""}${gemini.ok ? "[Gemini] " 
       }
     }
 
-    res.json({ claude, gemini, openai });
+    // Include the exact LLM input payload so the UI can show "what the LLMs saw"
+    // for transparency / debugging.
+    res.json({
+      claude,
+      gemini,
+      openai,
+      llm_input: {
+        system: VIK_VOICE_EVAL_SYSTEM_PROMPT,
+        user: userMsg,
+      },
+    });
   } catch (err) {
     Sentry.captureException(err);
     console.error("POST /api/interviews/evaluate error:", err);
