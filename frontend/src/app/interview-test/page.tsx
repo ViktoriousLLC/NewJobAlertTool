@@ -60,6 +60,30 @@ export default function InterviewTestPage() {
   const micTestRef = useRef<{ stream: MediaStream; ctx: AudioContext; analyser: AnalyserNode } | null>(null);
   const [micTesting, setMicTesting] = useState(false);
   const [micTestPeak, setMicTestPeak] = useState(0);
+  const [cspViolations, setCspViolations] = useState<
+    Array<{ blockedURI: string; violatedDirective: string; ts: number }>
+  >([]);
+
+  // Capture any CSP violation that fires during the session and surface it
+  // visibly on the page. The SDK rethrows CSP errors with a generic message,
+  // so we need the browser's native event to see what URL was actually blocked.
+  useEffect(() => {
+    const handler = (e: SecurityPolicyViolationEvent) => {
+      console.error("[csp violation]", {
+        blockedURI: e.blockedURI,
+        violatedDirective: e.violatedDirective,
+        effectiveDirective: e.effectiveDirective,
+        sourceFile: e.sourceFile,
+        lineNumber: e.lineNumber,
+      });
+      setCspViolations((prev) => [
+        ...prev,
+        { blockedURI: e.blockedURI, violatedDirective: e.violatedDirective, ts: Date.now() },
+      ]);
+    };
+    document.addEventListener("securitypolicyviolation", handler);
+    return () => document.removeEventListener("securitypolicyviolation", handler);
+  }, []);
 
   // Enumerate audio input devices on mount. Note: device labels are only
   // populated AFTER the user grants mic permission once. We trigger a no-op
@@ -312,6 +336,7 @@ export default function InterviewTestPage() {
     setStartedAt(null);
     setMode("listening");
     setInputVolume(0);
+    setCspViolations([]);
   }, []);
 
   if (status === "denied") {
@@ -597,6 +622,21 @@ export default function InterviewTestPage() {
         <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
           <div className="font-semibold text-rose-900 mb-1">Something went wrong</div>
           <div className="text-sm text-rose-800 mb-3">{errorMsg}</div>
+          {cspViolations.length > 0 && (
+            <div className="mb-3 bg-white border border-rose-300 rounded p-3">
+              <div className="text-xs font-semibold uppercase text-rose-700 mb-2">
+                CSP violations captured ({cspViolations.length})
+              </div>
+              <ul className="space-y-1 text-xs font-mono break-all">
+                {cspViolations.map((v, i) => (
+                  <li key={i} className="text-stone-800">
+                    <span className="text-rose-700">{v.violatedDirective}</span> blocked:{" "}
+                    <span className="text-stone-900">{v.blockedURI || "(inline)"}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <button
             onClick={handleReset}
             className="bg-stone-900 hover:bg-stone-800 text-white text-sm font-medium px-4 py-2 rounded-md"
