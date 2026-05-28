@@ -25,7 +25,11 @@ const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-pro";
+// Default to flash because Pro requires a topped-up billing balance (Vik's
+// project hit "prepayment credits depleted" 429 on Pro). Flash has a real
+// 250 req/day free tier. Set GEMINI_MODEL=gemini-2.5-pro on Railway to
+// upgrade once credits are loaded.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
