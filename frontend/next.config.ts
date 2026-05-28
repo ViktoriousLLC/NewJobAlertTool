@@ -20,7 +20,8 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https://www.google.com https://icons.duckduckgo.com https://img.logo.dev",
   "font-src 'self'",
-  `connect-src 'self' ${apiOrigin} ${supabaseUrl} ${supabaseWss} https://us.i.posthog.com https://us-assets.i.posthog.com https://o4510870199730176.ingest.us.sentry.io https://api.elevenlabs.io wss://api.elevenlabs.io`,
+  // ElevenLabs + LiveKit: SDK uses *.elevenlabs.io for REST + *.livekit.cloud for WebRTC media routing (the SDK hard-depends on livekit-client). Wildcard subdomains because their infra spins up per-session hostnames.
+  `connect-src 'self' ${apiOrigin} ${supabaseUrl} ${supabaseWss} https://us.i.posthog.com https://us-assets.i.posthog.com https://o4510870199730176.ingest.us.sentry.io https://api.elevenlabs.io wss://api.elevenlabs.io https://*.elevenlabs.io wss://*.elevenlabs.io https://*.livekit.cloud wss://*.livekit.cloud`,
   "media-src 'self' blob:",
   "frame-src 'none'",
   "object-src 'none'",
