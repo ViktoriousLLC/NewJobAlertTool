@@ -17,7 +17,7 @@ import { tryProactiveAutoFix, AutoFixResult } from "./autoFixRules";
 async function logScraperEvent(
   companyId: string,
   companyName: string,
-  eventType: "auto_remediation" | "stealth_recovery" | "auto_disabled" | "auto_re_enabled" | "auto_fix_applied",
+  eventType: "auto_remediation" | "stealth_recovery" | "auto_disabled" | "auto_re_enabled" | "auto_fix_applied" | "auto_verified_zero" | "auto_unverified_zero",
   details: Record<string, unknown>
 ): Promise<void> {
   try {
@@ -228,6 +228,14 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
   // Self-healing: companies auto-disabled after AUTO_DISABLE_THRESHOLD consecutive
   // failures. Skipped from scraping until probe day (Monday) gives them another chance.
   const AUTO_DISABLE_THRESHOLD = 7;
+  // Silent-zero handling (replaces the manual "Unverified zeros" admin email):
+  //   * A previously-verified scraper that returns 0 PMs for AUTO_VERIFY_ZERO_DAYS
+  //     in a row gets auto-marked is_verified_zero=true. Trusted scraper + sustained
+  //     zero = real zero. Reverses automatically when >0 PMs reappear.
+  //   * A never-verified company that stays at 0 for SILENT_ZERO_DISABLE_DAYS gets
+  //     auto_disabled=true — scraper is probably broken from day one.
+  const AUTO_VERIFY_ZERO_DAYS = 7;
+  const SILENT_ZERO_DISABLE_DAYS = 14;
   // Watch list: every Monday (UTC), probe all auto-disabled companies once. Successful
   // probes auto-re-enable; still-broken probes don't increment the counter further.
   const PROBE_DAY_OF_WEEK = 1; // 0=Sunday, 1=Monday
@@ -608,17 +616,48 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
         });
         console.log(`${company.name}: AUTO-RE-ENABLED via Monday probe (${jobs.length} jobs)`);
       }
-      // Once a company returns >0 PMs, it's verified for life. Never flip back to
-      // false from a daily scrape — admin verification of legit zeros is preserved.
+      // Once a company returns >0 PMs, it's verified for life. Never flip is_verified
+      // back to false from a daily scrape. is_verified_zero is the OTHER direction —
+      // we DO auto-flip that one as job counts change, see logic below.
+      const currentJobCount = activeJobCount ?? 0;
+      const currentZeroStreak = (company as { consecutive_zero_days?: number }).consecutive_zero_days ?? 0;
       const updates: Record<string, unknown> = {
         last_checked_at: new Date().toISOString(),
         last_check_status: checkStatus,
-        total_product_jobs: activeJobCount ?? 0,
+        total_product_jobs: currentJobCount,
         consecutive_failure_count: 0,
         auto_disabled: false,
       };
-      if ((activeJobCount ?? 0) > 0) {
+      if (currentJobCount > 0) {
+        // PMs present: reset zero streak, mark scraper verified, and unmark any
+        // prior is_verified_zero so the data accurately reflects "this company
+        // is hiring again." Log the auto-flip-back for the Monday self-heal roll-up.
         updates.is_verified = true;
+        updates.consecutive_zero_days = 0;
+        if (company.is_verified_zero === true) {
+          updates.is_verified_zero = false;
+          await logScraperEvent(company.id, company.name, "auto_unverified_zero", {
+            jobCount: currentJobCount,
+          });
+        }
+      } else {
+        // Zero PMs today. Increment streak and auto-act once thresholds cross.
+        const newZeroStreak = currentZeroStreak + 1;
+        updates.consecutive_zero_days = newZeroStreak;
+        if (company.is_verified === true && company.is_verified_zero !== true && newZeroStreak >= AUTO_VERIFY_ZERO_DAYS) {
+          updates.is_verified_zero = true;
+          await logScraperEvent(company.id, company.name, "auto_verified_zero", {
+            consecutiveZeroDays: newZeroStreak,
+          });
+          console.log(`${company.name}: AUTO-VERIFIED ZERO after ${newZeroStreak} consecutive zero days (scraper was previously verified)`);
+        } else if (company.is_verified !== true && newZeroStreak >= SILENT_ZERO_DISABLE_DAYS) {
+          updates.auto_disabled = true;
+          await logScraperEvent(company.id, company.name, "auto_disabled", {
+            reason: `${newZeroStreak} consecutive silent-zero days, scraper never produced a PM job`,
+            consecutiveZeroDays: newZeroStreak,
+          });
+          console.warn(`${company.name}: AUTO-DISABLED after ${newZeroStreak} silent-zero days with no prior verification`);
+        }
       }
       await supabase.from("companies").update(updates).eq("id", company.id);
 
@@ -1006,24 +1045,11 @@ async function sendConsolidatedAdminDigest(input: {
     }
   }
 
-  // Unverified zeros: every company currently at 0 PMs without admin sign-off.
-  // Silent-zero failures look identical to legitimate zeros at the scraper level,
-  // so this section forces every 0-PM company through human eyes once.
-  // Subscribed companies come first; suppress the row by setting is_verified_zero=true.
-  const { data: unverifiedZeroRows } = await supabase
-    .from("companies")
-    .select("name, subscriber_count, last_checked_at")
-    .eq("total_product_jobs", 0)
-    .eq("is_verified_zero", false)
-    .or("auto_disabled.is.null,auto_disabled.eq.false")
-    .order("subscriber_count", { ascending: false })
-    .order("name", { ascending: true });
-
-  const unverifiedZeros = (unverifiedZeroRows || []).map((c) => ({
-    name: c.name,
-    subscribers: c.subscriber_count ?? 0,
-    lastCheckedAt: c.last_checked_at,
-  }));
+  // Unverified-zeros email section retired 2026-05-28 — the daily cron now
+  // auto-confirms zeros (is_verified_zero=true) after AUTO_VERIFY_ZERO_DAYS
+  // for previously-verified scrapers and auto-disables never-verified ones
+  // after SILENT_ZERO_DISABLE_DAYS. Both actions log to scraper_events and
+  // surface in the Monday self-heal roll-up.
 
   // ---- Analysis layer (PR #19) ----------------------------------------------
   // For every company that landed in an action-required section, pull the past
@@ -1036,7 +1062,6 @@ async function sendConsolidatedAdminDigest(input: {
     failedCompanies: input.failedCompanies,
     watchList,
     subscribedZeroDrops,
-    unverifiedZeros: unverifiedZeros.slice(0, 25), // cap to bound the IN query
   });
 
   // Monday-only: weekly health snapshot + past-7-days self-heal log + security check
@@ -1080,7 +1105,6 @@ async function sendConsolidatedAdminDigest(input: {
       watchList,
       autoDisabled: input.autoDisabled,
       subscribedZeroDrops,
-      unverifiedZeros,
       autoRemediated: input.autoRemediated,
       stealthRecovered: input.stealthRecovered,
       autoFixed: input.autoFixed,
@@ -1108,7 +1132,6 @@ async function buildDigestAnalysis(input: {
   failedCompanies: { name: string }[];
   watchList: { name: string }[];
   subscribedZeroDrops: { name: string }[];
-  unverifiedZeros: { name: string }[];
 }): Promise<{
   perCompanyTrends: Map<string, string>;
   crossCuttingPatterns: { kind: string; description: string; companies: string[] }[];
@@ -1117,7 +1140,6 @@ async function buildDigestAnalysis(input: {
   for (const c of input.failedCompanies) flaggedSet.add(c.name);
   for (const c of input.watchList) flaggedSet.add(c.name);
   for (const c of input.subscribedZeroDrops) flaggedSet.add(c.name);
-  for (const c of input.unverifiedZeros) flaggedSet.add(c.name);
 
   const perCompanyTrends = new Map<string, string>();
   const crossCuttingPatterns: { kind: string; description: string; companies: string[] }[] = [];
@@ -1203,25 +1225,9 @@ async function buildDigestAnalysis(input: {
       });
     }
   }
-  // Pattern 2: ≥5 unverified zeros share a platform_type. Could mean the
-  // platform-specific filter (e.g., Ashby title-keyword) is over-filtering.
-  const zeroPlatformGroups = new Map<string, string[]>();
-  for (const z of input.unverifiedZeros) {
-    const platform = companyByName.get(z.name)?.platform_type;
-    if (!platform || platform === "generic") continue;
-    const list = zeroPlatformGroups.get(platform) || [];
-    list.push(z.name);
-    zeroPlatformGroups.set(platform, list);
-  }
-  for (const [platform, companies] of zeroPlatformGroups) {
-    if (companies.length >= 5) {
-      crossCuttingPatterns.push({
-        kind: "platform_zero_cluster",
-        description: `${companies.length} unverified-zero companies share platform ${platform}. Could mean the ${platform} filter is over-rejecting — sanity-check the scraper's filtering logic.`,
-        companies,
-      });
-    }
-  }
+  // (Pattern 2 — unverified-zeros platform clusters — retired 2026-05-28 along
+  // with the unverified-zeros email section. The auto-verify/auto-disable cron
+  // logic handles them silently now.)
 
   return { perCompanyTrends, crossCuttingPatterns };
 }
