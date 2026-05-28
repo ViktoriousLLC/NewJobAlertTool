@@ -1210,6 +1210,73 @@ Tested end-to-end with PR #1 (landing headline change — closed without merging
 
 ---
 
+## 2026-05-28: Remove the admin from the operational loop
+
+### Context
+
+Vik received 6 PostHog alert emails in a single morning ("Auth signin conversion below 50%") AND a daily admin digest showing 28 "unverified zeros" companies needing manual `is_verified_zero=true` triage. Both classes of noise were rooted in the same problem: monitoring + triage systems that asked Vik to confirm things the system could decide for itself.
+
+### What shipped
+
+**PR #87 — Auth funnel alert overhaul + /auth/callback instrumentation (DEV-26 / DEV-13 follow-up)**
+
+- **Root cause of the 6 PostHog emails**: alert was `auth.signin_success / auth.signin_email_sent` over a 6h rolling window, checked hourly, fires below 50%. A user who requested a link at 9am and clicked at 4pm shows up in the success count at 4pm but with no matching email_sent inside the 4pm-window's lookback. Ratio swings between 0% and 200%+ based on individual event timing. Low traffic + 6h window = statistical noise dressed up as an alert.
+- **Disabled** the noisy ratio alert. Renamed it "RETIRED" and widened its insight to 24h as a glance-chart only.
+- **New insight `kds943CH`** "Daily signin success count (DEV-13)": total `auth.signin_success` events over 24h, BoldNumber display.
+- **New alert** on it: "Zero auth signins in 24h", daily check, fires if value < 1. Catches catastrophic auth failure (template regression, cookie drop) without misfiring on traffic timing.
+- **Funnel insight `9Lbo01cw`** retained as the diagnostic view — when the volume alert fires, the funnel tells you WHERE users dropped off. PostHog blocks alerts on Funnels queries directly, so the trends-volume approach is the practical replacement.
+- **Code**: added `captureServerEvent` calls in `frontend/src/app/auth/callback/route.ts` mirroring `/auth/confirm`. PKCE/OAuth signins were previously invisible to PostHog; the funnel was undercounting real signin volume.
+
+**PR #90 — Auto-verify zero PMs; retire manual "Unverified zeros" admin email**
+
+- **Root cause of the 28-unverified-zeros email**: every 0-PM company appeared in a daily admin email until Vik manually marked `is_verified_zero=true`. With 28 companies at zero (some genuinely not hiring, some on stealth-tier blocked sites, some never-verified scrapers), the email would have continued daily forever.
+- **Three rules in the daily cron**:
+  - Healthy company (`is_verified=true`) at zero for 7 consecutive days → auto-set `is_verified_zero=true`. Trusted scraper + sustained zero = real zero.
+  - Never-verified company at zero for 14 days → auto-set `auto_disabled=true`. Probably a misconfigured scraper. Saves cron cycles; Monday probe still gets a chance.
+  - Any company returning >0 PMs → reset `consecutive_zero_days=0` AND flip `is_verified_zero=false` if it was true. Auto-flip-back is the safety net: there is no permanently silenced state.
+- **Migration** added `consecutive_zero_days` column. Bootstrap UPDATE silenced all 28 currently-zero companies immediately (originally scoped to `is_verified=TRUE` only, then expanded to catch-all when all 28 turned out to be `is_verified=FALSE` — mostly stealth-tier blocked sites and scrapers that have never returned a PM).
+- **Email plumbing**: dropped the "Unverified zeros" section, its rollup chip, its subject contribution, and the `platform_zero_cluster` cross-cutting pattern detection.
+- **Result**: daily admin email is silent on most days. Only fires on real-time scrape errors, watch list, subscribed-companies-dropping-to-zero, or email send failures.
+
+### Alternatives considered
+
+- **Just snooze the PostHog alert.** Considered; rejected. Snoozing addresses the symptom (today's email volume) without addressing the cause (ratio math is unstable). It'd fire again the next time traffic dipped.
+- **Use PostHog anomaly detection (zscore/MAD) on the ratio.** Considered; rejected. Anomaly detection adapts to baseline noise, which means it adapts to ZERO traffic as baseline. Wouldn't catch a real outage on a slow day.
+- **Build a funnel-trends alert directly on the existing funnel insight `9Lbo01cw`.** Tried; PostHog rejects alerts on Funnels queries even when `funnelVizType: "trends"`. Volume alert on a separate trends insight is the workaround.
+- **Build a queryable admin UI page so Vik can triage zeros faster instead of removing the email.** Considered; rejected. Vik explicitly said "I want a solution where I am never involved and will never ever look at any company and confirm anything." Faster UI is still involvement. Auto-marking removes him entirely.
+- **For unverified zeros, only auto-mark companies with at least N days of `last_check_status='success'`.** Considered; rejected as added complexity for no gain. `is_verified=true` already encodes "this scraper has worked at least once," which is the meaningful trust signal. Layering on a recency requirement narrows the rule without clear benefit.
+- **Mark only `is_verified=TRUE` companies as auto-zero, never touch the never-verified ones.** Conservative version of the bootstrap. Tried first. Result: 0 of the 28 noise items got silenced. All 28 were `is_verified=FALSE`. Switched bootstrap to catch-all. Trusts the auto-flip-back to restore accuracy if any of them start hiring.
+
+### Key insights
+
+- **The flag's blast radius determines whether bold defaults are safe.** `is_verified_zero` reads only from admin-email plumbing and cron logic — no user-facing surface touches it. Worst-case bug in the auto-flip-back code is "admin email stays quieter than it should." Never "users miss jobs." That bounded downside made it safe to aggressive-bootstrap all 28 unverified zeros, including never-verified ones. If the flag had been read by user-facing code, the conservative version would have been the right call.
+
+- **Stop asking the human to confirm what the system already knows.** The "Unverified zeros" pattern existed because at the time, the system genuinely couldn't distinguish "no PMs" from "scraper broken." The `is_verified` column (added later) gave it that signal — but the email kept asking anyway. When the data evolves, the workflow has to evolve with it. Otherwise you're paying a manual cost for a problem that's already been automated away in a different layer.
+
+- **Cross-window ratio alerts misfire on low traffic; volume alerts don't.** The 6h ratio alert is the technically-correct measurement of "signin conversion" — but a numerator and denominator that drift in and out of the window independently are a recipe for nonsense at low scale. The trends-volume alert (`signin_success < 1 in 24h`) is a coarser measurement, but it can't lie on a low-traffic day. For a site below ~100 signins/day, volume floor > conversion ratio.
+
+- **Per-session feedback shapes the next session, not this one.** Vik called out three communication patterns mid-session: split-message preambles + post-summaries (annoying to scroll), em-dashes in user-facing copy (still leaking through, watch for it), one-clear-answer (vs the 3-option-table reflex). Saved as feedback memories so future sessions don't repeat them. The cost of saving is one file write; the cost of not saving is paying the same correction tax every session.
+
+### Files / artifacts
+
+- `frontend/src/app/auth/callback/route.ts` — added `captureServerEvent` calls for PKCE flow (PR #87)
+- `backend/src/jobs/dailyCheck.ts` — auto-verify/auto-disable/auto-flip-back logic (PR #90)
+- `backend/src/email/sendAlert.ts` — removed "Unverified zeros" email section (PR #90)
+- `backend/migrations/2026-05-28-auto-verify-zeros.sql` — column add + bootstrap UPDATE
+- `backend/src/scraper/SCRAPER.md` — updated silent-zero gotcha to reflect automation
+- `backend/src/jobs/JOBS.md` — new "Silent-Zero Self-Management" section
+- `CLAUDE.md` — `companies` table schema row notes the new column + auto-managed semantics
+- PostHog: insight `kds943CH` + alert `019e703c-bd12-...` (zero signins in 24h), funnel `9Lbo01cw` retained
+- Linear DEV-26 (closed) — full write-up of the auth alert overhaul
+
+### Next batch — open ideas
+
+- **Spot-check `scraper_events` after 7 days of the new rules** for any `auto_verified_zero` or `auto_unverified_zero` rows to validate the cron is doing what it's supposed to.
+- **Consider tightening "Zero auth signins in 24h" alert** once daily signin baseline is known (need ~7 days clean data). Move from `< 1` to `< 50% of trailing 7d mean` for partial-regression detection.
+- **Add a second DEV-11 audit rule** for the cookie-drop attribute-strip footgun (capture from earlier session memory, not yet implemented).
+
+---
+
 ## 2026-05-14 (evening) — Zero-Jobs Audit Executed: 4 PRs, 3 New ATS Platforms, Catalog 220→216
 
 ### Context

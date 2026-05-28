@@ -105,7 +105,7 @@ GET    /api/cron/weekly-digest (requires CRON_SECRET; see JOBS.md)
 
 | Table | Notes |
 |---|---|
-| `companies` | Shared catalog. `is_active` = subscriber_count > 0. `auto_disabled` + `consecutive_failure_count` for self-healing. `is_verified` + `is_verified_zero` to close silent-zero gap. `industry` (enum-shaped text, drives email recommendations + /new-home filter). `min_relevant_seniority` (early/mid/director — filters daily email + feed; FAANG=mid by default). CASCADE deletes jobs. |
+| `companies` | Shared catalog. `is_active` = subscriber_count > 0. `auto_disabled` + `consecutive_failure_count` for self-healing on errors. `is_verified` + `is_verified_zero` + `consecutive_zero_days` (2026-05-28) for self-healing on silent zeros — see auto-verify-zeros rules in JOBS.md / dailyCheck.ts. **`is_verified_zero` is now auto-managed**: cron auto-sets it after 7 days of zero from a verified scraper, auto-flips back to false when >0 PMs reappear. Don't toggle manually. `industry` (enum-shaped text, drives email recommendations + /new-home filter). `min_relevant_seniority` (early/mid/director — filters daily email + feed; FAANG=mid by default). CASCADE deletes jobs. |
 | `seen_jobs` | Status: active → removed → archived (60 days). `last_removed_at` (2026-05-19) stamped on active→removed; used for 2-week return rule. Unique on (company_id, job_url_path). |
 | `user_subscriptions` | Links users to tracked companies. UNIQUE(user_id, company_id). |
 | `user_job_favorites` | Star icons on jobs pages. UNIQUE(user_id, seen_job_id). |
