@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import * as Sentry from "@sentry/node";
 import { createClient } from "@supabase/supabase-js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { capturePosthogEvent } from "../lib/posthog";
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY!;
@@ -90,6 +91,7 @@ export async function requireAuth(
       if (payload.sub) {
         req.userId = payload.sub;
         req.userEmail = (payload.email as string) || undefined;
+        capturePosthogEvent("auth.jwt_verify_path", payload.sub, { path: "local" });
         next();
         return;
       }
@@ -113,11 +115,13 @@ export async function requireAuth(
   } = await authClient.auth.getUser(token);
 
   if (error || !user) {
+    capturePosthogEvent("auth.jwt_verify_path", null, { path: "unauthorized" });
     res.status(401).json({ error: "Invalid or expired token" });
     return;
   }
 
   req.userId = user.id;
   req.userEmail = user.email || undefined;
+  capturePosthogEvent("auth.jwt_verify_path", user.id, { path: "fallback" });
   next();
 }

@@ -42,6 +42,18 @@ Investigates each issue (spawns scraper-doctor), pushes curated report only if a
 
 Three-tier recovery → auto-disable threshold (7 days) → Monday watch-list probe → re-enable. Tracked in `scraper_events` table for the weekly digest's self-heal log.
 
+### Silent-Zero Self-Management (PR #90, added 2026-05-28)
+
+Companies returning 0 PMs no longer require manual admin confirmation. Per-company state is tracked via the `consecutive_zero_days` column on `companies`; three rules run in the per-company loop after each scrape:
+
+- **Auto-verify zero (AUTO_VERIFY_ZERO_DAYS = 7)**: If `is_verified=true` and PMs have been 0 for 7 consecutive days, set `is_verified_zero=true` and log `auto_verified_zero` to `scraper_events`.
+- **Auto-disable silent zero (SILENT_ZERO_DISABLE_DAYS = 14)**: If `is_verified=false` and PMs have been 0 for 14 consecutive days, set `auto_disabled=true` and log `auto_disabled` to `scraper_events`. Saves cron cycles; Monday probe still gets a chance.
+- **Auto-flip back**: Any scrape returning >0 PMs resets `consecutive_zero_days=0` AND, if `is_verified_zero` was true, flips it back to false. Logs `auto_unverified_zero`. **This is the safety net** — there is no permanently-silenced state; every scrape re-evaluates.
+
+The admin digest's "Unverified zeros" section was retired with this PR. `unverifiedZeros` field removed from `AdminDigestInput` and `buildDigestAnalysis`. Cross-cutting pattern `platform_zero_cluster` also removed (admin no longer triages, so no human needs the pattern hint).
+
+**`is_verified_zero` is now ONLY read by the admin email plumbing and the cron itself.** It has no user-facing effect — jobs flow into `seen_jobs` and out to users regardless of this flag. Worst-case bug in the auto-flip-back code is "admin email stays quieter than it should"; never "users miss jobs."
+
 ### Proactive Auto-Fix Layer (DEV-19, added 2026-05-26)
 
 **Where:** `backend/src/jobs/autoFixRules.ts` (rule catalog) + `dailyCheck.ts` per-company loop (calls `tryProactiveAutoFix(company, supabase)` before each scrape).
