@@ -22,6 +22,7 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
@@ -129,7 +130,7 @@ async function evaluateWithGemini(userMsg: string): Promise<string> {
   if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY missing");
   const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-pro",
+    model: GEMINI_MODEL,
     contents: [{ role: "user", parts: [{ text: userMsg }] }],
     config: {
       systemInstruction: VIK_VOICE_EVAL_SYSTEM_PROMPT,
@@ -212,7 +213,7 @@ Write the evaluation now.`;
 
     const gemini =
       geminiResult.status === "fulfilled"
-        ? { ok: true as const, text: geminiResult.value, model: "gemini-2.5-pro" }
+        ? { ok: true as const, text: geminiResult.value, model: GEMINI_MODEL }
         : { ok: false as const, error: String((geminiResult.reason as Error)?.message || geminiResult.reason) };
 
     const openai =
