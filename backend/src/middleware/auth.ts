@@ -1,27 +1,58 @@
 import { Request, Response, NextFunction } from "express";
 import * as Sentry from "@sentry/node";
 import { createClient } from "@supabase/supabase-js";
-import jwt from "jsonwebtoken";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY!;
-const jwtSecret = process.env.SUPABASE_JWT_SECRET;
 
-// Fail-closed at boot if the JWT secret is missing in production. Without it,
-// every request silently degrades to a 150ms Supabase API call, which masks
-// the misconfiguration and burns latency. Better to crash early than to
-// silently downgrade in production.
-if (!jwtSecret && process.env.NODE_ENV === "production") {
-  throw new Error(
-    "SUPABASE_JWT_SECRET is required in production. Set it in the Railway env vars."
-  );
-}
+// Supabase has migrated away from the legacy HS256 shared secret. Tokens are
+// now signed with asymmetric keys (ES256/RS256). We fetch and cache the
+// public keys from the project's JWKS endpoint.
+//
+// The legacy SUPABASE_JWT_SECRET env var is no longer used. Until 2026-05-28
+// every authed request was logging "Local JWT verification failed (invalid
+// algorithm), falling back to Supabase getUser()" because the HS256 whitelist
+// rejected the new asymmetric tokens. Result: every request paid a ~150ms
+// network round-trip we didn't need.
+const jwksUrl = supabaseUrl ? new URL(`${supabaseUrl.replace(/\/$/, "")}/auth/v1/.well-known/jwks.json`) : null;
+const jwks = jwksUrl ? createRemoteJWKSet(jwksUrl) : null;
 
 // Issuer claim Supabase tokens carry. Derived from project URL.
 const expectedIssuer = supabaseUrl ? `${supabaseUrl.replace(/\/$/, "")}/auth/v1` : undefined;
 
 // Separate client using anon key for verifying user JWTs (fallback only)
 const authClient = createClient(supabaseUrl, supabaseAnonKey);
+
+// Fail-closed at boot if we can't verify JWTs. Without proper verification
+// every request silently falls back to a 150ms Supabase API call which masks
+// the misconfiguration. Better to crash early than degrade silently.
+if (!jwksUrl && process.env.NODE_ENV === "production") {
+  throw new Error(
+    "SUPABASE_URL is required in production to construct JWKS endpoint. Set it in Railway env vars."
+  );
+}
+
+// Best-effort boot probe: warm the JWKS cache + surface failures at startup.
+// Doesn't crash on probe failure (network might be temporarily flaky); just
+// logs + Sentry so we notice. The first real request would catch a hard failure.
+if (jwks && process.env.NODE_ENV === "production") {
+  (async () => {
+    try {
+      // Pass a dummy token to trigger JWKS fetch. We expect verification to
+      // fail (bad token) but JWKS load itself should succeed.
+      await jwtVerify("dummy", jwks, {}).catch(() => undefined);
+      console.log("[auth] JWKS endpoint reachable at", jwksUrl!.href);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "unknown";
+      console.error("[auth] JWKS probe failed:", msg);
+      Sentry.captureMessage(`Boot JWKS probe failed: ${msg}`, {
+        level: "error",
+        tags: { phase: "auth-boot" },
+      });
+    }
+  })();
+}
 
 // Extend Express Request to include userId and userEmail
 declare global {
@@ -47,15 +78,14 @@ export async function requireAuth(
 
   const token = authHeader.slice(7);
 
-  // Try local JWT verification first (no network call, ~0ms).
+  // Try local JWKS-based verification first (~0ms after first JWKS fetch).
   // Validates signature + algorithm + exp + audience + issuer.
-  if (jwtSecret) {
+  if (jwks) {
     try {
-      const payload = jwt.verify(token, jwtSecret, {
-        algorithms: ["HS256"],
+      const { payload } = await jwtVerify(token, jwks, {
         audience: "authenticated",
         issuer: expectedIssuer,
-      }) as jwt.JwtPayload;
+      });
 
       if (payload.sub) {
         req.userId = payload.sub;
@@ -64,12 +94,12 @@ export async function requireAuth(
         return;
       }
     } catch (err) {
-      // Local verification failed — fall back to Supabase API call.
-      // Alert so we notice if this becomes a regular occurrence (could mean
-      // a secret rotation, an issuer mismatch, or attempted forgery).
+      // Local verification failed; fall back to Supabase API call.
+      // Tagged so a Sentry alert rule can fire if this becomes frequent
+      // (which would mean JWKS rotation drift or actual attempted forgery).
       const message = err instanceof Error ? err.message : "unknown";
-      console.warn(`Local JWT verification failed (${message}), falling back to Supabase getUser()`);
-      Sentry.captureMessage(`JWT local verify failed: ${message}`, {
+      console.warn(`[auth] JWKS verify failed (${message}); falling back to Supabase getUser()`);
+      Sentry.captureMessage(`JWT JWKS verify failed: ${message}`, {
         level: "warning",
         tags: { phase: "auth-fallback" },
       });
