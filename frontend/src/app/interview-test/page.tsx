@@ -51,7 +51,17 @@ export default function InterviewTestPage() {
     claude: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
     gemini: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
     openai: { ok: true; text: string; model: string } | { ok: false; error: string } | null;
+    llm_input?: { system: string; user: string };
   }>({ claude: null, gemini: null, openai: null });
+  const [testResults, setTestResults] = useState<
+    | {
+        claude: { ok: boolean; model: string; response?: string; error?: string };
+        gemini: { ok: boolean; model: string; response?: string; error?: string };
+        openai: { ok: boolean; model: string; response?: string; error?: string };
+      }
+    | null
+  >(null);
+  const [testing, setTesting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
 
@@ -279,6 +289,25 @@ export default function InterviewTestPage() {
     }
   }, [selected, startedAt, transcript]);
 
+  // Pre-flight LLM test: pings each evaluator with a tiny prompt to verify
+  // keys + quota without burning a real interview session.
+  const handleTestEvaluators = useCallback(async () => {
+    if (testing) return;
+    setTesting(true);
+    setTestResults(null);
+    try {
+      const resp = await apiFetch("/api/interviews/test-evaluators", { method: "POST" });
+      if (!resp.ok) throw new Error(`Test failed (${resp.status})`);
+      const data = await resp.json();
+      setTestResults(data);
+    } catch (err) {
+      console.error("Test evaluators failed:", err);
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTesting(false);
+    }
+  }, [testing]);
+
   // Pre-flight mic test: opens the mic, runs an AnalyserNode for ~10 seconds
   // showing live volume. Pure browser audio path; if bars don't move here, the
   // SDK has no chance. Useful to isolate "is it my mic/OS" from "is it the SDK".
@@ -369,6 +398,48 @@ export default function InterviewTestPage() {
 
       {status === "idle" && (
         <>
+          <div className="mb-4 bg-stone-50 border border-stone-200 rounded-lg p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs uppercase text-stone-400 mb-1">LLM evaluators</div>
+                <div className="text-xs text-stone-500">
+                  Verify Claude, Gemini, and GPT are all reachable before running a session.
+                </div>
+              </div>
+              <button
+                onClick={handleTestEvaluators}
+                disabled={testing}
+                className="bg-stone-900 hover:bg-stone-800 disabled:bg-stone-400 text-white text-sm font-medium px-3 py-2 rounded-md whitespace-nowrap"
+              >
+                {testing ? "Testing..." : "Test all 3"}
+              </button>
+            </div>
+            {testResults && (
+              <div className="mt-3 grid sm:grid-cols-3 gap-2 text-xs">
+                {(["claude", "gemini", "openai"] as const).map((k) => {
+                  const r = testResults[k];
+                  return (
+                    <div
+                      key={k}
+                      className={`border rounded p-2 ${
+                        r.ok ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"
+                      }`}
+                    >
+                      <div className="font-semibold mb-0.5">{r.model}</div>
+                      {r.ok ? (
+                        <div className="text-emerald-700">
+                          ✓ replied {r.response ? `"${r.response}"` : ""}
+                        </div>
+                      ) : (
+                        <div className="text-rose-700 break-all">✗ {r.error}</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {devices.length > 0 && (
             <div className="mb-4 bg-stone-50 border border-stone-200 rounded-lg p-3 space-y-3">
               <div>
@@ -616,6 +687,28 @@ export default function InterviewTestPage() {
                     {t.text}
                   </div>
                 ))}
+              </div>
+            </details>
+          )}
+
+          {evaluations.llm_input && (
+            <details className="bg-stone-50 border border-stone-200 rounded-lg p-4">
+              <summary className="text-xs uppercase text-stone-400 cursor-pointer">
+                What the LLMs saw (system prompt + user payload)
+              </summary>
+              <div className="mt-3 space-y-3 text-xs">
+                <div>
+                  <div className="font-semibold text-stone-700 mb-1">System prompt (Vik voice rules)</div>
+                  <pre className="bg-white border border-stone-200 rounded p-2 whitespace-pre-wrap font-mono text-stone-700 max-h-64 overflow-y-auto">
+                    {evaluations.llm_input.system}
+                  </pre>
+                </div>
+                <div>
+                  <div className="font-semibold text-stone-700 mb-1">User payload (transcript + rubric)</div>
+                  <pre className="bg-white border border-stone-200 rounded p-2 whitespace-pre-wrap font-mono text-stone-700 max-h-64 overflow-y-auto">
+                    {evaluations.llm_input.user}
+                  </pre>
+                </div>
               </div>
             </details>
           )}
