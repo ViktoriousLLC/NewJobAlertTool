@@ -54,6 +54,26 @@ The admin digest's "Unverified zeros" section was retired with this PR. `unverif
 
 **`is_verified_zero` is now ONLY read by the admin email plumbing and the cron itself.** It has no user-facing effect — jobs flow into `seen_jobs` and out to users regardless of this flag. Worst-case bug in the auto-flip-back code is "admin email stays quieter than it should"; never "users miss jobs."
 
+### Stale-Job Anti-Flap Removal (added 2026-05-29)
+
+Fixes a class of zombie listing surfaced by a workflow sweep on 2026-05-29: companies whose PM roles had been delisted were still shown as `active` to subscribers indefinitely (e.g. Cloudflare's "Product Manager Intern" gone from the board but shown to 17 subs; Plaid's 7 Feb listings shown to 20 subs after Plaid migrated off Lever).
+
+Root cause: the old removal guard skipped removal whenever `jobs.length === 0 && existingActiveCount > 0`, conflating "scrape source broke" with "source healthy, just 0 PMs." The fix splits those using `scrapeStats.totalScanned` (the same source-alive signal the stealth recovery tier uses):
+
+- **Source failed / empty (`totalScanned === 0`)**: preserve existing active jobs indefinitely (original safety guard — never let a broken scrape wipe real listings). Does NOT count toward the staleness buffer.
+- **Source healthy but 0 PMs (`totalScanned > 0`)**: the roles are genuinely gone. Mark them removed, but only after `STALE_REMOVAL_BUFFER_DAYS = 2` consecutive healthy-zero days, so one odd scrape can't briefly drop real jobs from feeds.
+
+The buffer is tracked by the new `companies.consecutive_healthy_zero_days` column (migration `2026-05-29-add-consecutive-healthy-zero-days.sql`), reset to 0 on any run that finds PMs or sees a failed source. It is deliberately SEPARATE from `consecutive_zero_days`: the preserved zombie rows kept the active count > 0, which pinned `consecutive_zero_days` at 0 and silently defeated the is_verified_zero / auto-disable self-heal above. Once the buffer elapses and the stale rows are removed, the active count hits 0 and the existing `consecutive_zero_days` logic resumes normally (so a fully-delisted company auto-verifies-zero ~2 days later than before, not never).
+
+Also relabels the 0-job status string: a legitimately-empty scrape is now `success (0 PMs)` (healthy source) or `success (0 jobs from source)` (empty/failed source) instead of the misleading `success (quality: 0/100)`, which had been tripping the session-start health-check grep on healthy companies.
+
+**Coverage / scraper instrumentation.** `totalScanned` is a reliable "source alive" signal ONLY for **full-board scrapers that throw on a failed fetch** — they pull every posting, filter to PMs in-code, and a 0 count then provably means "board reachable, 0 PMs." Those are: greenhouse, greenhouse_departments, ashby, workday (pre-existing) plus **lever and smartrecruiters** (instrumented here). That covers ~204 of 247 catalog companies. The remaining platforms intentionally fall through to the safe "preserve" branch (no regression, just no auto-removal of their zombies yet):
+
+- **Keyword-search APIs** (amazon, icims-api, oracle_hcm): they ask the source for "product manager" jobs and never see the full board, so a 0 result can't be distinguished from a broken-but-200 response by count alone.
+- **Error-swallowing / DOM scrapers** (eightfold returns `[]` on a non-ok page instead of throwing; generic Puppeteer fallback, intuit, icims Puppeteer): a 0 count is genuinely ambiguous between "empty" and "selector broke," so preserve-conservative is the correct default.
+
+A clean fix for the keyword-search group needs a separate `sourceReachable: boolean` on `ScrapeStats` set on any successful HTTP 200 (regardless of job count), rather than a count. Tracked as a follow-up (DEV-33 [stale-removal coverage for keyword-search scrapers]).
+
 ### Proactive Auto-Fix Layer (DEV-19, added 2026-05-26)
 
 **Where:** `backend/src/jobs/autoFixRules.ts` (rule catalog) + `dailyCheck.ts` per-company loop (calls `tryProactiveAutoFix(company, supabase)` before each scrape).
