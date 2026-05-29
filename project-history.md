@@ -1708,3 +1708,83 @@ The reader-question close serves double duty: standard LinkedIn engagement drive
 - **Resend dashboard link** in the email footer so Vik can verify delivery in one click without devtools.
 - **Track engagement on the weekly LinkedIn posts** — manually for the first month, then add a column to a tracking sheet if it grows into a real channel.
 - **Voice file enforcement via hook?** Currently the reference memory + MEMORY.md pointer is honor-system. A PreToolUse hook that blocks user-voice drafting unless the voice files have been Read in the current session would be belt-and-suspenders. Defer unless I slip again.
+
+---
+
+## Phase 25 — Linear Feedback Workflow + Auth Incident + Three-Layer Defense-in-Depth (2026-05-22 to 2026-05-25)
+
+**Three threads ran in parallel.** The session started as a Linear workspace setup. It pivoted into a real incident response when two users emailed about missing login emails. It ended with three independent prevention layers shipped, plus a workflow migration to Linear for ongoing feedback management. 12+ PRs merged in the window.
+
+### Headline decisions
+
+**1. Feedback migrated from Supabase tables to Linear (User Feedback team).** Old `help_submissions` and `scrape_issues` tables hold pre-cutover history; no new rows are written. `POST /api/help` and `POST /api/issues` now create Linear issues with proper Type + Source labels and email admin with the Linear URL inline. The admin email lands the same way it always did, but every email is now also a link straight into a triage workflow.
+
+**2. The auth incident root cause was misdiagnosed in two ways.** First, I'd shipped a broken Supabase Auth template (`{{ .ConfirmationURL }}` instead of `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=...`) and assumed that was the whole story. Second, the related Linear issue (DEV-3) was titled "Magic Link fix — non-Gmail, Safari mobile" because that's what the user reports looked like. The actual bug was universal — `NextResponse.redirect()` in `/auth/confirm` drops cookies set by Supabase SSR's `verifyOtp()`. Same class of bug PR #26 fixed in middleware.ts but never backported to the route handlers. Eleven users were in "confirmed but no session" state before my template change even happened.
+
+**3. Three layers of defense, not one fix.** A single "remember to read AUTH.md before deploying" rule has 100% failure mode — I broke it within a week of the sidecar existing. Three independent layers each catch the bug class:
+- **PR-time (DEV-12 CI auth template check)**: GitHub Action asserts deployed Supabase Auth templates match AUTH.md format. Fails any PR touching auth code if the templates regress. Requires SUPABASE_PAT_CI in repo secrets (pending Vik to add).
+- **6-hour (DEV-13 PostHog auth funnel)**: 4 events instrument the magic-link flow. Drop-off between `auth.signin_link_clicked` and `auth.signin_success` is the exact signature of the cookie bug. A 50% conversion alert would have paged me ~6 hours after the broken templates deployed.
+- **24-hour (DEV-11 daily code audit)**: Heuristic GitHub Action cron scans last 24h diff for 4 known risk patterns. Catches drift even if it bypasses the PR check (e.g., changes made via the Supabase Dashboard directly).
+
+**4. Defense work happens IN PARALLEL with incident response, not after.** Built the CI check (PR #64), the admin recovery endpoint (PR #63), and the cookie fix (PR #62) before all 18 stuck users were even recovered. Prevention is most valuable while the failure mode is fresh in mind.
+
+**5. PostHog + Sentry MCPs over UI clicks for ongoing analytics work.** Configuring one funnel via PostHog UI is ~10 minutes. Configuring funnels across the next 12 months (Stripe onboarding, paywall conversion, referral, Twilio events) is hours of click-work. MCPs installed once make every future analytics ask conversational, same as Linear MCP today. Setup pending.
+
+### Alternatives considered
+
+**Dual-write vs Linear-only for feedback** (Vik chose Linear-only). Could have kept writing to both Supabase tables AND Linear as a belt-and-suspenders. Rejected: dual-write means Linear is no longer the source of truth and we'd need a reconciliation story when they diverge. Plus the admin email IS the failsafe — if Linear API fails, admin still gets emailed with a "Linear creation failed" callout in the body. Single canonical surface (Linear) with email as ground-truth backup is cleaner.
+
+**Manual clicks in Supabase Dashboard vs admin endpoint for recovery** (Vik picked the endpoint after seeing the count grow to 18). The dashboard works but doesn't scale — every future stuck-user scenario would need the same clicks. The admin endpoint took ~30 min to build and is reusable forever, plus it becomes the foundation for DEV-14 [stuck-user reminder system] and DEV-15 [admin recovery UI].
+
+**Pasting SUPABASE_SERVICE_KEY vs building the admin endpoint** (Vik rejected paste). Service key has very high blast radius — anyone holding it can read all user data and rewrite the database. Pasting into chat creates exposure even if brief. The admin endpoint uses the service key already in Railway env (no new exposure) and gates access by admin JWT. Cleaner forever.
+
+**CronCreate-based daily audit agent vs GitHub Actions** (chose GitHub Actions). Original DEV-11 spec called for a daily remote agent that spawns Claude specialist sub-agents. Discovered CronCreate is session-only — jobs die when Claude session ends. GitHub Actions cron is the right primitive for reliable 24/7 background audits. Heuristic regex matching is less powerful than agent reasoning but is reliably executable. Full agent-spawning version deferred to a v2 if/when we want the deeper analysis.
+
+**Tier-2 e2e smoke test deferred.** DEV-12's Tier 1 (static template check via Management API, no email sent) catches yesterday's specific bug. Tier 2 (actual signup → click → session flow via Playwright) would catch a broader class. Deferred because: (a) Tier 1 alone closes the specific gap we hit, (b) sending real emails in CI uses Resend quota (low concern given Pro plan but worth noting), (c) the cookie-bug class would be caught by DEV-13's PostHog alert independently.
+
+**MCP install path: PostHog wizard vs manual `claude mcp add`** (had to fall back to manual). PostHog's `npx @posthog/wizard@latest mcp add` only detects Cursor + VS Code, not Claude Code CLI. Manual `claude mcp add --transport http posthog https://mcp.posthog.com/mcp -s user` is the documented fallback per PostHog's Claude Code docs.
+
+### Key insights
+
+- **"Cosmetic" tasks aren't cosmetic when they touch load-bearing config.** I framed the email template work as design polish. The variable name (`{{ .ConfirmationURL }}`) should have prompted "what does this generate?" but I treated the documented default as inherently safe. The structural fix isn't "read sidecars next time" (honor system) — it's automated enforcement (CI check). The honor system is fine for behavior nobody actually performs; for behavior performed regularly, automate the constraint.
+- **A "preview file" that doesn't simulate the actual user action isn't a preview.** Standalone HTML previews of the auth templates looked great in a browser. They didn't catch the bug because they couldn't exercise the real template-variable substitution that happens at send time. Real previews require the actual send + click loop.
+- **Mislabeled issues hide root causes for months.** DEV-3 was titled by symptom ("Safari Mobile / non-Gmail") rather than architectural artifact ("auth route handlers drop session cookies on redirect"). The title encoded the wrong mental model and made the bug feel niche. Going forward: title issues by the broken artifact, not the user-visible failure.
+- **Observability lives in observability tools, not the application database.** Reflex when I see "we need to monitor X" is "add a column or table." That conflates application data with monitoring surface. Right split: errors → Sentry, funnels → PostHog. Codified as `feedback_telemetry_to_posthog_sentry.md`.
+- **SDK defaults are landmines, again.** Phase 23 was `listUsers` defaulting to perPage=50. Phase 25 was Supabase Auth's template variable defaulting to `{{ .ConfirmationURL }}`. Pattern: every SDK has invisible cliffs hidden behind reasonable-looking defaults. New rule: never use SDK defaults for anything load-bearing — explicit values only, with a comment explaining why.
+- **Linear as canonical feedback surface compounds.** Moving feedback to Linear felt like a workflow change. It's actually an architecture change. Supabase tables were data without workflow. Linear is data + workflow + labels + assignees + status + cross-references in one place. Future expansions (DEV-14, DEV-15) build on the Linear primitive rather than building a parallel admin surface in our own app.
+- **Reference-an-Issue-ID requires a 2-3 word descriptor in brackets.** Saving `DEV-3` alone forces Vik to remember what DEV-3 is. `DEV-3 [Safari Mobile / non-Gmail auth]` does not. Captured as `feedback_linear_id_descriptors.md`. Same pattern applies to USRFDBK-N references.
+- **18 users in the broken state was 9x my initial estimate.** Vik reported 2 complaints. The database query found 11 stuck "confirmed no session" + 7 "never confirmed" = 18 affected. Always query the data rather than trusting the count from user reports — most stuck users won't email you.
+
+### Files / artifacts
+
+- **Merged this phase**: PR #55 (Linear feedback wiring), #56 (branded feedback emails), #57 (dashboard Available + feature_request), #58 (5-stat dashboard layout rewrite), #59 (em/en dash sweep), #60 (weekly digest appendix), #61 (digest intro rewrite), #62 (DEV-3 cookie fix), #63 (admin send-magic-link), #64 (DEV-12 CI auth template check), #65 (DEV-11 daily code audit), #66 (DEV-13 auth funnel events).
+- **New backend modules**: `backend/src/lib/linear.ts` (Linear GraphQL client), `backend/src/lib/feedbackEmail.ts` (branded HTML helper), `backend/src/scripts/update-auth-templates.mjs` (one-shot Supabase Auth template deploy).
+- **New frontend module**: `frontend/src/lib/serverAnalytics.ts` (PostHog HTTP capture from route handlers).
+- **New CI infrastructure**: `.github/workflows/auth-template-check.yml`, `.github/workflows/daily-code-audit.yml`, `.github/ci/check-auth-templates.mjs`, `.github/ci/daily-code-audit.mjs`, `.github/ci/README.md`.
+- **New Linear issues created this phase**: DEV-9 [staging env], DEV-10 [email design pass], DEV-11 [daily code audit, shipped v1], DEV-12 [CI auth smoke test, shipped Tier 1], DEV-13 [PostHog auth funnel, code shipped], DEV-14 [stuck-user reminder system], DEV-15 [admin recovery UI]. Plus USRFDBK-1..5 for migrated feedback.
+- **New feedback memories**: `feedback_share_learnings_before_executing.md`, `feedback_ai_ml_capitalization.md`, `feedback_no_em_en_dashes.md`, `feedback_no_ansi_escapes.md`, `feedback_linear_id_descriptors.md`, `feedback_supabase_auth_sidecar.md`, `feedback_telemetry_to_posthog_sentry.md`. Plus `reference_railway_project.md` (the Railway project that hosts prod is "new job alert tool production", not "profound gratitude production").
+
+### Next batch — open ideas
+
+- **Run the 19-user recovery DevTools snippet** — top priority, real users still locked out as of 2026-05-25 evening.
+- **Add `SUPABASE_PAT_CI` GitHub repo secret** so DEV-12 [CI auth template check] starts passing on every PR.
+- **Install PostHog + Sentry MCPs** via `claude mcp add` commands so future analytics + alert work is conversational, not UI clicks.
+- **Configure the PostHog funnel + alert and Sentry alert rule** — via MCPs once installed, otherwise manually via UI per PR #66 description.
+- **Move DEV-3 to Done in Linear** — code bug fixed in PR #62 even though title misdiagnosed the cause.
+- **DEV-15 [admin recovery UI]** — replaces the DevTools snippet pattern for stuck-user recovery. Becomes the foundation for the digest preview/send button too.
+- **DEV-14 [stuck-user reminder system]** — daily cron checks for users who got a link but didn't click, OR signed in but added zero companies. Sends one reminder per category. Uses the admin send-magic-link endpoint already shipped.
+- **DEV-10 [email design pass]** — broader cleanup across all transactional emails (magic link, confirm signup, daily alerts, weekly digest, admin alerts). Priority bumped given the auth incident showed how much email-quality matters.
+- **DEV-9 [staging environment]** — the Vercel preview CSP locking connect-src to api.newpmjobs.com means there's no true pre-merge end-to-end test environment. Worth standing up before any feature with non-graceful failure modes (Stripe especially).
+- **CI Tier-2 e2e smoke test** — the deferred half of DEV-12. Real signup + click + session-verify via Playwright. Catches a broader class of auth regression than the static template check alone.
+
+### Phase 25 follow-up (2026-05-26) — the cookie regression we shipped fixing the cookie bug
+
+PR #62 fixed the original "session cookie not propagated to redirect" bug by copying cookies onto every auth redirect using `cookieStore.getAll()`. That fix worked for the immediate symptom (cookies reached the browser) but introduced a subtle regression — `cookieStore.getAll()` from `next/headers` returns `RequestCookie[]` which is `{name, value}` only. Every cookie attribute (`maxAge`, `expires`, `sameSite`, `httpOnly`, `secure`) is stripped silently. Supabase's persistent refresh-token cookie became session-only, dying on browser close. Users had to sign in every time they reopened Chrome. Filed and fixed same day as **DEV-17 (PR #67)**.
+
+The fix mirrors `redirectPreservingSession` in `frontend/middleware.ts` — capture cookies INSIDE the `setAll` callback into a local array (where Supabase passes the full `{name, value, options}` tuple) and re-apply onto the redirect with full attributes preserved.
+
+**Lessons:**
+
+- **Newly-built defenses are tuned to the specific incident that motivated them — they don't generalize automatically.** DEV-11's daily code audit had a rule for "NextResponse.redirect near auth without cookieStore.getAll() copy" (the ORIGINAL bug pattern, absence). DEV-17's regression was the OPPOSITE — wrong PRESENCE of cookieStore.getAll(). The audit rule fired on absence; it didn't catch the misuse. Captured as a v1.1 rule for DEV-11: flag `cookieStore.getAll()` used in a `response.cookies.set` pattern in auth route handlers. Strongly correlates with the attribute-strip footgun.
+- **The same fix in two places can have different gotchas.** middleware.ts uses `supabaseResponse.cookies.getAll()` (Response cookies — full attributes). PR #62 used `cookieStore.getAll()` (Request cookies — attributes stripped). Both look like "copy cookies onto the redirect" but only one preserves attributes. The right pattern is to capture inside the setAll callback, not after the fact from any cookieStore.
+- **18 users initially affected by Phase 25 doubled the blast radius to also include "everyone who signed in 2026-05-25 → 2026-05-26."** Every magic-link sign-in during that window got session-only cookies. Next sign-in after PR #67 deploys, they're back to persistent. No backfill needed but worth noting how a fix can quietly affect more users than the original bug.
