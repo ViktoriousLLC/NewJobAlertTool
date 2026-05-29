@@ -1,4 +1,5 @@
 import { Resend } from "resend";
+import * as Sentry from "@sentry/node";
 
 export interface NewJobAlert {
   companyName: string;
@@ -382,14 +383,34 @@ export async function sendBatchAlerts(payloads: EmailPayload[]): Promise<BatchSe
     const batchNum = Math.floor(i / BATCH_SIZE) + 1;
 
     try {
-      await resend.batch.send(batch);
-      result.sent += batch.length;
-      console.log(`Batch ${batchNum}: sent ${batch.length} emails`);
+      // Resend's SDK does NOT throw on API errors (401 rotated key, 429 rate
+      // limit, 422 validation). It returns them in `error`. Without inspecting
+      // it, a whole non-delivered batch was counted as sent — which would hide
+      // the next email outage exactly the way the 1000-row bug was hidden.
+      const { error } = await resend.batch.send(batch);
+      if (error) {
+        result.failed += batch.length;
+        const msg = error.message || JSON.stringify(error);
+        result.errors.push(`Batch ${batchNum} (${batch.length} emails): ${msg}`);
+        console.error(`Batch ${batchNum} failed (Resend error):`, error);
+        Sentry.captureException(new Error(`Resend batch.send failed: ${msg}`), {
+          tags: { area: "sendBatchAlerts" },
+          extra: { batchNum, batchSize: batch.length },
+        });
+      } else {
+        result.sent += batch.length;
+        console.log(`Batch ${batchNum}: sent ${batch.length} emails`);
+      }
     } catch (err) {
+      // Network/transport failure (the SDK can still throw on these).
       result.failed += batch.length;
       const msg = err instanceof Error ? err.message : String(err);
       result.errors.push(`Batch ${batchNum} (${batch.length} emails): ${msg}`);
-      console.error(`Batch ${batchNum} failed:`, err);
+      console.error(`Batch ${batchNum} threw:`, err);
+      Sentry.captureException(err, {
+        tags: { area: "sendBatchAlerts" },
+        extra: { batchNum, batchSize: batch.length },
+      });
     }
 
     // Delay between batches to stay under 2 req/s rate limit
@@ -418,7 +439,9 @@ export async function sendUserAlert(
   const resend = new Resend(process.env.RESEND_API_KEY);
   const payload = buildAlertEmailPayload(userEmail, alerts, period);
 
-  await resend.emails.send(payload);
+  // Resend returns API errors in `error` rather than throwing; surface it.
+  const { error } = await resend.emails.send(payload);
+  if (error) throw new Error(`Resend emails.send failed: ${error.message || JSON.stringify(error)}`);
 
   const totalNewJobs = alerts.reduce((sum, a) => sum + a.newJobs.length, 0);
   console.log(`${period} email sent: ${totalNewJobs} new jobs reported`);
@@ -436,12 +459,13 @@ export async function sendAdminEmail(subject: string, html: string): Promise<voi
   }
   const { ADMIN_EMAIL } = await import("../lib/constants");
   const resend = new Resend(process.env.RESEND_API_KEY);
-  await resend.emails.send({
+  const { error } = await resend.emails.send({
     from: "NewPMJobs <alerts@newpmjobs.com>",
     to: ADMIN_EMAIL,
     subject,
     html,
   });
+  if (error) throw new Error(`Resend emails.send failed: ${error.message || JSON.stringify(error)}`);
 }
 
 /**
