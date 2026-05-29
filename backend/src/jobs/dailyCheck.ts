@@ -489,11 +489,51 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       const scrapedPaths = new Set(jobs.map((j) => j.urlPath));
       const newJobs: { title: string; urlPath: string }[] = [];
 
-      // Safety: if scrape returns 0 for a company with existing active jobs, skip removal marking
+      // Decide whether to skip removal marking when this scrape found 0 PM jobs
+      // for a company that still has active listings. Two distinct cases, told
+      // apart by scrapeStats.totalScanned (the source-alive signal the recovery
+      // tier already uses — see SCRAPER.md):
+      //   - Source failed / returned nothing (totalScanned === 0): a transient or
+      //     broken scrape. PRESERVE the existing active jobs indefinitely — never
+      //     let a broken scrape wipe real listings. (Original safety guard.)
+      //   - Source healthy but 0 PMs (totalScanned > 0): the company genuinely has
+      //     no PM roles right now, so its active rows are stale. Remove them, but
+      //     only after STALE_REMOVAL_BUFFER_DAYS consecutive healthy-zero days, so
+      //     one odd scrape can't briefly drop real jobs from feeds. Without this,
+      //     delisted roles were preserved forever as "active" (zombie listings) and
+      //     also kept the active count > 0, which defeated the is_verified_zero
+      //     self-heal (consecutive_zero_days could never increment).
+      //
+      // Coverage: totalScanned is a reliable "source alive" signal only for
+      // full-board scrapers that throw on failure (greenhouse, ashby, workday,
+      // lever, smartrecruiters). Keyword-search APIs (amazon, icims-api, oracle)
+      // and error-swallowing / DOM scrapers (eightfold, generic puppeteer, intuit)
+      // leave totalScanned at 0, so they fall through to the safe "preserve"
+      // branch — no regression, just no auto-removal yet. See JOBS.md.
+      const STALE_REMOVAL_BUFFER_DAYS = 2;
       const existingActiveCount = (existingJobs || []).filter((j) => j.status === "active").length;
-      const scrapeReturnedZero = jobs.length === 0 && existingActiveCount > 0;
-      if (scrapeReturnedZero) {
-        console.warn(`SAFETY: ${company.name} scrape returned 0 jobs but has ${existingActiveCount} active. Skipping removal marking.`);
+      const sourceHealthy = scrapeStats.totalScanned > 0;
+      const currentHealthyZeroStreak =
+        (company as { consecutive_healthy_zero_days?: number }).consecutive_healthy_zero_days ?? 0;
+
+      // Persisted in the companies update below. Stays 0 unless we're mid-buffer on
+      // a healthy-source-but-zero-PM run; any other outcome resets it.
+      let healthyZeroStreak = 0;
+      let skipRemoval = false;
+      if (jobs.length === 0 && existingActiveCount > 0) {
+        if (sourceHealthy) {
+          healthyZeroStreak = currentHealthyZeroStreak + 1;
+          if (healthyZeroStreak < STALE_REMOVAL_BUFFER_DAYS) {
+            skipRemoval = true;
+            console.warn(`ANTI-FLAP: ${company.name} source healthy but 0 PMs (day ${healthyZeroStreak}/${STALE_REMOVAL_BUFFER_DAYS}). Preserving ${existingActiveCount} active job(s) one more cycle.`);
+          } else {
+            console.warn(`${company.name}: source healthy, 0 PMs for ${healthyZeroStreak} consecutive days, removing ${existingActiveCount} now-stale active job(s).`);
+          }
+        } else {
+          // Source empty/failed: preserve, and do NOT count toward the staleness buffer.
+          skipRemoval = true;
+          console.warn(`SAFETY: ${company.name} scrape returned 0 jobs and source appears empty/failed (scanned ${scrapeStats.totalScanned}). Skipping removal marking.`);
+        }
       }
 
       // 1. New jobs: in scrape, not in DB → INSERT with status='active'
@@ -606,7 +646,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       //    Also stamp last_removed_at so the 2-week return rule above can
       //    distinguish real re-posts from scraper jitter when this job
       //    eventually comes back.
-      if (!scrapeReturnedZero) {
+      if (!skipRemoval) {
         const toRemove = (existingJobs || []).filter(
           (j) => j.status === "active" && !scrapedPaths.has(j.job_url_path)
         );
@@ -631,9 +671,18 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       // Update company status. Successful scrape (any jobs found, even 0) resets
       // the consecutive_failure_count and clears auto_disabled — a probe-day success
       // re-enables the company automatically.
-      const checkStatus = validation.warnings.length > 0
-        ? `success (quality: ${validation.qualityScore}/100)`
-        : "success";
+      // A 0-job scrape used to be stamped "success (quality: 0/100)" because
+      // validateScrapeResults floors the score at 0 on empty input. That read as a
+      // quality failure and tripped the session-start health-check grep on perfectly
+      // healthy companies. Label the empty cases honestly instead.
+      let checkStatus: string;
+      if (jobs.length === 0) {
+        checkStatus = sourceHealthy ? "success (0 PMs)" : "success (0 jobs from source)";
+      } else if (validation.warnings.length > 0) {
+        checkStatus = `success (quality: ${validation.qualityScore}/100)`;
+      } else {
+        checkStatus = "success";
+      }
       if (isProbing && jobs.length > 0) {
         reEnabled.push({ name: company.name, jobCount: jobs.length });
         await logScraperEvent(company.id, company.name, "auto_re_enabled", {
@@ -656,6 +705,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
         total_product_jobs: currentJobCount,
         consecutive_failure_count: 0,
         auto_disabled: false,
+        consecutive_healthy_zero_days: healthyZeroStreak,
       };
       if (currentJobCount > 0) {
         // PMs present: reset zero streak, mark scraper verified, and unmark any

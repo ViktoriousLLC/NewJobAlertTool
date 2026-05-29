@@ -1691,7 +1691,8 @@ async function scrapeEightfoldCareers(careersUrl: string): Promise<ScrapedJob[]>
  */
 async function scrapeSmartRecruitersCareers(
   company: string,
-  companyLabel: string
+  companyLabel: string,
+  stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Fetching jobs from SmartRecruiters API (company: ${company})`);
 
@@ -1740,6 +1741,9 @@ async function scrapeSmartRecruitersCareers(
 
     if (offset === 0) {
       console.log(`${companyLabel}: SmartRecruiters total postings: ${data.totalFound}`);
+      // Full-board count (pre-PM-filter). Throws above on a non-ok first page,
+      // so a 0 here means "board reachable, 0 PMs", not "source failed".
+      if (stats) stats.totalScanned = data.totalFound;
     }
 
     if (!data.content || data.content.length === 0) break;
@@ -2145,7 +2149,8 @@ async function scrapeICIMSCareers(
  */
 async function scrapeLeverCareers(
   handle: string,
-  companyLabel: string
+  companyLabel: string,
+  stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Fetching jobs from Lever API (handle: ${handle})`);
 
@@ -2177,6 +2182,11 @@ async function scrapeLeverCareers(
 
   const postings: LeverPosting[] = await response.json();
   console.log(`${companyLabel}: Found ${postings.length} total postings`);
+
+  // Full-board count (pre-PM-filter) so the daily cron can tell "board alive,
+  // 0 PMs" (remove stale rows) from "source failed" (preserve). Lever throws
+  // above on a non-ok response, so reaching here means the board was reachable.
+  if (stats) stats.totalScanned = postings.length;
 
   const pmJobs = postings.filter((posting) => {
     const lowerTitle = posting.text.toLowerCase();
@@ -3461,7 +3471,7 @@ export async function scrapeCompanyCareers(
         break;
       case "lever":
         if (platformConfig.handle) {
-          return scrapeLeverCareers(platformConfig.handle, label);
+          return scrapeLeverCareers(platformConfig.handle, label, stats);
         }
         break;
       case "ashby":
@@ -3478,7 +3488,7 @@ export async function scrapeCompanyCareers(
         return scrapeEightfoldCareers(platformConfig.careersUrl || careersUrl);
       case "smartrecruiters":
         if (platformConfig.company) {
-          return scrapeSmartRecruitersCareers(platformConfig.company, label);
+          return scrapeSmartRecruitersCareers(platformConfig.company, label, stats);
         }
         break;
       case "icims": {
@@ -3623,7 +3633,7 @@ export async function scrapeCompanyCareers(
       case "greenhouse_departments":
         return scrapeGreenhouseDepartments(regConfig.boardName, label, stats);
       case "lever":
-        return scrapeLeverCareers(regConfig.handle, label);
+        return scrapeLeverCareers(regConfig.handle, label, stats);
       case "ashby":
         return scrapeAshbyCareers(regConfig.orgName, label, stats);
       case "workday":
@@ -3636,7 +3646,7 @@ export async function scrapeCompanyCareers(
     const handle = new URL(careersUrl).pathname.split("/")[1];
     if (handle) {
       console.log(`Detected Lever careers page, using API scraper (handle: ${handle})`);
-      return scrapeLeverCareers(handle, handle);
+      return scrapeLeverCareers(handle, handle, stats);
     }
   }
 
@@ -3670,7 +3680,7 @@ export async function scrapeCompanyCareers(
     const company = new URL(careersUrl).pathname.split("/")[1];
     if (company) {
       console.log(`Detected SmartRecruiters careers page (company: ${company})`);
-      return scrapeSmartRecruitersCareers(company, company);
+      return scrapeSmartRecruitersCareers(company, company, stats);
     }
   }
 
