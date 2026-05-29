@@ -1708,3 +1708,22 @@ The reader-question close serves double duty: standard LinkedIn engagement drive
 - **Resend dashboard link** in the email footer so Vik can verify delivery in one click without devtools.
 - **Track engagement on the weekly LinkedIn posts** — manually for the first month, then add a column to a tracking sheet if it grows into a real channel.
 - **Voice file enforcement via hook?** Currently the reference memory + MEMORY.md pointer is honor-system. A PreToolUse hook that blocks user-voice drafting unless the voice files have been Read in the current session would be belt-and-suspenders. Defer unless I slip again.
+
+---
+
+## 2026-05-29 — DEV-27: Sentry observability blindness + doc-cadence reset
+
+> **Doc-cadence note:** This log lapsed 2026-05-23 → 2026-05-28. Those sessions captured to the external auto-memory dir (`MEMORY.md`) and Linear instead of committing here, because these two root docs sit on branch-protected `main` and need a PR, which recent sessions skipped. PRs #55-#100 (auth JWKS migration, interview voice work, onboarding pre-check, the daily-email 1000-row pagination fix, etc.) are summarized in MEMORY.md + Linear, not back-filled here. Resuming the in-repo log with this entry.
+
+**What changed.** Fixed DEV-27 (Sentry alert for `phase:auth-fallback` never emailing) and discovered the root cause was far deeper than the ticket: **backend Sentry had been a silent no-op since it was added 2026-02-11 (commit 67e92be), ~3.5 months blind**, because `SENTRY_DSN` was never set on Railway and `Sentry.init({dsn:undefined})` no-ops by design. Three instances of the same truncated/missing-key bug were found and fixed: backend `SENTRY_DSN` (a dashboard re-add truncated it to `.../4510870`, a valid-looking but nonexistent project; fixed via CLI to the full 95-char value), backend `POSTHOG_API_KEY` (entirely missing, so `capturePosthogEvent` from PR #94 was also no-oping; set from the project's publishable key), and frontend `NEXT_PUBLIC_SENTRY_DSN` on Vercel (truncated; fixed across all envs + `vercel redeploy`).
+
+Shipped a liveness probe (`backend/src/lib/sentryHealth.ts`, content landed on main via PR #97 — branch entanglement carried it, so the dedicated PR #96 was closed as an empty diff). It POSTs a synthetic event to the Sentry ingest endpoint and checks acceptance at boot (`index.ts`) and daily (`dailyCheck.ts`); on failure it emails admin + emits PostHog `observability.sentry_unhealthy`, deliberately not via Sentry. Added `backend/.env.example` (the missing documentation), gotchas in CLAUDE.md + JOBS.md, and a `sendAdminEmail()` helper.
+
+**Caught a second bug in the fix itself.** The probe guards used `process.env.NODE_ENV === "production"`, but `NODE_ENV` was never set on Railway, so the probes (and auth.ts's own fail-closed JWKS safety nets) were dead code in prod. Root-fixed by setting `NODE_ENV=production` on Railway after auditing every backend `NODE_ENV` usage for blast radius (all safe: Sentry tags already default to "production"; auth.ts fail-closed won't throw because `jwksUrl` is set; the JWKS boot probe simply activates).
+
+**Decisions / alternatives considered.**
+- **Probe technique:** ingest-endpoint POST + HTTP-status check (no extra credential needed) chosen over (a) a heartbeat verified via the Sentry API (needs an auth token) and (b) a mere "is the var set" check (would miss a truncated-but-well-formed DSN — exactly today's bug). Verified against live ingest across all 4 states; the truncated case returns HTTP 403 `with_reason: ProjectId`.
+- **Alert channel:** admin email + PostHog, never Sentry (it can't report its own outage).
+- **NODE_ENV root-fix vs scoped guard:** chose to set `NODE_ENV=production` (one var, also re-arms auth.ts's dormant safety nets) over changing the guard to `RAILWAY_ENVIRONMENT_NAME`. Follow-up noted: making the probe guard depend on the auto-injected `RAILWAY_ENVIRONMENT_NAME` would be more robust than a manually-set `NODE_ENV` (which could be silently cleared — the same failure class this work is about).
+
+**The meta-lesson (why nothing caught it for 3.5 months):** we had monitoring but nothing monitored the monitoring. Every guardrail checks a different layer (code diffs, auth config, scraper DB); none pushed an event through Sentry to confirm receipt. And silent-failure observability makes "broken" indistinguishable from "healthy" — an empty dashboard reads as good news. Same class as the recurring "absence of bad signal looks like good signal" failures (Phases 15/21/25).
