@@ -75,7 +75,8 @@ The admin digest's "Unverified zeros" section was retired with this PR. `unverif
 - **From addresses**:
   - `alerts@newpmjobs.com` (API)
   - `noreply@newpmjobs.com` (magic links via SMTP)
-- **Resend limits**: Free tier = 100 emails/day, 3K/month, 2 req/s. SMTP + API share quota.
+- **Resend plan**: PAID **Transactional Pro = 50,000 emails/month** ($20/mo). NOT the free tier. Quota is effectively never the constraint at current volume (~75 daily recipients). The old "free tier = 100/day" note here was stale and caused a misdiagnosis 2026-05-29. The "100/call" above is the batch-API page size, not a daily cap. SMTP + API share the monthly budget.
+- **Subscription fetch must paginate**: any global `user_subscriptions` select MUST loop with `.range()` over a stable `.order("id")` — PostgREST caps a single select at 1000 rows. An unbounded select in `sendPerUserAlerts` silently dropped ~43% of subscribed users (all recent signups) from the daily email once the table passed 1000 rows. Fixed 2026-05-29. Same footgun class as the `listUsers()` perPage=50 bug.
 - **API key**: only in Railway env vars; empty locally.
 
 ## Consolidated Admin Digest

@@ -866,10 +866,27 @@ async function sendPerUserAlerts(
     prefsMap.set(pref.user_id, pref.email_frequency);
   }
 
-  // Get all subscriptions (batched for all users)
-  const { data: allSubs } = await supabase
-    .from("user_subscriptions")
-    .select("user_id, company_id");
+  // Get all subscriptions (batched for all users). PostgREST silently caps
+  // any single select at 1000 rows, so we MUST paginate — an unbounded
+  // .select() returned only the oldest 1000 rows once the table crossed 1000
+  // (2026-05), which dropped ~43% of subscribed users (all recent signups)
+  // out of the email loop entirely: they were treated as having 0 companies
+  // and skipped. Order by a stable unique key (id) so range pagination can't
+  // skip or duplicate rows. Same footgun class as the listUsers() perPage bug.
+  const allSubs: { user_id: string; company_id: string }[] = [];
+  const SUBS_PAGE_SIZE = 1000;
+  for (let from = 0; ; from += SUBS_PAGE_SIZE) {
+    const { data: page, error: subsErr } = await supabase
+      .from("user_subscriptions")
+      .select("user_id, company_id")
+      .order("id", { ascending: true })
+      .range(from, from + SUBS_PAGE_SIZE - 1);
+    if (subsErr) throw subsErr;
+    if (!page || page.length === 0) break;
+    allSubs.push(...page);
+    if (page.length < SUBS_PAGE_SIZE) break;
+  }
+  console.log(`sendPerUserAlerts: fetched ${allSubs.length} total subscription rows`);
 
   const userSubsMap = new Map<string, string[]>();
   for (const sub of allSubs || []) {
