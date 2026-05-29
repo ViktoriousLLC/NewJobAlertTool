@@ -2,6 +2,7 @@ import { Resend } from "resend";
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 import { ADMIN_EMAIL } from "../lib/constants";
+import { fetchAllRows } from "../lib/fetchAllRows";
 
 const AI_TITLE_RE = /\b(AI|ML|GenAI|LLM|Machine Learning|Generative|Agentforce|Agentic|Voice AI|Copilot|GPT)\b/i;
 const TOP_INDUSTRIES = 5;
@@ -71,33 +72,41 @@ export async function computeWeeklyDigest(now: Date = new Date()): Promise<Weekl
   // Three parallel queries: this-week jobs, total company count, prior-4-week
   // job/company pairs (for the surge cut). Comp data join runs after we know
   // which companies posted this week.
-  const [
-    { data: jobsRaw, error: jobsErr },
-    { count: companyCount, error: coErr },
-    { data: priorJobsRaw, error: priorErr },
-  ] = await Promise.all([
-    supabase
-      .from("seen_jobs")
-      .select("job_title, job_location, first_seen_at, job_level, companies!inner ( name, industry )")
-      .eq("status", "active")
-      .eq("is_baseline", false)
-      .gte("first_seen_at", weekAgo.toISOString()),
+  //
+  // Both seen_jobs reads are paginated via fetchAllRows: the prior-4-week
+  // window already sits near the PostgREST 1000-row cap and an unbounded
+  // select silently truncated it, undercounting the surge baseline so flat
+  // companies read as "surging" in the LinkedIn draft (DEV-36).
+  const [jobsRaw, companyCountResult, priorJobsRaw] = await Promise.all([
+    fetchAllRows<JobRow>((from, to) =>
+      supabase
+        .from("seen_jobs")
+        .select("job_title, job_location, first_seen_at, job_level, companies!inner ( name, industry )")
+        .eq("status", "active")
+        .eq("is_baseline", false)
+        .gte("first_seen_at", weekAgo.toISOString())
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
     supabase.from("companies").select("id", { count: "exact", head: true }),
-    supabase
-      .from("seen_jobs")
-      .select("companies!inner ( name )")
-      .eq("status", "active")
-      .eq("is_baseline", false)
-      .gte("first_seen_at", fiveWeeksAgo.toISOString())
-      .lt("first_seen_at", weekAgo.toISOString()),
+    fetchAllRows<{ companies: { name: string } | null }>((from, to) =>
+      supabase
+        .from("seen_jobs")
+        .select("companies!inner ( name )")
+        .eq("status", "active")
+        .eq("is_baseline", false)
+        .gte("first_seen_at", fiveWeeksAgo.toISOString())
+        .lt("first_seen_at", weekAgo.toISOString())
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
   ]);
 
-  if (jobsErr) throw jobsErr;
-  if (coErr) throw coErr;
-  if (priorErr) throw priorErr;
+  if (companyCountResult.error) throw companyCountResult.error;
+  const companyCount = companyCountResult.count;
 
-  const jobs = (jobsRaw || []) as unknown as JobRow[];
-  const priorJobs = (priorJobsRaw || []) as unknown as { companies: { name: string } | null }[];
+  const jobs = jobsRaw as unknown as JobRow[];
+  const priorJobs = priorJobsRaw as unknown as { companies: { name: string } | null }[];
 
   // ---- Aggregations over this-week jobs ----
   const industryMap = new Map<string, number>();
