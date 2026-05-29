@@ -124,14 +124,35 @@ router.get("/companies", async (_req: Request, res: Response) => {
 // GET /api/admin/users — user list with subscription count and preferences
 router.get("/users", async (_req: Request, res: Response) => {
   try {
-    const [usersResult, subsResult, prefsResult] = await Promise.all([
+    // user_subscriptions must be paginated: PostgREST caps a single select at
+    // 1000 rows, and the table is well past that. An unbounded select made
+    // this admin view under-count subscriptions for every user past row 1000
+    // (the same truncation that silently dropped recent signups from the daily
+    // email loop). Paginate over a stable unique key (id).
+    const fetchAllSubscriptions = async (): Promise<{ user_id: string }[]> => {
+      const rows: { user_id: string }[] = [];
+      const PAGE_SIZE = 1000;
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const { data, error } = await supabase
+          .from("user_subscriptions")
+          .select("user_id")
+          .order("id", { ascending: true })
+          .range(from, from + PAGE_SIZE - 1);
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        rows.push(...data);
+        if (data.length < PAGE_SIZE) break;
+      }
+      return rows;
+    };
+
+    const [usersResult, subs, prefsResult] = await Promise.all([
       listAllUsers().then((u) => ({ data: { users: u } })),
-      supabase.from("user_subscriptions").select("user_id"),
+      fetchAllSubscriptions(),
       supabase.from("user_preferences").select("user_id, email_frequency"),
     ]);
 
     const users = usersResult.data?.users || [];
-    const subs = subsResult.data || [];
     const prefs = prefsResult.data || [];
 
     // Count subscriptions per user

@@ -258,16 +258,25 @@ router.post("/evaluate", async (req: Request, res: Response) => {
       return;
     }
 
-    const { interview_type, transcript, duration_sec } = req.body as {
+    const { interview_type, transcript, duration_sec, conversation_id } = req.body as {
       interview_type?: string;
       transcript?: { role: string; text: string }[];
       duration_sec?: number;
+      conversation_id?: string;
     };
 
     if (!interview_type || !isValidInterviewType(interview_type)) {
       res.status(400).json({ error: "Invalid interview_type" });
       return;
     }
+
+    // ElevenLabs conversation ids look like "conv_<base62>" (~50 chars). Keep
+    // only a sane, bounded string; anything else is dropped to null rather than
+    // rejecting the whole evaluation (the eval still has value without audio).
+    const convId =
+      typeof conversation_id === "string" && /^[\w-]{1,128}$/.test(conversation_id)
+        ? conversation_id
+        : null;
     if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
       res.status(400).json({ error: "transcript must be a non-empty array" });
       return;
@@ -334,6 +343,7 @@ Write the evaluation now.`;
             transcript,
             duration_sec: duration_sec || null,
             evaluations: { claude, gemini, openai },
+            elevenlabs_conversation_id: convId,
           })
           .select("id")
           .single();

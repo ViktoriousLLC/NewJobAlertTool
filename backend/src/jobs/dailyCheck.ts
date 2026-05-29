@@ -194,6 +194,35 @@ export async function runDailyCheck(options?: { skipEmails?: boolean; forceMonda
 async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayDigest?: boolean; forceWeeklyDigest?: boolean }): Promise<void> {
   console.log(`Starting daily job check...${options?.skipEmails ? " (skipEmails mode)" : ""}`);
 
+  // DEV-27: verify Sentry is actually ingesting events before anything else.
+  // Sentry fails silent on a bad DSN, so without this the backend can be blind
+  // to errors for months (as it was Feb-May 2026) with zero signal. Runs daily
+  // here (boot probe lives in index.ts); on failure, email admin via PostHog's
+  // sibling channel (email), never via Sentry itself.
+  if (process.env.NODE_ENV === "production") {
+    try {
+      const { reportSentryHealth } = await import("../lib/sentryHealth");
+      const sentryHealth = await reportSentryHealth("daily");
+      if (!sentryHealth.ok) {
+        const { sendAdminEmail } = await import("../email/sendAlert");
+        await sendAdminEmail(
+          "NewPMJobs alert: Sentry is not receiving events",
+          `<div style="font-family: system-ui, -apple-system, sans-serif; max-width: 560px; color: #1f2937;">
+            <h2 style="color: #b91c1c; margin-bottom: 8px;">Sentry is not receiving events</h2>
+            <p>The daily liveness probe could not push an event to Sentry. Backend error reporting is currently blind: errors are being thrown into a void, not captured.</p>
+            <p style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 12px;">
+              <strong>Reason:</strong> ${sentryHealth.reason}<br/>
+              <strong>Detail:</strong> ${sentryHealth.detail}
+            </p>
+            <p>Check that <code>SENTRY_DSN</code> is set correctly on Railway (it must be the full Default DSN of the javascript-nextjs Sentry project; a truncated value points at a nonexistent project and is silently dropped).</p>
+          </div>`,
+        );
+      }
+    } catch (err) {
+      console.error("Sentry liveness check failed to run:", err);
+    }
+  }
+
   // Scrape all companies so the catalog stays fresh (even with 0 subscribers)
   const { data: companies, error } = await supabase
     .from("companies")
@@ -837,10 +866,27 @@ async function sendPerUserAlerts(
     prefsMap.set(pref.user_id, pref.email_frequency);
   }
 
-  // Get all subscriptions (batched for all users)
-  const { data: allSubs } = await supabase
-    .from("user_subscriptions")
-    .select("user_id, company_id");
+  // Get all subscriptions (batched for all users). PostgREST silently caps
+  // any single select at 1000 rows, so we MUST paginate — an unbounded
+  // .select() returned only the oldest 1000 rows once the table crossed 1000
+  // (2026-05), which dropped ~43% of subscribed users (all recent signups)
+  // out of the email loop entirely: they were treated as having 0 companies
+  // and skipped. Order by a stable unique key (id) so range pagination can't
+  // skip or duplicate rows. Same footgun class as the listUsers() perPage bug.
+  const allSubs: { user_id: string; company_id: string }[] = [];
+  const SUBS_PAGE_SIZE = 1000;
+  for (let from = 0; ; from += SUBS_PAGE_SIZE) {
+    const { data: page, error: subsErr } = await supabase
+      .from("user_subscriptions")
+      .select("user_id, company_id")
+      .order("id", { ascending: true })
+      .range(from, from + SUBS_PAGE_SIZE - 1);
+    if (subsErr) throw subsErr;
+    if (!page || page.length === 0) break;
+    allSubs.push(...page);
+    if (page.length < SUBS_PAGE_SIZE) break;
+  }
+  console.log(`sendPerUserAlerts: fetched ${allSubs.length} total subscription rows`);
 
   const userSubsMap = new Map<string, string[]>();
   for (const sub of allSubs || []) {

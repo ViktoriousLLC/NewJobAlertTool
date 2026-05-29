@@ -35,6 +35,17 @@ Sentry.init({
   environment: process.env.NODE_ENV || "production",
 });
 
+// DEV-27: Sentry.init() no-ops SILENTLY on a missing/malformed/wrong-project
+// DSN, so a dead error pipeline looks identical to a healthy one (this is how
+// backend reporting sat blind Feb-May 2026). Actively verify ingestion at boot
+// by pushing a real event through and checking it's accepted. Fire-and-forget;
+// never blocks startup. The daily cron re-runs this and emails on failure.
+if (process.env.NODE_ENV === "production") {
+  import("./lib/sentryHealth")
+    .then(({ reportSentryHealth }) => reportSentryHealth("boot"))
+    .catch((err) => console.error("[observability] Sentry boot probe crashed:", err));
+}
+
 const app = express();
 const PORT = process.env.PORT || 4000;
 
