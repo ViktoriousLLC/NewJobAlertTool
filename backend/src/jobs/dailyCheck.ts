@@ -773,6 +773,15 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       emailBatchResult = await sendPerUserAlerts(companyAlerts);
     } catch (err) {
       console.error("Failed to send per-user alerts:", err);
+      // A total pipeline crash must NOT look like a quiet day. Report to Sentry
+      // and force the admin digest by recording a synthetic send failure with
+      // the error surfaced (digest fires on emailBatchResult.failed > 0).
+      Sentry.captureException(err, { tags: { area: "sendPerUserAlerts" } });
+      emailBatchResult = {
+        sent: 0,
+        failed: 1,
+        errors: [`Per-user alert pipeline threw before sending: ${err instanceof Error ? err.message : String(err)}`],
+      };
     }
   }
 
@@ -841,6 +850,11 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     );
   }
 }
+
+// Tripwire floor: if at least this many subscribers are eligible for an email
+// and we still build zero emails on a day when companies DID post new jobs,
+// treat it as a silent data bug (truncation / mapping) rather than a quiet day.
+const EMAIL_TRIPWIRE_MIN_ELIGIBLE = 25;
 
 async function sendPerUserAlerts(
   companyAlerts: Map<string, { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }>
@@ -1027,6 +1041,36 @@ async function sendPerUserAlerts(
     await supabase.from("recommendation_history").delete().lt("shown_date", thirtyDaysAgo);
   } catch (err) {
     console.error("recommendation_history write/cleanup failed (non-fatal):", err);
+  }
+
+  // Observability tripwire. A healthy day with new jobs should build emails for
+  // a meaningful fraction of eligible subscribers. If a non-trivial eligible
+  // pool produces ZERO emails while companies DID post new jobs, something
+  // silently dropped users (the 1000-row truncation, a mis-keyed map, a bad
+  // filter). This is the exact blind spot that hid the truncation bug for weeks
+  // (PR #97): the run logged a healthy-looking "sent N" the whole time. Surface
+  // it loudly via Sentry and force the admin digest instead of staying quiet.
+  const eligibleSubscribed = users.filter((u) => {
+    if (!u.email) return false;
+    const freq = prefsMap.get(u.id) || "daily";
+    if (freq === "off") return false;
+    if (freq === "weekly" && !isMonday) return false;
+    return (userSubsMap.get(u.id)?.length ?? 0) > 0;
+  }).length;
+  console.log(
+    `sendPerUserAlerts: eligibleSubscribed=${eligibleSubscribed}, payloadsBuilt=${emailPayloads.length}, companiesWithNewJobs=${companyAlerts.size}`
+  );
+
+  if (
+    eligibleSubscribed >= EMAIL_TRIPWIRE_MIN_ELIGIBLE &&
+    emailPayloads.length === 0 &&
+    companyAlerts.size > 0
+  ) {
+    const msg = `Email tripwire: ${eligibleSubscribed} eligible subscribers but 0 emails built, despite ${companyAlerts.size} companies posting new jobs today. Likely a silent data bug (truncation / mapping), not a quiet day.`;
+    console.error(msg);
+    sendResult.errors.push(msg);
+    if (sendResult.failed === 0) sendResult.failed = eligibleSubscribed; // force the admin digest to fire
+    Sentry.captureMessage(msg, "error");
   }
 
   // Email-send failures are surfaced in the admin digest (built at end of run).
