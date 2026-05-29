@@ -53,6 +53,13 @@ const STEP_DURATIONS = [4000, 25000, 8000, 5000];
 
 type FlowState = "input" | "checking" | "preview" | "retry";
 
+// Starter set pre-checked for brand-new users (zero subscriptions) so they
+// leave onboarding already tracking something and start getting daily emails.
+// Deliberately one large / two mid / two enterprise, skipping Amazon (firehose).
+// Matched against catalog `name` exactly; a name that isn't in the catalog is
+// just skipped. Users can uncheck any before confirming.
+const DEFAULT_ONBOARDING_COMPANIES = ["Google", "Anthropic", "OpenAI", "Stripe", "Capital One"];
+
 export default function AddCompanyModal({
   isOpen,
   onClose,
@@ -113,7 +120,20 @@ export default function AddCompanyModal({
       apiFetch("/api/subscriptions").then((r) => r.json()),
     ])
       .then(([catalogData]) => {
-        setCatalog(catalogData || []);
+        const list: CatalogCompany[] = catalogData || [];
+        setCatalog(list);
+        // Onboarding only: a brand-new user (no subscriptions yet) gets the
+        // starter set pre-checked. Existing users opening the modal keep an
+        // empty selection. Applied here (not at open) because the catalog
+        // must be loaded to resolve names to ids.
+        if (subscribedIds.size === 0) {
+          const defaults = new Set<string>();
+          for (const name of DEFAULT_ONBOARDING_COMPANIES) {
+            const match = list.find((c) => c.name === name);
+            if (match) defaults.add(match.id);
+          }
+          if (defaults.size > 0) setSelected(defaults);
+        }
       })
       .catch((err) => console.error("Failed to load catalog:", err))
       .finally(() => setCatalogLoading(false));
