@@ -1788,3 +1788,47 @@ The fix mirrors `redirectPreservingSession` in `frontend/middleware.ts` — capt
 - **Newly-built defenses are tuned to the specific incident that motivated them — they don't generalize automatically.** DEV-11's daily code audit had a rule for "NextResponse.redirect near auth without cookieStore.getAll() copy" (the ORIGINAL bug pattern, absence). DEV-17's regression was the OPPOSITE — wrong PRESENCE of cookieStore.getAll(). The audit rule fired on absence; it didn't catch the misuse. Captured as a v1.1 rule for DEV-11: flag `cookieStore.getAll()` used in a `response.cookies.set` pattern in auth route handlers. Strongly correlates with the attribute-strip footgun.
 - **The same fix in two places can have different gotchas.** middleware.ts uses `supabaseResponse.cookies.getAll()` (Response cookies — full attributes). PR #62 used `cookieStore.getAll()` (Request cookies — attributes stripped). Both look like "copy cookies onto the redirect" but only one preserves attributes. The right pattern is to capture inside the setAll callback, not after the fact from any cookieStore.
 - **18 users initially affected by Phase 25 doubled the blast radius to also include "everyone who signed in 2026-05-25 → 2026-05-26."** Every magic-link sign-in during that window got session-only cookies. Next sign-in after PR #67 deploys, they're back to persistent. No backfill needed but worth noting how a fix can quietly affect more users than the original bug.
+
+---
+
+## 2026-05-29 — DEV-27: Sentry observability blindness + doc-cadence reset
+
+> **Doc-cadence note:** This log lapsed 2026-05-23 → 2026-05-28. Those sessions captured to the external auto-memory dir (`MEMORY.md`) and Linear instead of committing here, because these two root docs sit on branch-protected `main` and need a PR, which recent sessions skipped. PRs #55-#100 (auth JWKS migration, interview voice work, onboarding pre-check, the daily-email 1000-row pagination fix, etc.) are summarized in MEMORY.md + Linear, not back-filled here. Resuming the in-repo log with this entry.
+
+**What changed.** Fixed DEV-27 (Sentry alert for `phase:auth-fallback` never emailing) and discovered the root cause was far deeper than the ticket: **backend Sentry had been a silent no-op since it was added 2026-02-11 (commit 67e92be), ~3.5 months blind**, because `SENTRY_DSN` was never set on Railway and `Sentry.init({dsn:undefined})` no-ops by design. Three instances of the same truncated/missing-key bug were found and fixed: backend `SENTRY_DSN` (a dashboard re-add truncated it to `.../4510870`, a valid-looking but nonexistent project; fixed via CLI to the full 95-char value), backend `POSTHOG_API_KEY` (entirely missing, so `capturePosthogEvent` from PR #94 was also no-oping; set from the project's publishable key), and frontend `NEXT_PUBLIC_SENTRY_DSN` on Vercel (truncated; fixed across all envs + `vercel redeploy`).
+
+Shipped a liveness probe (`backend/src/lib/sentryHealth.ts`, content landed on main via PR #97 — branch entanglement carried it, so the dedicated PR #96 was closed as an empty diff). It POSTs a synthetic event to the Sentry ingest endpoint and checks acceptance at boot (`index.ts`) and daily (`dailyCheck.ts`); on failure it emails admin + emits PostHog `observability.sentry_unhealthy`, deliberately not via Sentry. Added `backend/.env.example` (the missing documentation), gotchas in CLAUDE.md + JOBS.md, and a `sendAdminEmail()` helper.
+
+**Caught a second bug in the fix itself.** The probe guards used `process.env.NODE_ENV === "production"`, but `NODE_ENV` was never set on Railway, so the probes (and auth.ts's own fail-closed JWKS safety nets) were dead code in prod. Root-fixed by setting `NODE_ENV=production` on Railway after auditing every backend `NODE_ENV` usage for blast radius (all safe: Sentry tags already default to "production"; auth.ts fail-closed won't throw because `jwksUrl` is set; the JWKS boot probe simply activates).
+
+**Decisions / alternatives considered.**
+- **Probe technique:** ingest-endpoint POST + HTTP-status check (no extra credential needed) chosen over (a) a heartbeat verified via the Sentry API (needs an auth token) and (b) a mere "is the var set" check (would miss a truncated-but-well-formed DSN — exactly today's bug). Verified against live ingest across all 4 states; the truncated case returns HTTP 403 `with_reason: ProjectId`.
+- **Alert channel:** admin email + PostHog, never Sentry (it can't report its own outage).
+- **NODE_ENV root-fix vs scoped guard:** chose to set `NODE_ENV=production` (one var, also re-arms auth.ts's dormant safety nets) over changing the guard to `RAILWAY_ENVIRONMENT_NAME`. Follow-up noted: making the probe guard depend on the auto-injected `RAILWAY_ENVIRONMENT_NAME` would be more robust than a manually-set `NODE_ENV` (which could be silently cleared — the same failure class this work is about).
+
+**The meta-lesson (why nothing caught it for 3.5 months):** we had monitoring but nothing monitored the monitoring. Every guardrail checks a different layer (code diffs, auth config, scraper DB); none pushed an event through Sentry to confirm receipt. And silent-failure observability makes "broken" indistinguishable from "healthy" — an empty dashboard reads as good news. Same class as the recurring "absence of bad signal looks like good signal" failures (Phases 15/21/25).
+
+---
+
+## 2026-05-29 (later) — Parallel-session cleanup + docs reconciliation
+
+**Context.** Ran four Claude Code sessions in parallel through the evening (feature dev, a workflow/docs session, the DEV-27 observability fix, and the daily-email work). By night's end there were four open PRs, a diverged local `main`, an uncommitted journey-doc edit, and four session windows each proposing a different cleanup plan. A fifth session reconciled it, verifying ground truth before touching anything.
+
+**What was verified (read-only) — because the windows disagreed:**
+- **The "DEV-27 code is unmerged" alarm was false.** The Sentry liveness code (`backend/src/lib/sentryHealth.ts` + wiring in `index.ts`/`dailyCheck.ts`/`email/sendAlert.ts` + `.env.example`) IS live on `main`, squash-merged via PR #97 (commit `badafe6`). The "orphan branch with 3 unmerged commits" one window flagged was a squash-merge artifact: byte-identical content, different SHAs (proven by an empty `git diff main:file branch:file`). Nothing to rescue.
+- **`main` is governed by a repository ruleset (id 16381419), not classic branch protection.** It requires a PR but needs **0 approving reviews** to merge — so direct pushes are blocked, but `gh pr merge` works without a human approver. The "user merges via GitHub" line in CLAUDE.md is a convention, not a technical gate.
+- **A real Phase-25 collision:** PR #68's journey entry and an uncommitted working-tree journey edit both claimed "Phase 25." #68 = the auth-lockout incident (2026-05-22→25); the uncommitted edit = the auto-verify-zeros + auth-alert work (2026-05-28). Resolved chronologically: #68 stays Phase 25, the auto-verify-zeros entry becomes Phase 26.
+
+**What was done.**
+- Merged **PR #98** (`0cfe46a` — remove stale zombie jobs after 2 healthy-zero days; the one outstanding code fix, CI green on Railway + Vercel, migration already applied to prod).
+- Closed **PR #4** (15-day-old zero-jobs diagnostic; stale, conflicting, its plan long since executed via PR #90).
+- Merged **PR #68** (`50a0254` — auth-incident Phase 25 + CLAUDE.md CI/feedback sections + project-history block).
+- Folded **PR #104**'s DEV-27 history entry (the section directly above) into this consolidation PR and closed #104 — it could not merge alongside #68 without a project-history append conflict, so its content was reproduced verbatim here to preserve chronological order.
+- Landed the renumbered **journey Phase 26** (the auto-verify-zeros / admin-loop story) that had been sitting uncommitted in the working tree, never branched.
+
+**Lessons.**
+- **Parallel sessions converge on facts but diverge on framing.** Four sessions surveying the same repo produced four different option menus; the divergence was entirely in recommendation, not in the underlying git state. When sessions disagree, re-derive ground truth from git/`gh` rather than trusting any one session's summary — and watch for false alarms born of git artifacts.
+- **Squash-merges make a fully-merged branch look unmerged.** `git log origin/main..branch` lists commits that exist only as distinct SHAs even though the content is already on main. Confirm with a content diff before concluding work is orphaned.
+- **The savecc trap is real.** The journey Phase 26 work was complete and even written, but never committed, because the in-repo docs need a PR and prior sessions stopped at the external memory dir. Capturing it required a deliberate consolidation pass.
+
+**PRs this pass:** merged #98, #68, and this consolidation PR; closed #4 and #104 (folded).
