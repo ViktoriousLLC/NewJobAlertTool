@@ -75,7 +75,8 @@ The admin digest's "Unverified zeros" section was retired with this PR. `unverif
 - **From addresses**:
   - `alerts@newpmjobs.com` (API)
   - `noreply@newpmjobs.com` (magic links via SMTP)
-- **Resend limits**: Free tier = 100 emails/day, 3K/month, 2 req/s. SMTP + API share quota.
+- **Resend plan**: PAID **Transactional Pro = 50,000 emails/month** ($20/mo). NOT the free tier. Quota is effectively never the constraint at current volume (~75 daily recipients). The old "free tier = 100/day" note here was stale and caused a misdiagnosis 2026-05-29. The "100/call" above is the batch-API page size, not a daily cap. SMTP + API share the monthly budget.
+- **Subscription fetch must paginate**: any global `user_subscriptions` select MUST loop with `.range()` over a stable `.order("id")` — PostgREST caps a single select at 1000 rows. An unbounded select in `sendPerUserAlerts` silently dropped ~43% of subscribed users (all recent signups) from the daily email once the table passed 1000 rows. Fixed 2026-05-29. Same footgun class as the `listUsers()` perPage=50 bug.
 - **API key**: only in Railway env vars; empty locally.
 
 ## Consolidated Admin Digest
@@ -87,6 +88,15 @@ The admin digest's "Unverified zeros" section was retired with this PR. `unverif
 - **Most days = no admin email.**
 
 (Tuesday duplicate was removed PR #17 — daily self-check agent took over the safety-net role.)
+
+## Sentry Liveness Probe (DEV-27, added 2026-05-29)
+
+First step inside `runDailyCheckInner()` (prod only). Calls `reportSentryHealth("daily")` from `backend/src/lib/sentryHealth.ts`, which POSTs a synthetic event to the Sentry ingest endpoint and checks the HTTP response.
+
+- **Why:** `Sentry.init()` no-ops silently on a missing/malformed/wrong-project DSN. Backend error reporting was dead Feb–May 2026 with no signal; a later DSN re-add was truncated (valid-looking, wrong project) and also dropped silently. Probing the ingest endpoint is the only way to catch all three modes.
+- **On failure:** emails `ADMIN_EMAIL` via `sendAdminEmail()` ("Sentry is not receiving events") + emits PostHog `observability.sentry_unhealthy`. The alert channel is deliberately NOT Sentry (it can't report its own outage).
+- **Boot mirror:** `index.ts` runs the same probe fire-and-forget at startup (console + PostHog, no email) so a bad deploy surfaces in ~60s.
+- **Probe events** all share fingerprint `["sentry-dsn-liveness-probe"]` so they collapse into one ignorable Sentry issue (level info, tag `phase:liveness-probe`). Safe to set that issue to "ignore" in Sentry.
 
 ## Security Check (Weekly)
 
