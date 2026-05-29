@@ -66,6 +66,11 @@ export default function InterviewTestPage() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
 
   const convoRef = useRef<Awaited<ReturnType<typeof Conversation.startSession>> | null>(null);
+  // ElevenLabs conversation id, captured in onConnect. Stored in a ref (not
+  // state) so handleEnd reads the latest value without re-binding its callback.
+  // Sent with the evaluation so the backend can persist it for later audio
+  // re-fetch (delivery analysis, DEV-31).
+  const conversationIdRef = useRef<string | null>(null);
   const volumePollRef = useRef<number | null>(null);
   const micTestRef = useRef<{ stream: MediaStream; ctx: AudioContext; analyser: AnalyserNode } | null>(null);
   const [micTesting, setMicTesting] = useState(false);
@@ -153,6 +158,7 @@ export default function InterviewTestPage() {
     setTranscript([]);
     setEvaluations({ claude: null, gemini: null, openai: null });
     setErrorMsg(null);
+    conversationIdRef.current = null;
     setStatus("starting");
 
     try {
@@ -197,6 +203,7 @@ export default function InterviewTestPage() {
         ...(selectedDeviceId ? { inputDeviceId: selectedDeviceId } : {}),
         onConnect: ({ conversationId }) => {
           console.log("[interview] connected", conversationId);
+          conversationIdRef.current = conversationId;
           setStatus("connected");
           setStartedAt(Date.now());
         },
@@ -271,6 +278,7 @@ export default function InterviewTestPage() {
           interview_type: selected,
           transcript: transcript.map((t) => ({ role: t.role, text: t.text })),
           duration_sec: duration,
+          conversation_id: conversationIdRef.current,
         }),
       });
 
@@ -363,6 +371,7 @@ export default function InterviewTestPage() {
     setEvaluations({ claude: null, gemini: null, openai: null });
     setErrorMsg(null);
     setStartedAt(null);
+    conversationIdRef.current = null;
     setMode("listening");
     setInputVolume(0);
     setCspViolations([]);
