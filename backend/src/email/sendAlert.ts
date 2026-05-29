@@ -425,6 +425,26 @@ export async function sendUserAlert(
 }
 
 /**
+ * Send a one-off operational email to the admin (single recipient = ADMIN_EMAIL).
+ * For ad-hoc alerts that aren't part of the consolidated daily digest, e.g. the
+ * Sentry liveness alarm (DEV-27). Best-effort; no-ops if RESEND_API_KEY unset.
+ */
+export async function sendAdminEmail(subject: string, html: string): Promise<void> {
+  if (!process.env.RESEND_API_KEY) {
+    console.log("RESEND_API_KEY not set — skipping admin email send");
+    return;
+  }
+  const { ADMIN_EMAIL } = await import("../lib/constants");
+  const resend = new Resend(process.env.RESEND_API_KEY);
+  await resend.emails.send({
+    from: "NewPMJobs <alerts@newpmjobs.com>",
+    to: ADMIN_EMAIL,
+    subject,
+    html,
+  });
+}
+
+/**
  * Legacy: send alert to hardcoded recipient (kept for backward compatibility during rollout).
  */
 export async function sendAlert(alerts: NewJobAlert[]): Promise<void> {

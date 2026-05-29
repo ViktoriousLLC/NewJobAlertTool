@@ -88,6 +88,15 @@ The admin digest's "Unverified zeros" section was retired with this PR. `unverif
 
 (Tuesday duplicate was removed PR #17 — daily self-check agent took over the safety-net role.)
 
+## Sentry Liveness Probe (DEV-27, added 2026-05-29)
+
+First step inside `runDailyCheckInner()` (prod only). Calls `reportSentryHealth("daily")` from `backend/src/lib/sentryHealth.ts`, which POSTs a synthetic event to the Sentry ingest endpoint and checks the HTTP response.
+
+- **Why:** `Sentry.init()` no-ops silently on a missing/malformed/wrong-project DSN. Backend error reporting was dead Feb–May 2026 with no signal; a later DSN re-add was truncated (valid-looking, wrong project) and also dropped silently. Probing the ingest endpoint is the only way to catch all three modes.
+- **On failure:** emails `ADMIN_EMAIL` via `sendAdminEmail()` ("Sentry is not receiving events") + emits PostHog `observability.sentry_unhealthy`. The alert channel is deliberately NOT Sentry (it can't report its own outage).
+- **Boot mirror:** `index.ts` runs the same probe fire-and-forget at startup (console + PostHog, no email) so a bad deploy surfaces in ~60s.
+- **Probe events** all share fingerprint `["sentry-dsn-liveness-probe"]` so they collapse into one ignorable Sentry issue (level info, tag `phase:liveness-probe`). Safe to set that issue to "ignore" in Sentry.
+
 ## Security Check (Weekly)
 
 `backend/src/jobs/securityCheck.ts` — runs `npm audit --json --omit=dev` every Monday.
