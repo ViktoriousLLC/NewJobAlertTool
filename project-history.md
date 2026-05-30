@@ -1791,9 +1791,53 @@ The fix mirrors `redirectPreservingSession` in `frontend/middleware.ts` — capt
 
 ---
 
+## 2026-05-25 → 2026-05-26 — Post-incident hardening sweep + proactive auto-fix layer
+
+The days after the auth incident closed out with a cluster of small fixes and one real new capability. Logged here because the in-repo log had lapsed and none of these got an entry at the time.
+
+**Proactive auto-fix layer (PR #76, DEV-19) — the substantive one.** A rule-based layer (`backend/src/jobs/autoFixRules.ts`) that runs before each per-company scrape in the daily cron. Each rule is a pure `detect()` plus a `fix()` that corrects the DB in place, and the same-day scrape immediately uses the corrected config. The first rule, `phenom_basedomain_missing_https`, catches the exact class that left Eli Lilly broken for 5 days (a `baseDomain` missing its `https://` prefix). Fixes log to `scraper_events` and show up in the admin digest's green "auto-fixed today" section. Reactive, error-message-driven rules were scoped to a v2 because they need a catch-and-retry refactor. The point: stop waiting days for a human to notice a known-shape regression; fix it on the next cron tick.
+
+**The rest of the sweep:**
+- **PR #69 (DEV-11 v1.1):** a second daily-audit rule that flags `cookieStore.getAll()` used to copy cookies onto a response (the attribute-strip footgun from DEV-17). The original rule only caught the *absence* of a cookie copy; this one catches the *wrong presence*.
+- **PR #70 (DEV-16):** escape route for the onboarding Add-Company modal that trapped brand-new users with zero subscriptions.
+- **PR #75 (DEV-18):** Rivian iCIMS routing fix (its clean REST endpoint was being short-circuited to Puppeteer). The Jibe-template work for DocuSign / Pandora / Joby / Schwab stays open under DEV-18.
+- **PR #73:** the Eli Lilly Phenom `baseDomain` https-prefix fix that motivated #76. **PR #72:** allowlisted 3 read-only MCP tools. **PR #74:** npm audit fix (4 moderate). **PR #77:** README.
+
+---
+
+## 2026-05-28 — Auth hardening: HS256 → JWKS / ES256 JWT verification (PR #93, #94)
+
+**What changed.** Supabase migrated this project off the legacy HS256 shared secret; tokens are now ES256 (asymmetric). The backend was still pinned to HS256 only, so every JWT verification *failed* and fell through to a ~150ms network round-trip per authenticated request. Found by poking around Railway logs, not by an alert. Fix: verify with the `jose` library + `createRemoteJWKSet` against Supabase's published keys, keep the network call as a defense-in-depth fallback, and add a boot-time probe that surfaces a misconfig early. PR #94 added a PostHog `auth.jwt_verify_path` event so the fast-vs-fallback split is finally visible.
+
+**Why it stayed silent.** Same family as DEV-27: Sentry warnings with no alert rule sit unread, the fallback hid all user-facing impact, and there was no telemetry on the verify path. A correctness-and-latency regression on every authed request, invisible until someone read the logs by hand. The recurring lesson: a "graceful" fallback that masks a failure is indistinguishable from health.
+
+---
+
+## 2026-05-29 — Daily-email reliability: failure detection + send-count tripwire + pagination (DEV-34 / 35 / 36)
+
+A wave of hardening on the email pipeline, triggered by a second silent email-disappearance.
+
+**The recurrence (PR #97).** `sendPerUserAlerts` read `user_subscriptions` with an unbounded select, which PostgREST silently caps at 1000 rows, dropping ~43% of subscribers (the most recent signups) from the daily email. Same failure *class* as the 2026-05-20 `listUsers perPage=50` bug (Phase 23 / journey), different code path. Fixed with range-pagination.
+
+**Failure detection (PR #102, DEV-35).** The Resend SDK returns API errors (401 rotated key, 429 rate limit, 422 validation) inside `{data, error}` and does NOT throw. `sendBatchAlerts` did `sent += batch.length` on any non-throw, so up to 100 non-delivered emails per batch were counted as "sent" and the catch never fired. Now it branches on `error`: failures count as failed, push to an errors array, and `Sentry.captureException`; single-sends throw so callers see the failure.
+
+**The tripwire (PR #103, DEV-34).** The alarm so an outage can't hide for weeks again. Two gaps had let the 1000-row truncation survive: a swallowed throw left the result as `{sent:0}` and the admin digest self-suppresses on quiet non-Monday days, so a total outage looked identical to a slow day; and nothing compared *eligible subscribers* to *emails actually built*. Now the crash path captures to Sentry and forces the digest; every run logs `{eligibleSubscribed, payloadsBuilt, companiesWithNewJobs}`; and if 25 or more eligible subscribers produce zero emails on a day companies DID post new jobs, it fires `Sentry.captureMessage` and forces the admin digest. Had it been live, the 36-user outage would have tripped on day one.
+
+**Pagination, generalized (PR #101, DEV-36).** The weekly-digest surge baseline read `seen_jobs` with two unbounded selects; the prior-4-week window already runs ~992 rows and crosses 1000 routinely, so flat companies were being reported as "surging" in the Friday LinkedIn draft. Extracted a shared `fetchAllRows.ts` helper (the 4th site to need pagination). DEV-36 stays open for the remaining latent unbounded selects (`/api/jobs`, the recommendation pool, company dropdowns) plus a CI grep guard.
+
+**Theme.** Three of these four are the same lesson the log keeps relearning: a silent cap or a swallowed error makes "broken" look exactly like "healthy." The tripwire is the structural answer — stop trusting "no error" and start asserting that the expected work actually happened.
+
+---
+
+## 2026-05-29 — Onboarding: pre-check 5 starter companies for brand-new users (PR #99)
+
+24 users had signed in but tracked zero companies. With nothing tracked they get no daily email and can hit the Add-Company modal trap (DEV-16), so they bounce having gotten zero value. Now a user with zero subscriptions opens the modal to find five companies pre-checked: Google, Anthropic, OpenAI, Stripe, Capital One (Amazon deliberately excluded as a listing firehose). It's opt-in and reversible — nothing is subscribed until they click "Add Selected," and they can uncheck any of them. Existing users (subscriptions > 0) see the empty modal as before. The five names are matched against the live catalog, so an unmatched name is simply skipped rather than erroring.
+
+---
+
 ## 2026-05-29 — DEV-27: Sentry observability blindness + doc-cadence reset
 
-> **Doc-cadence note:** This log lapsed 2026-05-23 → 2026-05-28. Those sessions captured to the external auto-memory dir (`MEMORY.md`) and Linear instead of committing here, because these two root docs sit on branch-protected `main` and need a PR, which recent sessions skipped. PRs #55-#100 (auth JWKS migration, interview voice work, onboarding pre-check, the daily-email 1000-row pagination fix, etc.) are summarized in MEMORY.md + Linear, not back-filled here. Resuming the in-repo log with this entry.
+> **Doc-cadence note:** This log lapsed 2026-05-23 → 2026-05-28. Those sessions captured to the external auto-memory dir (`MEMORY.md`) and Linear instead of committing here, because these two root docs sit on branch-protected `main` and need a PR, which recent sessions skipped. PRs #55-#100 (auth JWKS migration, interview voice work, onboarding pre-check, the daily-email 1000-row pagination fix, etc.) — the substantive ones are now back-filled in the entries immediately above (the 2026-05-25 → 2026-05-29 wave, added 2026-05-29 during the docs reconciliation); the rest are summarized in MEMORY.md + Linear. Resuming the in-repo log with this entry.
 
 **What changed.** Fixed DEV-27 (Sentry alert for `phase:auth-fallback` never emailing) and discovered the root cause was far deeper than the ticket: **backend Sentry had been a silent no-op since it was added 2026-02-11 (commit 67e92be), ~3.5 months blind**, because `SENTRY_DSN` was never set on Railway and `Sentry.init({dsn:undefined})` no-ops by design. Three instances of the same truncated/missing-key bug were found and fixed: backend `SENTRY_DSN` (a dashboard re-add truncated it to `.../4510870`, a valid-looking but nonexistent project; fixed via CLI to the full 95-char value), backend `POSTHOG_API_KEY` (entirely missing, so `capturePosthogEvent` from PR #94 was also no-oping; set from the project's publishable key), and frontend `NEXT_PUBLIC_SENTRY_DSN` on Vercel (truncated; fixed across all envs + `vercel redeploy`).
 
