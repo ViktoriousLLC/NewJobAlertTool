@@ -333,7 +333,9 @@ app.get("/api/cron/self-check-suspects", async (req, res) => {
         /0 jobs from source/i.test(status) ||
         /quality: 0\/100/i.test(status) ||
         c.auto_disabled === true ||
-        (c.consecutive_failure_count || 0) > 0 ||
+        // >= 3 matches the watch-list threshold used elsewhere (dailyCheck.ts);
+        // a single transient scrape blip self-resolves and isn't worth a diagnose+verify.
+        (c.consecutive_failure_count || 0) >= 3 ||
         ((c.consecutive_healthy_zero_days || 0) > 0 && (c.subscriber_count || 0) > 0)
       );
     };
