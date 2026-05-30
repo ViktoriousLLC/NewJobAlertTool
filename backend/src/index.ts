@@ -40,7 +40,19 @@ Sentry.init({
 // backend reporting sat blind Feb-May 2026). Actively verify ingestion at boot
 // by pushing a real event through and checking it's accepted. Fire-and-forget;
 // never blocks startup. The daily cron re-runs this and emails on failure.
-if (process.env.NODE_ENV === "production") {
+//
+// DEV-47: gate on RAILWAY_ENVIRONMENT_NAME (auto-injected by Railway on every
+// service) instead of NODE_ENV. NODE_ENV was unset on Railway for months, which
+// silently turned this probe into dead code — the exact failure class this probe
+// exists to catch. A manually-set var that can be cleared can't guard the thing
+// that detects silent breakage; the platform-injected var can't be cleared.
+const isProdRuntime = process.env.RAILWAY_ENVIRONMENT_NAME === "production";
+// Log the resolved guard value at boot so a future env rename that silently
+// disables the prod-only guards (Sentry probes, auth fail-closed, JWKS probe)
+// is visible in deploy logs immediately — the exact silent-failure class DEV-47
+// exists to prevent.
+console.log(`[boot] RAILWAY_ENVIRONMENT_NAME=${process.env.RAILWAY_ENVIRONMENT_NAME ?? "(unset)"} → prod-only guards ${isProdRuntime ? "ACTIVE" : "INACTIVE"}`);
+if (isProdRuntime) {
   import("./lib/sentryHealth")
     .then(({ reportSentryHealth }) => reportSentryHealth("boot"))
     .catch((err) => console.error("[observability] Sentry boot probe crashed:", err));

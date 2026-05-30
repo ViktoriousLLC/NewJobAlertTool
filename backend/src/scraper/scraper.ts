@@ -18,6 +18,17 @@ export interface ScrapedJob {
  */
 export interface ScrapeStats {
   totalScanned: number;
+  // DEV-33: true when the scraper actually reached AND parsed its source this
+  // run, regardless of how many jobs came back. Distinct from totalScanned > 0:
+  // keyword-search APIs (Amazon, iCIMS-API, Oracle HCM) and DOM-in-JSON scrapers
+  // (Intuit) never see the full board, so a 0-PM result leaves totalScanned at 0
+  // even when the source was perfectly reachable. Setting this lets dailyCheck's
+  // stale-removal treat those ~43 companies as "source healthy, 0 PMs" (remove
+  // stale rows after the buffer) instead of "source failed" (preserve forever).
+  // Full-board scrapers set BOTH totalScanned and this; the distinction only
+  // matters for the keyword-search / DOM group. Left undefined = "unknown",
+  // which dailyCheck treats conservatively (falls back to the totalScanned check).
+  sourceReachable?: boolean;
 }
 
 /**
@@ -611,7 +622,10 @@ async function scrapeGreenhouseCareers(
 
   const data: GreenhouseResponse = await response.json();
   console.log(`${companyLabel}: Found ${data.jobs.length} total jobs`);
-  if (stats) stats.totalScanned = data.jobs.length;
+  if (stats) {
+    stats.totalScanned = data.jobs.length;
+    stats.sourceReachable = true;
+  }
 
   const productJobs = data.jobs.filter((job) => {
     const lowerTitle = job.title.toLowerCase();
@@ -685,7 +699,12 @@ async function scrapeGreenhouseDepartments(
     }
   }
   // Report board size to caller — fall back to dept job count if /jobs failed.
-  if (stats) stats.totalScanned = allJobsTotal > 0 ? allJobsTotal : deptJobs.length;
+  // Reaching here means the departments endpoint returned 200 + parsed (we'd
+  // have fallen back to scrapeGreenhouseCareers otherwise), so the source is live.
+  if (stats) {
+    stats.totalScanned = allJobsTotal > 0 ? allJobsTotal : deptJobs.length;
+    stats.sourceReachable = true;
+  }
 
   const combined = [...deptJobs, ...keywordExtras];
   return combined.map((job) => ({
@@ -1031,7 +1050,10 @@ async function scrapeWorkdayCareers(
   }
 
   console.log(`${companyLabel}: Found ${allJobs.length} Product Manager roles out of ${totalJobs} total jobs`);
-  if (stats) stats.totalScanned = totalJobs;
+  if (stats) {
+    stats.totalScanned = totalJobs;
+    stats.sourceReachable = true;
+  }
   return allJobs;
 }
 
@@ -1133,7 +1155,10 @@ async function scrapeAshbyCareers(
   const { jobPostings } = data.data.jobBoard;
 
   console.log(`${companyLabel}: Found ${jobPostings.length} total jobs`);
-  if (stats) stats.totalScanned = jobPostings.length;
+  if (stats) {
+    stats.totalScanned = jobPostings.length;
+    stats.sourceReachable = true;
+  }
 
   // Filter by title keywords, not team name. Modern companies embed PMs inside
   // product-area teams (Growth, Payments, Platform, Kafka Cloud), so matching on
@@ -1743,7 +1768,10 @@ async function scrapeSmartRecruitersCareers(
       console.log(`${companyLabel}: SmartRecruiters total postings: ${data.totalFound}`);
       // Full-board count (pre-PM-filter). Throws above on a non-ok first page,
       // so a 0 here means "board reachable, 0 PMs", not "source failed".
-      if (stats) stats.totalScanned = data.totalFound;
+      if (stats) {
+        stats.totalScanned = data.totalFound;
+        stats.sourceReachable = true;
+      }
     }
 
     if (!data.content || data.content.length === 0) break;
@@ -1783,7 +1811,7 @@ async function scrapeSmartRecruitersCareers(
  * Uses amazon.jobs/en/search.json with category + keyword filtering.
  * Paginates through all results (max 10 per page).
  */
-async function scrapeAmazonCareers(): Promise<ScrapedJob[]> {
+async function scrapeAmazonCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
   console.log("Fetching Amazon Jobs API...");
   const allJobs: ScrapedJob[] = [];
   const pageSize = 100;
@@ -1802,6 +1830,11 @@ async function scrapeAmazonCareers(): Promise<ScrapedJob[]> {
     if (!res.ok) throw new Error(`Amazon API returned ${res.status}`);
 
     const data = await res.json();
+    // DEV-33: keyword-search API. We never see the full board (we ask only for
+    // "product manager"), so totalScanned can't be a source-alive signal. But a
+    // successfully-parsed 200 here proves the source was reachable, which lets
+    // dailyCheck stale-remove zombies when a search legitimately returns 0.
+    if (stats) stats.sourceReachable = true;
     totalHits = data.hits || 0;
 
     if (!data.jobs || data.jobs.length === 0) break;
@@ -1833,6 +1866,7 @@ async function scrapeICIMSAPICareers(
   baseUrl: string,
   companyLabel: string,
   keywords?: string,
+  stats?: ScrapeStats,
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Scraping iCIMS API at ${baseUrl}`);
   const allJobs: ScrapedJob[] = [];
@@ -1857,6 +1891,8 @@ async function scrapeICIMSAPICareers(
     if (!res.ok) throw new Error(`${companyLabel} iCIMS API returned ${res.status}`);
 
     const data = await res.json();
+    // DEV-33: keyword-search API — parsed 200 proves source reachable (see Amazon).
+    if (stats) stats.sourceReachable = true;
     totalCount = data.totalCount || 0;
 
     if (!data.jobs || data.jobs.length === 0) break;
@@ -1890,7 +1926,7 @@ async function scrapeICIMSAPICareers(
  * Fetches HTML-in-JSON from the TalentBrew search API and parses job data from HTML.
  * Paginates through all pages.
  */
-async function scrapeIntuitCareers(): Promise<ScrapedJob[]> {
+async function scrapeIntuitCareers(stats?: ScrapeStats): Promise<ScrapedJob[]> {
   console.log("Fetching Intuit TalentBrew API...");
   const allJobs: ScrapedJob[] = [];
   const pageSize = 25;
@@ -1926,6 +1962,11 @@ async function scrapeIntuitCareers(): Promise<ScrapedJob[]> {
     if (!res.ok) throw new Error(`Intuit TalentBrew API returned ${res.status}`);
 
     const data = await res.json();
+    // DEV-33: DOM-in-JSON scraper — parsed 200 proves source reachable. The
+    // selectors could still silently break, but a reachable source returning 0
+    // parsed jobs is far more likely "genuinely 0 PMs" than "TalentBrew down",
+    // and stale-removal is gated behind a 2-day buffer anyway.
+    if (stats) stats.sourceReachable = true;
     const html: string = data.results || "";
 
     // Parse total pages from first response
@@ -1978,6 +2019,7 @@ async function scrapeOracleHCMCareers(
   tenantUrl: string,
   siteNumber: string,
   companyLabel: string,
+  stats?: ScrapeStats,
 ): Promise<ScrapedJob[]> {
   // Validate inputs (DB-sourced but defense in depth)
   if (!/^https:\/\/[a-z0-9.-]+\.oraclecloud\.com$/i.test(tenantUrl)) {
@@ -2005,6 +2047,8 @@ async function scrapeOracleHCMCareers(
     if (!res.ok) throw new Error(`${companyLabel} Oracle HCM API returned ${res.status}`);
 
     const data = await res.json();
+    // DEV-33: keyword-search API — parsed 200 proves source reachable (see Amazon).
+    if (stats) stats.sourceReachable = true;
     const items = data.items?.[0];
     if (!items) break;
 
@@ -2186,7 +2230,10 @@ async function scrapeLeverCareers(
   // Full-board count (pre-PM-filter) so the daily cron can tell "board alive,
   // 0 PMs" (remove stale rows) from "source failed" (preserve). Lever throws
   // above on a non-ok response, so reaching here means the board was reachable.
-  if (stats) stats.totalScanned = postings.length;
+  if (stats) {
+    stats.totalScanned = postings.length;
+    stats.sourceReachable = true;
+  }
 
   const pmJobs = postings.filter((posting) => {
     const lowerTitle = posting.text.toLowerCase();
@@ -3500,13 +3547,13 @@ export async function scrapeCompanyCareers(
         // Puppeteer selectors don't recognize).
         const baseUrl = platformConfig.baseUrl || careersUrl;
         if (ICIMS_API_HOSTS.some((host) => baseUrl.includes(host))) {
-          return scrapeICIMSAPICareers(baseUrl.replace(/\/+$/, ""), label, "product manager");
+          return scrapeICIMSAPICareers(baseUrl.replace(/\/+$/, ""), label, "product manager", stats);
         }
         return scrapeICIMSCareers(platformConfig.company || label, baseUrl, label);
       }
       case "oracle_hcm":
         if (platformConfig.tenantUrl && platformConfig.siteNumber) {
-          return scrapeOracleHCMCareers(platformConfig.tenantUrl, platformConfig.siteNumber, label);
+          return scrapeOracleHCMCareers(platformConfig.tenantUrl, platformConfig.siteNumber, label, stats);
         }
         break;
       case "apple":
@@ -3694,23 +3741,23 @@ export async function scrapeCompanyCareers(
   // Amazon Jobs API
   if (hostname.includes("amazon.jobs")) {
     console.log("Detected Amazon Jobs page, using API scraper");
-    return scrapeAmazonCareers();
+    return scrapeAmazonCareers(stats);
   }
 
   // iCIMS API-based sites (Rivian, Costco)
   if (hostname.includes("careers.rivian.com")) {
     console.log("Detected Rivian careers (iCIMS API), using API scraper");
-    return scrapeICIMSAPICareers("https://careers.rivian.com", "Rivian", "product manager");
+    return scrapeICIMSAPICareers("https://careers.rivian.com", "Rivian", "product manager", stats);
   }
   if (hostname.includes("careers.costco.com")) {
     console.log("Detected Costco careers (iCIMS API), using API scraper");
-    return scrapeICIMSAPICareers("https://careers.costco.com", "Costco", "product manager");
+    return scrapeICIMSAPICareers("https://careers.costco.com", "Costco", "product manager", stats);
   }
 
   // Intuit TalentBrew
   if (hostname.includes("intuit.com")) {
     console.log("Detected Intuit careers page, using TalentBrew scraper");
-    return scrapeIntuitCareers();
+    return scrapeIntuitCareers(stats);
   }
 
   // --- Generic Puppeteer fallback: only launch Chrome for truly unknown companies ---

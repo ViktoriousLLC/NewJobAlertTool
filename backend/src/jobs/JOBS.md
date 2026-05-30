@@ -67,12 +67,14 @@ The buffer is tracked by the new `companies.consecutive_healthy_zero_days` colum
 
 Also relabels the 0-job status string: a legitimately-empty scrape is now `success (0 PMs)` (healthy source) or `success (0 jobs from source)` (empty/failed source) instead of the misleading `success (quality: 0/100)`, which had been tripping the session-start health-check grep on healthy companies.
 
-**Coverage / scraper instrumentation.** `totalScanned` is a reliable "source alive" signal ONLY for **full-board scrapers that throw on a failed fetch** — they pull every posting, filter to PMs in-code, and a 0 count then provably means "board reachable, 0 PMs." Those are: greenhouse, greenhouse_departments, ashby, workday (pre-existing) plus **lever and smartrecruiters** (instrumented here). That covers ~204 of 247 catalog companies. The remaining platforms intentionally fall through to the safe "preserve" branch (no regression, just no auto-removal of their zombies yet):
+**Coverage / scraper instrumentation.** A source counts as "alive" when `scrapeStats.totalScanned > 0` **OR `scrapeStats.sourceReachable === true`** — the cron's `sourceHealthy = totalScanned > 0 || sourceReachable === true`.
 
-- **Keyword-search APIs** (amazon, icims-api, oracle_hcm): they ask the source for "product manager" jobs and never see the full board, so a 0 result can't be distinguished from a broken-but-200 response by count alone.
-- **Error-swallowing / DOM scrapers** (eightfold returns `[]` on a non-ok page instead of throwing; generic Puppeteer fallback, intuit, icims Puppeteer): a 0 count is genuinely ambiguous between "empty" and "selector broke," so preserve-conservative is the correct default.
+- `totalScanned > 0` is the full-board signal: scrapers that pull every posting and filter to PMs in-code, so a 0 count provably means "board reachable, 0 PMs." Those are greenhouse, greenhouse_departments, ashby, workday, lever, smartrecruiters.
+- `sourceReachable === true` is the keyword-search signal (DEV-33, 2026-05-30): scrapers that ask the source for "product manager" and never see the full board set this after parsing a successful HTTP 200. Because these scrapers **throw on a non-ok response**, the flag is only ever set on a real success, so a reachable source returning 0 PMs is no longer ambiguous with a broken-but-200 fetch. This brings **amazon, icims-api, oracle_hcm, intuit** into stale-removal coverage (after the same 2-day buffer). Together with the full-board group this covers the large majority of the catalog.
 
-A clean fix for the keyword-search group needs a separate `sourceReachable: boolean` on `ScrapeStats` set on any successful HTTP 200 (regardless of job count), rather than a count. Tracked as a follow-up (DEV-33 [stale-removal coverage for keyword-search scrapers]).
+Still **preserve-conservative** (set neither signal, so a 0 count stays ambiguous between "empty" and "selector broke" → never auto-removed): eightfold (returns `[]` on a non-ok page instead of throwing), the generic Puppeteer fallback, and icims Puppeteer.
+
+On the broad-ATS-discovery re-scrape, BOTH `totalScanned` and `sourceReachable` are reset before the retry, so a stale "reachable" flag from a failed first scrape cannot green-light removal of a company's live jobs.
 
 ### Proactive Auto-Fix Layer (DEV-19, added 2026-05-26)
 
