@@ -292,7 +292,16 @@ app.get("/api/cron/trigger", async (req, res) => {
 app.get("/api/cron/self-check-suspects", async (req, res) => {
   const authHeader = req.headers.authorization;
   const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!safeCompareSecret(secret, process.env.CRON_SECRET)) {
+  // Accept the scoped read-only SELF_CHECK_TOKEN (held by the daily self-check
+  // cloud routine, which only needs to READ the suspect list) OR the full
+  // CRON_SECRET. Least privilege: the routine's config holds only
+  // SELF_CHECK_TOKEN, so a leak can't trigger the email pipeline
+  // (/api/cron/trigger). safeCompareSecret returns false on an unset expected
+  // value, so this stays backward-compatible if SELF_CHECK_TOKEN isn't set.
+  const authed =
+    safeCompareSecret(secret, process.env.SELF_CHECK_TOKEN) ||
+    safeCompareSecret(secret, process.env.CRON_SECRET);
+  if (!authed) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
