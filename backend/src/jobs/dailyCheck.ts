@@ -9,6 +9,7 @@ import { getCompData } from "../lib/levelsFyi";
 import { CompanyQualityData } from "../scraper/dailyEval";
 import { runSecurityCheck } from "./securityCheck";
 import { listAllUsers } from "../lib/listAllUsers";
+import { fetchAllRows } from "../lib/fetchAllRows";
 import { tryProactiveAutoFix, AutoFixResult } from "./autoFixRules";
 
 // Log a self-healing event to the scraper_events table. Used to power the
@@ -34,6 +35,27 @@ async function logScraperEvent(
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// DEV-37: supabase-js does NOT throw on a database error — it resolves with an
+// `{ error }` object that is easy to silently ignore. Several writes in the daily
+// cron dropped their error on the floor, so a failed platform auto-remediation,
+// status update, or removal looked exactly like a success in the logs. This logs
+// the failure and reports it to Sentry (which the boot/daily probe now guarantees
+// is actually receiving events — DEV-27/DEV-47). Returns true when an error was
+// present so callers can branch if they need to. Best-effort: never throws, so a
+// single bad write can't abort the whole per-company loop.
+function reportWriteError(
+  error: unknown,
+  context: string,
+  tags?: Record<string, string>
+): boolean {
+  if (!error) return false;
+  console.error(`DB write failed (${context}):`, error);
+  Sentry.captureException(error instanceof Error ? error : new Error(`DB write failed (${context}): ${JSON.stringify(error)}`), {
+    tags: { area: "dailyCheck.write", ...tags },
+  });
+  return true;
 }
 
 // Per-company seniority floor (companies.min_relevant_seniority). Used by
@@ -199,7 +221,12 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
   // to errors for months (as it was Feb-May 2026) with zero signal. Runs daily
   // here (boot probe lives in index.ts); on failure, email admin via PostHog's
   // sibling channel (email), never via Sentry itself.
-  if (process.env.NODE_ENV === "production") {
+  //
+  // DEV-47: gate on the Railway-injected RAILWAY_ENVIRONMENT_NAME, not NODE_ENV.
+  // NODE_ENV was unset on Railway for months, which made this probe dead code in
+  // prod (the very silent-failure class it guards against). The platform-injected
+  // var is always present on a Railway service and can't be silently cleared.
+  if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
     try {
       const { reportSentryHealth } = await import("../lib/sentryHealth");
       const sentryHealth = await reportSentryHealth("daily");
@@ -354,13 +381,14 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
 
             // Auto-update platform_type + platform_config so future scrapes work directly
             if (rawJobs.length > 0) {
-              await supabase
+              const { error: remediateErr } = await supabase
                 .from("companies")
                 .update({
                   platform_type: discovery.platformType,
                   platform_config: discovery.platformConfig,
                 })
                 .eq("id", company.id);
+              reportWriteError(remediateErr, `auto-remediate platform for ${company.name}`, { company: company.name });
               console.log(`${company.name}: AUTO-REMEDIATED platform ${prevPlatform} → ${discovery.platformType}`);
               autoRemediated.push({ name: company.name, from: prevPlatform, to: discovery.platformType });
               await logScraperEvent(company.id, company.name, "auto_remediation", {
@@ -410,13 +438,14 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
                   (inferred.platformType !== company.platform_type ||
                     inferredConfig !== currentConfig)
                 ) {
-                  await supabase
+                  const { error: stealthFixErr } = await supabase
                     .from("companies")
                     .update({
                       platform_type: inferred.platformType,
                       platform_config: inferred.platformConfig,
                     })
                     .eq("id", company.id);
+                  reportWriteError(stealthFixErr, `stealth auto-fix platform for ${company.name}`, { company: company.name });
                   autoFixApplied = { from: currentPlatform, to: `${inferred.platformType}/${inferred.platformConfig.boardName || inferred.platformConfig.handle || inferred.platformConfig.orgName || inferred.platformConfig.company}` };
                   console.log(`${company.name}: STEALTH AUTO-FIX → ${autoFixApplied.to} (from sniffed URL ${stealthResult.sniffedUrl})`);
                 }
@@ -469,11 +498,29 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       // often means "no PM roles" rather than "scraper broken". Actual scraper failures
       // throw exceptions and are caught by the catch block below. No need to alert here.
 
-      // Get existing active jobs for this company
-      const { data: existingJobs } = await supabase
-        .from("seen_jobs")
-        .select("id, job_url_path, status, job_title, job_location, last_removed_at")
-        .eq("company_id", company.id);
+      // Get ALL existing seen_jobs for this company (active + removed + archived).
+      // DEV-36: paginate — a high-volume company (e.g. Amazon) accumulates jobs
+      // across the 60-day archive window and can cross PostgREST's silent 1000-row
+      // cap. A truncated read here would corrupt the diff: rows beyond 1000 would
+      // be invisible to existingByPath, so the insert step would re-INSERT them
+      // (hitting the company_id+job_url_path UNIQUE) and the removal/refresh steps
+      // would skip them. Order by the stable unique key `id` so paging is safe.
+      type ExistingJobRow = {
+        id: string;
+        job_url_path: string;
+        status: string;
+        job_title: string | null;
+        job_location: string | null;
+        last_removed_at: string | null;
+      };
+      const existingJobs = await fetchAllRows<ExistingJobRow>((from, to) =>
+        supabase
+          .from("seen_jobs")
+          .select("id, job_url_path, status, job_title, job_location, last_removed_at")
+          .eq("company_id", company.id)
+          .order("id", { ascending: true })
+          .range(from, to)
+      );
 
       const existingByPath = new Map<string, { id: string; status: string; title: string; location: string; lastRemovedAt: string | null }>();
       for (const j of existingJobs || []) {
@@ -506,13 +553,17 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       //
       // Coverage: totalScanned is a reliable "source alive" signal only for
       // full-board scrapers that throw on failure (greenhouse, ashby, workday,
-      // lever, smartrecruiters). Keyword-search APIs (amazon, icims-api, oracle)
-      // and error-swallowing / DOM scrapers (eightfold, generic puppeteer, intuit)
-      // leave totalScanned at 0, so they fall through to the safe "preserve"
-      // branch — no regression, just no auto-removal yet. See JOBS.md.
+      // lever, smartrecruiters). DEV-33 closed the keyword-search gap: amazon,
+      // icims-api, oracle_hcm and the DOM-in-JSON intuit scraper never see the
+      // full board (totalScanned stays 0 even on a healthy 0-PM result), so they
+      // now set scrapeStats.sourceReachable=true once they reach + parse a 200.
+      // Either signal means "source healthy, just 0 PMs" → eligible for stale
+      // removal after the buffer. Error-swallowing scrapers that return [] on a
+      // bad page (eightfold) and the generic puppeteer fallback set neither, so
+      // they still fall through to the safe "preserve" branch. See JOBS.md.
       const STALE_REMOVAL_BUFFER_DAYS = 2;
       const existingActiveCount = (existingJobs || []).filter((j) => j.status === "active").length;
-      const sourceHealthy = scrapeStats.totalScanned > 0;
+      const sourceHealthy = scrapeStats.totalScanned > 0 || scrapeStats.sourceReachable === true;
       const currentHealthyZeroStreak =
         (company as { consecutive_healthy_zero_days?: number }).consecutive_healthy_zero_days ?? 0;
 
@@ -550,9 +601,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
             status: "active",
           }))
         );
-        if (insertError) {
-          console.error(`Failed to insert jobs for ${company.name}:`, insertError);
-        }
+        reportWriteError(insertError, `insert new jobs for ${company.name}`, { company: company.name });
 
         // Per-company seniority filter for alerts: jobs still land in seen_jobs
         // (so the feed shows them with the same filter), but emails skip them.
@@ -583,7 +632,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       for (const job of jobs) {
         const existing = existingByPath.get(job.urlPath);
         if (existing && (existing.status === "removed" || existing.status === "archived")) {
-          await supabase
+          const { error: returnErr } = await supabase
             .from("seen_jobs")
             .update({
               status: "active",
@@ -592,6 +641,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
               job_location: job.location,
             })
             .eq("id", existing.id);
+          reportWriteError(returnErr, `flip returned job to active for ${company.name}`, { company: company.name });
           returnedJobs.push({ title: job.title, urlPath: job.urlPath });
           // Decide if it qualifies as a real re-post for the email
           if (existing.lastRemovedAt) {
@@ -632,7 +682,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       }
       if (toRefresh.length > 0) {
         console.log(`${company.name}: refreshing title/location for ${toRefresh.length} active job(s)`);
-        await Promise.all(
+        const refreshResults = await Promise.all(
           toRefresh.map((r) =>
             supabase
               .from("seen_jobs")
@@ -640,6 +690,9 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
               .eq("id", r.id)
           )
         );
+        for (const r of refreshResults) {
+          reportWriteError(r.error, `refresh title/location for ${company.name}`, { company: company.name });
+        }
       }
 
       // 3. Missing jobs: in DB as 'active', not in scrape → mark 'removed'
@@ -653,20 +706,27 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
         if (toRemove.length > 0) {
           const removeIds = toRemove.map((j) => j.id);
           const nowIso = new Date().toISOString();
-          await supabase
+          const { error: removeErr } = await supabase
             .from("seen_jobs")
             .update({ status: "removed", status_changed_at: nowIso, last_removed_at: nowIso })
             .in("id", removeIds);
+          reportWriteError(removeErr, `mark ${toRemove.length} stale jobs removed for ${company.name}`, { company: company.name });
           console.log(`${company.name}: ${toRemove.length} jobs marked as removed`);
         }
       }
 
-      // Count actual active jobs in DB (after inserts/removals above)
-      const { count: activeJobCount } = await supabase
+      // Count actual active jobs in DB (after inserts/removals above).
+      // DEV-37: this is a read, but a swallowed error here is dangerous — it
+      // yields count=null → currentJobCount=0, which would falsely flag a hiring
+      // company as zero-PM and could trip the auto-verify-zero / auto-disable
+      // logic below. Surface it. (We still proceed with 0 as before; the error
+      // signal is what was missing.)
+      const { count: activeJobCount, error: activeCountErr } = await supabase
         .from("seen_jobs")
         .select("id", { count: "exact", head: true })
         .eq("company_id", company.id)
         .eq("status", "active");
+      reportWriteError(activeCountErr, `count active jobs for ${company.name}`, { company: company.name });
 
       // Update company status. Successful scrape (any jobs found, even 0) resets
       // the consecutive_failure_count and clears auto_disabled — a probe-day success
@@ -682,6 +742,42 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
         checkStatus = `success (quality: ${validation.qualityScore}/100)`;
       } else {
         checkStatus = "success";
+      }
+
+      // DEV-38: a "success" that returned 0 jobs from a REACHABLE source — or a
+      // quality score far below normal — must not vanish into the success count.
+      // Sentry.init no-ops on a broken DSN, but DEV-27/DEV-47 now guarantee the
+      // pipeline is live, so these signals actually land. Routine zeros get a
+      // breadcrumb (cheap context on any later error); a SURPRISING zero — the
+      // company had jobs yesterday and a healthy source returned 0 PMs today,
+      // the classic silent-scraper-break — gets escalated to a warning message.
+      const prevJobCount = company.total_product_jobs ?? 0;
+      if (jobs.length === 0 && sourceHealthy) {
+        Sentry.addBreadcrumb({
+          category: "scrape",
+          level: "info",
+          message: `${company.name}: source reachable but 0 PMs (prev ${prevJobCount})`,
+          data: { company: company.name, prevJobCount, totalScanned: scrapeStats.totalScanned, sourceReachable: scrapeStats.sourceReachable ?? false },
+        });
+        if (prevJobCount > 0) {
+          Sentry.captureMessage(
+            `${company.name}: healthy source returned 0 PMs but had ${prevJobCount} active job(s) previously — possible silent scraper break`,
+            { level: "warning", tags: { company: company.name, phase: "zero-from-reachable" } }
+          );
+          console.warn(`DEV-38: ${company.name} healthy-source zero after ${prevJobCount} prior jobs — surfaced to Sentry.`);
+        }
+      }
+      // Abnormally-low quality score on a non-empty scrape: jobs came back but the
+      // validator flagged them as low-confidence (lots of non-US / non-PM noise).
+      // 50 is conservative — validateScrapeResults floors at 0, and a normal clean
+      // board scores high; below 50 with jobs present is worth a look.
+      const LOW_QUALITY_THRESHOLD = 50;
+      if (jobs.length > 0 && validation.qualityScore < LOW_QUALITY_THRESHOLD) {
+        Sentry.captureMessage(
+          `${company.name}: quality score ${validation.qualityScore}/100 is far below normal (${jobs.length} jobs kept) — scraper may be returning noise`,
+          { level: "warning", tags: { company: company.name, phase: "low-quality-score" } }
+        );
+        console.warn(`DEV-38: ${company.name} low quality score ${validation.qualityScore}/100 — surfaced to Sentry.`);
       }
       if (isProbing && jobs.length > 0) {
         reEnabled.push({ name: company.name, jobCount: jobs.length });
@@ -738,7 +834,8 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
           console.warn(`${company.name}: AUTO-DISABLED after ${newZeroStreak} silent-zero days with no prior verification`);
         }
       }
-      await supabase.from("companies").update(updates).eq("id", company.id);
+      const { error: statusUpdateErr } = await supabase.from("companies").update(updates).eq("id", company.id);
+      reportWriteError(statusUpdateErr, `persist scrape status for ${company.name}`, { company: company.name });
 
       companyAlerts.set(company.id, {
         companyName: company.name,
@@ -793,7 +890,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
 
       failedCompanies.push({ name: company.name, error: errMsg, consecutiveFailures: newFailureCount });
 
-      await supabase
+      const { error: failUpdateErr } = await supabase
         .from("companies")
         .update({
           last_checked_at: new Date().toISOString(),
@@ -802,6 +899,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
           auto_disabled: shouldAutoDisable,
         })
         .eq("id", company.id);
+      reportWriteError(failUpdateErr, `persist failure status for ${company.name}`, { company: company.name });
 
       companyAlerts.set(company.id, {
         companyName: company.name,
@@ -863,7 +961,10 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       const { sendWeeklyDigest } = await import("./weeklyDigest");
       await sendWeeklyDigest();
     } catch (err) {
+      // DEV-40: a swallowed weekly-digest failure means the Friday LinkedIn draft
+      // silently never arrives. Report to Sentry; still non-fatal to the cron.
       console.error("Failed to send weekly digest:", err);
+      Sentry.captureException(err, { tags: { area: "dailyCheck.weeklyDigest" } });
     }
   }
 
@@ -873,7 +974,22 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
   const COMP_BATCH = 3;
   for (let i = 0; i < companyNames.length; i += COMP_BATCH) {
     const batch = companyNames.slice(i, i + COMP_BATCH);
-    await Promise.allSettled(batch.map((name) => getCompData(name)));
+    // DEV-40: Promise.allSettled silently swallows rejections — a broken
+    // levels.fyi refresh used to vanish without a trace. Inspect the settled
+    // results and surface failures to Sentry (per-company tagged) so a
+    // comp-pipeline outage is visible. Still non-fatal: comp data is enrichment,
+    // not core, so we never abort the cron on it.
+    const settled = await Promise.allSettled(batch.map((name) => getCompData(name)));
+    settled.forEach((result, idx) => {
+      if (result.status === "rejected") {
+        const name = batch[idx];
+        console.error(`Compensation refresh failed for ${name}:`, result.reason);
+        Sentry.captureException(
+          result.reason instanceof Error ? result.reason : new Error(`Comp refresh failed for ${name}: ${String(result.reason)}`),
+          { tags: { area: "dailyCheck.compRefresh", company: name } }
+        );
+      }
+    });
     if (i + COMP_BATCH < companyNames.length) await delay(2000);
   }
   console.log(`Compensation data refreshed for ${companyNames.length} companies.`);
@@ -882,12 +998,13 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
   const sixtyDaysAgo = new Date();
   sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
 
-  await supabase
+  const { error: archiveErr } = await supabase
     .from("seen_jobs")
     .update({ status: "archived", status_changed_at: new Date().toISOString() })
     .eq("is_baseline", false)
     .neq("status", "archived")
     .lt("first_seen_at", sixtyDaysAgo.toISOString());
+  reportWriteError(archiveErr, "archive jobs older than 60 days");
 
   console.log("Daily check complete.");
 
@@ -967,37 +1084,77 @@ async function sendPerUserAlerts(
   // are excluded so the email feels fresh each day.
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const [allCompaniesResult, recentJobsResult, recentShownResult] = await Promise.all([
-    supabase
-      .from("companies")
-      .select("id, name, careers_url, industry, min_relevant_seniority")
-      .not("industry", "is", null),
-    supabase
-      .from("seen_jobs")
-      .select("company_id, job_title, job_url_path, job_level, first_seen_at")
-      .eq("is_baseline", false)
-      .eq("status", "active")
-      .gte("first_seen_at", sevenDaysAgo.toISOString())
-      .order("first_seen_at", { ascending: false }),
-    supabase
-      .from("recommendation_history")
-      .select("company_id")
-      .gte("shown_date", new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10)),
+  // DEV-36: both the recommendation candidate pool (companies-with-industry) and
+  // the recent-jobs pool (every active PM job posted in the last 7 days across
+  // the WHOLE catalog) are global selects with no row cap. The recent-jobs query
+  // in particular fans out across ~250 companies and routinely exceeds PostgREST's
+  // silent 1000-row cap — once truncated, whole industries silently vanish from
+  // everyone's recommendations. Paginate both via fetchAllRows ordered by the
+  // stable unique key `id`. The picker relies on most-recent-first ordering within
+  // a company, which the id-order pagination destroys, so we re-sort by
+  // first_seen_at DESC in Node afterward (same fetch-and-sort-in-Node pattern the
+  // feed uses for nested ordering — see CLAUDE.md PostgREST gotcha).
+  type RecentJobDbRow = {
+    company_id: string;
+    job_title: string;
+    job_url_path: string;
+    job_level: string | null;
+    first_seen_at: string;
+  };
+  type CompanyIndustryDbRow = {
+    id: string;
+    name: string;
+    careers_url: string;
+    industry: string;
+    min_relevant_seniority: string | null;
+  };
+  type RecommendationHistoryRow = { company_id: string };
+  const [allCompaniesRows, recentJobsRows, recentShownRows] = await Promise.all([
+    fetchAllRows<CompanyIndustryDbRow>((from, to) =>
+      supabase
+        .from("companies")
+        .select("id, name, careers_url, industry, min_relevant_seniority")
+        .not("industry", "is", null)
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
+    fetchAllRows<RecentJobDbRow>((from, to) =>
+      supabase
+        .from("seen_jobs")
+        .select("company_id, job_title, job_url_path, job_level, first_seen_at")
+        .eq("is_baseline", false)
+        .eq("status", "active")
+        .gte("first_seen_at", sevenDaysAgo.toISOString())
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
+    fetchAllRows<RecommendationHistoryRow>((from, to) =>
+      supabase
+        .from("recommendation_history")
+        .select("company_id")
+        .gte("shown_date", new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10))
+        .order("company_id", { ascending: true })
+        .range(from, to)
+    ),
   ]);
 
+  // Restore the most-recent-first ordering pickRecommendations expects (the
+  // id-keyed pagination above does not preserve it).
+  recentJobsRows.sort((a, b) => (a.first_seen_at < b.first_seen_at ? 1 : a.first_seen_at > b.first_seen_at ? -1 : 0));
+
   const recentlyShownIds = new Set<string>();
-  for (const row of recentShownResult.data || []) {
-    recentlyShownIds.add(row.company_id as string);
+  for (const row of recentShownRows) {
+    recentlyShownIds.add(row.company_id);
   }
-  const allCompaniesWithIndustry: CompanyWithIndustry[] = (allCompaniesResult.data || []).map((c) => ({
-    id: c.id as string,
-    name: c.name as string,
-    careersUrl: c.careers_url as string,
-    industry: c.industry as string,
-    minRelevantSeniority: (c.min_relevant_seniority as string | null) ?? null,
+  const allCompaniesWithIndustry: CompanyWithIndustry[] = allCompaniesRows.map((c) => ({
+    id: c.id,
+    name: c.name,
+    careersUrl: c.careers_url,
+    industry: c.industry,
+    minRelevantSeniority: c.min_relevant_seniority ?? null,
   }));
   const recentJobsByCompany = new Map<string, RecentJobRow[]>();
-  for (const row of recentJobsResult.data || []) {
+  for (const row of recentJobsRows) {
     const list = recentJobsByCompany.get(row.company_id) || [];
     list.push({
       title: row.job_title,
@@ -1085,12 +1242,19 @@ async function sendPerUserAlerts(
         shown_date: today,
         industry,
       }));
-      await supabase.from("recommendation_history").insert(rows);
+      // DEV-37: supabase-js returns the error rather than throwing, so the catch
+      // below would never see a DB-level failure here — check the returned error.
+      const { error: recInsertErr } = await supabase.from("recommendation_history").insert(rows);
+      reportWriteError(recInsertErr, "insert recommendation_history");
     }
     const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
-    await supabase.from("recommendation_history").delete().lt("shown_date", thirtyDaysAgo);
+    const { error: recDeleteErr } = await supabase.from("recommendation_history").delete().lt("shown_date", thirtyDaysAgo);
+    reportWriteError(recDeleteErr, "age out recommendation_history (>30d)");
   } catch (err) {
+    // DEV-40: also report the unexpected-throw path to Sentry (network blip,
+    // serialization error). Non-fatal — the email send result still returns.
     console.error("recommendation_history write/cleanup failed (non-fatal):", err);
+    Sentry.captureException(err, { tags: { area: "dailyCheck.recommendationHistory" } });
   }
 
   // Observability tripwire. A healthy day with new jobs should build emails for
@@ -1258,7 +1422,10 @@ async function sendConsolidatedAdminDigest(input: {
       crossCuttingPatterns,
     });
   } catch (err) {
+    // DEV-40: surface a swallowed admin-digest failure to Sentry — otherwise the
+    // admin simply stops getting the daily/Monday health email with no trace.
     console.error("Failed to send admin digest:", err);
+    Sentry.captureException(err, { tags: { area: "dailyCheck.adminDigest" } });
   }
 }
 

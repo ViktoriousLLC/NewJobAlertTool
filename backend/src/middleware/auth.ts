@@ -25,10 +25,17 @@ const expectedIssuer = supabaseUrl ? `${supabaseUrl.replace(/\/$/, "")}/auth/v1`
 // Separate client using anon key for verifying user JWTs (fallback only)
 const authClient = createClient(supabaseUrl, supabaseAnonKey);
 
+// DEV-47: these prod-only guards gate on the Railway-injected
+// RAILWAY_ENVIRONMENT_NAME instead of NODE_ENV. NODE_ENV was unset on Railway
+// for months, so BOTH the fail-closed check and the JWKS boot probe below were
+// dead code in production — they never ran. The platform-injected var is always
+// present on a Railway service and can't be silently cleared.
+const isProdRuntime = process.env.RAILWAY_ENVIRONMENT_NAME === "production";
+
 // Fail-closed at boot if we can't verify JWTs. Without proper verification
 // every request silently falls back to a 150ms Supabase API call which masks
 // the misconfiguration. Better to crash early than degrade silently.
-if (!jwksUrl && process.env.NODE_ENV === "production") {
+if (!jwksUrl && isProdRuntime) {
   throw new Error(
     "SUPABASE_URL is required in production to construct JWKS endpoint. Set it in Railway env vars."
   );
@@ -37,7 +44,7 @@ if (!jwksUrl && process.env.NODE_ENV === "production") {
 // Best-effort boot probe: warm the JWKS cache + surface failures at startup.
 // Doesn't crash on probe failure (network might be temporarily flaky); just
 // logs + Sentry so we notice. The first real request would catch a hard failure.
-if (jwks && process.env.NODE_ENV === "production") {
+if (jwks && isProdRuntime) {
   (async () => {
     try {
       // Pass a dummy token to trigger JWKS fetch. We expect verification to
