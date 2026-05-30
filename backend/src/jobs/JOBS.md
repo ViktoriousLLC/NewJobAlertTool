@@ -32,7 +32,7 @@ This sidecar collects everything needed before touching `backend/src/jobs/dailyC
 
 A daily remote agent (routine) fires ~14:30 UTC, after the 14:00 scrape, and runs the **`daily-self-check` workflow** (`.claude/workflows/daily-self-check.js`) instead of the old serial scraper-doctor loop.
 
-**Suspect set (what gets checked):** companies that look broken but are NOT already explained — `last_check_status` contains 'error' / '0 jobs from source' / the legacy 'quality: 0/100', OR `auto_disabled`, OR `consecutive_failure_count > 0`, OR `consecutive_healthy_zero_days > 0` (with subs) — **excluding `is_verified_zero`** (auto-managed, known-zero, not real suspects). On 2026-05-30 that was 12 of 247 (79 before the is_verified_zero exclusion). The routine computes this set and passes it to the workflow as `args`.
+**Suspect set (what gets checked):** companies that look broken but are NOT already explained — `last_check_status` contains 'error' / '0 jobs from source' / the legacy 'quality: 0/100', OR `auto_disabled`, OR `consecutive_failure_count >= 3` (the watch-list threshold; a single transient blip self-resolves), OR `consecutive_healthy_zero_days > 0` (with subs) — **excluding `is_verified_zero`** (auto-managed, known-zero, not real suspects). On 2026-05-30 that was 12 of 247 (79 before the is_verified_zero exclusion). The routine computes this set and passes it to the workflow as `args`.
 
 **The workflow:** `pipeline(suspects, diagnose, adversarialVerify)`, capped at 20 (overflow reported, never silently dropped):
 - **diagnose** — one `scraper-doctor` per suspect; reads SCRAPER.md, hits the live ATS board itself, decides broken vs benign.
