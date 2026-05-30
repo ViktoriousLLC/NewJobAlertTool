@@ -7,7 +7,7 @@
 - **Push code, deploy, clean DB, re-add companies — all autonomously.** Full access granted.
 - **Execute end-to-end** including deployment and verification. Come back with proof it works, not "next steps."
 - **Never ask before pushing — to a feature branch.** `main` is branch-protected. Push to `claude/<slug>` branches and open PRs with `gh pr create`. The user merges via GitHub.
-- **Session start health check:** At the start of every conversation, query the `companies` table for scrape failures (`last_check_status` containing 'error' or 'quality: 0/100'). If any exist, investigate and fix them immediately before doing anything else. Don't report failures — fix them, push, and show proof.
+- **Session start health check:** At the start of every conversation, query the `companies` table for scrape failures: `last_check_status` containing 'error', or `'success (0 jobs from source)'` (a healthy-looking scrape that returned nothing from the source — the scraper may be broken). NOTE: `'success (0 PMs)'` is HEALTHY (source works, just no PM roles right now), not a failure. (`'quality: 0/100'` was retired by PR #98 — don't grep for it.) If any real failures exist, investigate and fix them immediately before doing anything else. Don't report failures — fix them, push, and show proof.
 
 ## Sidecar Docs (READ BEFORE EDITING)
 
@@ -105,29 +105,35 @@ GET    /api/admin/email-status               (proxies Resend list-emails API; op
 GET    /api/admin/weekly-digest/preview      (returns { data, linkedinPost, emailHtml } — no send)
 POST   /api/admin/weekly-digest/send         (fires the weekly LinkedIn-draft email immediately)
 POST   /api/admin/users/send-magic-link      (admin JWT; body: {email}; sends fresh magic link to existing user; powers stuck-user recovery + DEV-14 reminder system)
+POST   /api/interviews/token                 (ADMIN ONLY; mints a short-lived ElevenLabs signed URL + per-call prompt overrides for the voice mock-interview)
+POST   /api/interviews/evaluate              (ADMIN ONLY; scores a transcript with 3 LLMs in parallel; accepts the ElevenLabs conversation_id)
 GET    /api/cron/trigger (requires CRON_SECRET; see JOBS.md)
 GET    /api/cron/weekly-digest (requires CRON_SECRET; see JOBS.md)
 ```
 
+The whole `/api/interviews/*` router is `requireAdmin` (`req.userEmail === ADMIN_EMAIL`) — ElevenLabs minutes cost real money, so the voice mock-interview is admin-gated for now. The planned "how you sounded" delivery-analysis endpoint is DEV-45.
+
 `/api/feed` filters: `industry`, `level`, `region`, `city`, `company`, `min_comp`, `sort`, `include_closed`. Region filter is server-side; sort=company uses fetch-and-sort in Node because PostgREST silently ignores nested-table order. Comp tier enriched per-job from `comp_cache`.
 
-**Frontend routes (after the 2026-05-20 home swap, PR #48):** `/` is the JobFeed home (auth-aware: unauth gets hero + public feed; authed gets Dashboard). `/welcome` is the old marketing landing (permanent backup, can roll back swap). `/companies` is the authed Tracked Companies view (Dashboard direct). `/new-home` deleted; permanent 308 redirect → `/` in `frontend/next.config.ts`.
+**Frontend routes (after the 2026-05-20 home swap, PR #48):** `/` is the JobFeed home (auth-aware: unauth gets hero + public feed; authed gets Dashboard). `/welcome` is the old marketing landing (permanent backup, can roll back swap). `/companies` is the authed Tracked Companies view (Dashboard direct). `/new-home` deleted; permanent 308 redirect → `/` in `frontend/next.config.ts`. **`/interview-test`** is the admin-only voice mock-interview page (non-admins get Access Denied).
 
 ## Database Schema
 
 | Table | Notes |
 |---|---|
-| `companies` | Shared catalog. `is_active` = subscriber_count > 0. `auto_disabled` + `consecutive_failure_count` for self-healing on errors. `is_verified` + `is_verified_zero` + `consecutive_zero_days` (2026-05-28) for self-healing on silent zeros — see auto-verify-zeros rules in JOBS.md / dailyCheck.ts. **`is_verified_zero` is now auto-managed**: cron auto-sets it after 7 days of zero from a verified scraper, auto-flips back to false when >0 PMs reappear. Don't toggle manually. `industry` (enum-shaped text, drives email recommendations + /new-home filter). `min_relevant_seniority` (early/mid/director — filters daily email + feed; FAANG=mid by default). CASCADE deletes jobs. |
+| `companies` | Shared catalog. `is_active` = subscriber_count > 0. `auto_disabled` + `consecutive_failure_count` for self-healing on errors. `is_verified` + `is_verified_zero` + `consecutive_zero_days` (2026-05-28) for self-healing on silent zeros — see auto-verify-zeros rules in JOBS.md / dailyCheck.ts. **`is_verified_zero` is now auto-managed**: cron auto-sets it after 7 days of zero from a verified scraper, auto-flips back to false when >0 PMs reappear. Don't toggle manually. `industry` (enum-shaped text, drives email recommendations + /new-home filter). `min_relevant_seniority` (early/mid/director — filters daily email + feed; FAANG=mid by default). `consecutive_healthy_zero_days` (2026-05-29, PR #98) is SEPARATE from `consecutive_zero_days`: it counts days a *healthy* source (totalScanned > 0) returns 0 PMs, and after 2 it removes stale "zombie" jobs — don't conflate the two counters. CASCADE deletes jobs. |
 | `seen_jobs` | Status: active → removed → archived (60 days). `last_removed_at` (2026-05-19) stamped on active→removed; used for 2-week return rule. Unique on (company_id, job_url_path). |
 | `user_subscriptions` | Links users to tracked companies. UNIQUE(user_id, company_id). |
 | `user_job_favorites` | Star icons on jobs pages. UNIQUE(user_id, seen_job_id). |
 | `user_new_company_submissions` | Rate limit: 10/user, admin bypass. |
 | `user_preferences` | email_frequency: daily/weekly/off. |
 | `comp_cache` | levels.fyi cache, 24hr TTL. No RLS. |
-| `recommendation_history` | (user_id, company_id, sent_at). Cron writes after picking email recommendations; excludes companies shown in last 7 days. |
+| `recommendation_history` | Actual columns: `(id, company_id, shown_date, industry, created_at)` — **no `user_id`**, so the 7-day rotation is GLOBAL (a company shown to anyone recently is excluded for everyone), not per-user. Cron writes after picking email recommendations. |
 | `scrape_issues`, `help_submissions` | Bug-reporting tables. |
 | `scraper_events` | Audit log of self-healing actions. See JOBS.md. |
 | `security_snapshots` | Weekly npm audit snapshot. See JOBS.md. |
+| `interview_sessions` | Voice mock-interview: raw transcript + 3-model evals (JSONB) per session; wiped 7 days after creation. `elevenlabs_conversation_id` (PR #95) stored so audio can be re-fetched for delivery analysis (DEV-45). |
+| `interview_user_summary` | Rolling per-user interview summary; survives the 7-day wipe and is injected into the next session's agent prompt (multi-session memory). |
 
 Indexes, exact column lists, and partial-index details live in the migrations + JOBS.md/ROUTES.md sidecars as needed.
 
@@ -177,6 +183,8 @@ User feedback (`POST /api/help`, `POST /api/issues`) files Linear issues in the 
 - **PostgREST OR clause delimiter is comma.** Values containing commas must be wrapped in double-quotes. `or=field.eq."Holmdel, NJ"` not `or=field.eq.Holmdel, NJ`.
 - **`like` vs `ilike` in PostgREST is case-sensitivity, not glob.** `, NE` case-insensitive matches "Ne" in "New Jersey". For abbreviation matching use `like` (case-sensitive) + a country/state anchor.
 - **NEXT_PUBLIC_ env vars**: Baked at build time. Must redeploy after changing in Vercel. `NEXT_PUBLIC_LOGO_DEV_TOKEN` is a publishable key (safe to expose, like Stripe pk).
+- **`NODE_ENV=production` must be set on Railway.** It was unset for months, which made the Sentry boot/daily liveness probe AND `auth.ts`'s fail-closed + JWKS boot probe dead code in prod (set 2026-05-29). DEV-47 will move those guards to the auto-injected `RAILWAY_ENVIRONMENT_NAME` so a cleared var can't silently disable them again.
+- **Interview LLM/voice gotchas**: Gemini needs the PAID tier (`GEMINI_MODEL=gemini-2.5-pro` on Railway; free tier 503s/429s "prepayment credits depleted") — keep a model-fallback/backoff chain even on paid. Hume AI sunsets 2026-06-14 (do not build on it). ElevenLabs audio retention must be ON or `has_audio=false`.
 - **Sentry (and PostHog) fail SILENT on a missing/wrong key.** `Sentry.init({ dsn: undefined })` and `capturePosthogEvent` with no key both no-op by design, so a dead pipeline looks identical to a healthy one (empty dashboard = "no errors" not "we're blind"). `SENTRY_DSN` was added in code 2026-02-11 but never set on Railway → backend reporting was dead 3.5 months (DEV-27). Required vars are now documented in `backend/.env.example`, and `backend/src/lib/sentryHealth.ts` actively probes the Sentry ingest endpoint at boot + daily (emails admin on failure). Frontend needs `NEXT_PUBLIC_SENTRY_DSN` + `SENTRY_DSN` on Vercel; backend needs `SENTRY_DSN` + `POSTHOG_API_KEY` on Railway. A truncated DSN is valid-looking but points at a nonexistent project and is dropped silently — paste the FULL value.
 - **Supabase SSR + Next.js redirects.** `NextResponse.redirect()` does NOT inherit cookies from supabaseResponse. Must copy cookies onto every redirect or session terminates. See `redirectPreservingSession()` helper in `frontend/middleware.ts`.
 - **CSP img-src must allowlist logo CDNs.** `https://icons.duckduckgo.com` + `https://img.logo.dev` are both needed. Lives in `frontend/next.config.ts`.
