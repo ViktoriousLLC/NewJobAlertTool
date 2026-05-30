@@ -35,6 +35,7 @@ How a personal localhost script became a production multi-user SaaS, built entir
 | 25. The Auth Incident — How A Cosmetic Email Redesign Locked Out 18 Users For Two Days | A change to the login emails broke the sign-in links, and 18 users were locked out for two days before I caught it. | Fixed the email templates and a second bug that was dropping people's logins, got the 18 users back in, and added automatic checks so it can't break silently again. | A tiny visual change broke something critical, so I made the system catch that on its own instead of relying on me to remember. |
 | 26. Removing The Admin From The Operational Loop | The system kept emailing me to confirm things it already had enough information to decide on its own. | Replaced a flaky alert with a simple one, and replaced the daily "please confirm these companies" email with rules that decide automatically and undo themselves if they're wrong. | I could be aggressive here because this setting only affects my own admin email, never whether users get jobs. Know what a change can reach before you trust it to run itself. |
 | 27. Voice Mock Interviews | Finding a job is only half of it; people need to practice interviews, and you can't really do that alone. | Added ElevenLabs voice, built a mock interview you can talk to, and tried three AI models to score it afterward. | Test the riskiest idea on one real example before building everything around it. |
+| 28. The Weekly Post Writes Itself, In My Voice | The digest led with the same hardcoded headline every Friday, and it turned out not even to be true. | Made the lead rotate across honest weekly angles, written by AI in my voice with a matching banner image, emailed to me to approve. | My own data can look like insight when it's really an artifact of how I built the pipeline, so I check the headline is real before publishing. |
 
 ---
 
@@ -979,6 +980,20 @@ The piece I actually care about isn't built yet: feedback on how you *sounded*, 
 
 ---
 
+## Phase 28: The Weekly Post Writes Itself, In My Voice
+
+**Goal:** Stop opening every week with the same headline, and stop hand-writing the lead.
+
+The weekly digest from Phase 24 had a quiet problem: the headline was hardcoded. Every Friday it announced "Banking is on a tear," no matter what the week actually looked like, because the lead was a fixed line in the code and only the percentage moved. When I finally looked closely, it wasn't even true. Banking spiked because I'd bulk-added a batch of banks to the catalog that week, and their existing openings landed as "new." I was one paste away from publishing my own data-pipeline quirk to my whole network as a market take.
+
+**What I built:** a lead that rotates and writes itself. Each week the system works out a handful of honest, this-week angles, how much of the hiring is AI, who posted the most, how concentrated big tech is, who pays the most, where the jobs are, picks one it hasn't used recently, and has an AI write it as a blunt one-line take in my voice, with the rest offered as alternates I can swap in. It also makes a branded "Hot Take" banner whose art style rotates weekly, so the series looks fresh but unmistakably mine, and emails me the whole kit every Friday to approve before I post.
+
+The voice was the hard part, and it humbled me. I have a written style guide and a file of my real posts, and the drafts still came back as generic LinkedIn AI mush, several times over. The fix wasn't a better description of how I write. It was feeding the AI the actual files, word for word, on every run, and keeping myself as the last reader. A summary of your voice is not your voice.
+
+**What I learned:** your own data can lie to you in a shape that looks exactly like insight. The headline I'd repeated for weeks was a fact about how I grow the catalog, not about the market, and I only caught it because the repetition annoyed me. Lead with the cut nobody else can see, but prove it's real before you publish it.
+
+---
+
 ## Summary of Concepts Learned
 
 | # | Concept | Where I Learned It |
@@ -1055,3 +1070,5 @@ The piece I actually care about isn't built yet: feedback on how you *sounded*, 
 | 70 | Run a weekly task by gating on the day inside the existing daily job, instead of standing up a new scheduler | Weekly digest Friday auto-trigger (Phase 24) |
 | 71 | Verification gap when the action lives in a vendor system — admin endpoint requires browser-only JWT, fallback is scheduled check + devtools snippet | Resend send-log verification pattern (Phase 24) |
 | 72 | Once the editorial structure is approved, lock the post template so it can't drift without a deliberate sign-off | Weekly digest post structure freeze (Phase 24) |
+| 73 | Your own data pipeline can manufacture a fake trend that looks exactly like insight (a catalog bulk-add reads as a hiring surge) | Rotating weekly-digest lead (Phase 28) |
+| 74 | Getting AI to write in your voice means injecting the actual voice files verbatim on every run, not a paraphrase — even the AI building the feature silently substitutes its own summary | Rotating weekly-digest lead (Phase 28) |

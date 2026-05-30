@@ -18,15 +18,25 @@ This sidecar collects everything needed before touching `backend/src/jobs/dailyC
 
 **Friday auto-trigger inside `runDailyCheck()`.** When UTC day-of-week === 5, after the consolidated admin digest, `sendWeeklyDigest()` from `backend/src/jobs/weeklyDigest.ts` fires. Owned by the existing 14:00 UTC daily Railway cron — no separate schedule.
 
-- **Module**: `backend/src/jobs/weeklyDigest.ts` — exports `computeWeeklyDigest`, `renderLinkedInPost`, `renderEmailHtml`, `sendWeeklyDigest`.
+- **Module**: `backend/src/jobs/weeklyDigest.ts` — exports `computeWeeklyDigest`, `renderLinkedInPost`, `renderEmailHtml`, `sendWeeklyDigest`. Helpers: `backend/src/lib/weeklyLeadWriter.ts` (Claude lead phrasing), `backend/src/lib/weeklyDigestImage.ts` (Gemini banner), `backend/src/lib/vikVoiceFull.ts` (auto-generated verbatim voice files).
 - **Recipient**: `ADMIN_EMAIL` only (this is editorial content for Vik, not subscribers).
 - **Subject**: `𝗪𝗘𝗘𝗞𝗟𝗬: LinkedIn Job Summary for <Mon DD>` (Unicode-bold "WEEKLY" prefix; falls back gracefully to plain caps in clients that don't render it). Updated 2026-05-23.
-- **Body**: copy-paste-ready LinkedIn post + raw-data tables (industry breakdown, top 10 by volume, AI roles by company) + an Appendix with 6 additional cuts (top cities + remote share; seniority split; top-paying companies hiring; surge vs 4-week trailing average; daily posting velocity).
+- **Body**: copy-paste-ready LinkedIn post (plain text, @-tagged companies) + alternate leads + the banner image prompt (and the generated PNG attached when Gemini succeeds) + raw-data tables + an Appendix (top cities + remote; big-tech concentration; seniority; top-paying companies; surge vs 4-week avg; daily velocity) + a generation-cost footer.
 - **Data window**: last 7 days of `seen_jobs` where `status = 'active'` AND `is_baseline = false` joined to `companies`.
 - **AI title regex**: `/\b(AI|ML|GenAI|LLM|Machine Learning|Generative|Agentforce|Agentic|Voice AI|Copilot|GPT)\b/i`. Conservative; misses titles that only imply AI.
 - **Expected fire time on Fridays**: ~14:25-14:35 UTC (after scrape + per-user alerts + comp_cache refresh + admin digest).
-- **Manual triggers**: `?forceWeeklyDigest=true` on `/api/cron/trigger`, `/api/cron/weekly-digest` (CRON_SECRET), `POST /api/admin/weekly-digest/send` (admin JWT), `GET /api/admin/weekly-digest/preview` (admin JWT, no send).
-- **LinkedIn post structure** is locked editorially (approved 2026-05-22): intro → banking takeaway with industry counts → top 10 companies by volume → top company example role areas → top 5 AI-PM-hiring companies with titles → reader question close. When editing the post text in `renderLinkedInPost()`, read `docs/Viks Voice/vik_voice_style_guide.md` first.
+- **Manual triggers**: `?forceWeeklyDigest=true` on `/api/cron/trigger`, `/api/cron/weekly-digest` (CRON_SECRET), `POST /api/admin/weekly-digest/send` (admin JWT), `GET /api/admin/weekly-digest/preview` (admin JWT, no send). NOTE: `computeWeeklyDigest` now makes a Claude call on every invocation (including preview), so preview costs ~10-15c + a few seconds. Only `sendWeeklyDigest` writes `weekly_lead_history`; preview never does.
+
+### Rotating "My take" lead engine (DEV-43, added 2026-05-30)
+
+Replaced the old hardcoded `**Banking is on a tear.**` lead. The post now opens with a dated volume line, then `My take this week: <hook>` (a rotating, voice-written blunt claim), then the generic stats block, then a CTA. Plain text on purpose — Vik bolds the opener + numbered headers in AuthoredUp; do NOT add Unicode/markdown bold in `renderLinkedInPost()`.
+
+- **Angles are snapshots only** (this-week: AI share, top company, big-tech concentration, top pay, top city, seniority). Deliberately NO week-over-week trend claims — on this data those are contaminated by catalog-onboarding bursts (a bulk-add reads as a hiring surge; that is literally what the old "Banking is on a tear" was). `buildLeadCandidates()` computes the factual candidates; CODE picks the lead (priority order + freshness), the LLM only PHRASES.
+- **Freshness**: `weekly_lead_history` (migration `2026-05-30-weekly-lead-history.sql`) logs the angle + art_style each send. `computeWeeklyDigest` reads the last 2 rows and skips a recently-used angle for the lead; `sendWeeklyDigest` inserts after a successful send.
+- **Voice**: `weeklyLeadWriter.writeLeads()` injects Vik's REAL voice guide + calibration samples VERBATIM (from `vikVoiceFull.ts`, bundled because repo-root `docs/Viks Voice/` is NOT in the backend deploy). A paraphrase produced "AI slop" Vik rejected repeatedly — always inject the real files. Regenerate the bundle with `node backend/scripts/gen-voice.mjs` after editing the source docs. Model = `WEEKLY_DIGEST_MODEL` (default `claude-opus-4-8`, Vik's pick; separate from the Sonnet-default `ANTHROPIC_MODEL` interviews use). Fails soft: no key / parse error / API error → deterministic fallback hooks, email still renders.
+- **Banner image**: `weeklyDigestImage.ts` builds a nano banana prompt (fixed 4-line "HOT TAKE · DATE / hook / subline / NewPMjobs.com" lockup + a rotating art style from `ART_STYLE_KEYS`) and, when `GEMINI_API_KEY` works, generates the PNG (`gemini-2.5-flash-image`) to attach. The email ALWAYS includes the text prompt so Vik can regenerate free via his consumer plan. Generation fails soft (his Gemini project has hit depleted-credit 429s; the image model has no free tier) — no image, just the prompt.
+- **Required env (Railway)**: `ANTHROPIC_API_KEY` (have it; interviews use it), optional `WEEKLY_DIGEST_MODEL`, `GEMINI_API_KEY` (for the auto-image; optional), optional `GEMINI_IMAGE_MODEL`.
+- A separate critic/refine LLM pass is NOT in v1 (single strong call; Vik is the human gate). The build-proof run used one; add it here if quality drifts.
 
 ## Daily Self-Check Agent (PR #20+; reworked into a parallel fan-out workflow in DEV-41, 2026-05-30)
 

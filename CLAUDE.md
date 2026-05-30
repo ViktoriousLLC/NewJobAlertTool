@@ -130,6 +130,7 @@ The whole `/api/interviews/*` router is `requireAdmin` (`req.userEmail === ADMIN
 | `user_preferences` | email_frequency: daily/weekly/off. |
 | `comp_cache` | levels.fyi cache, 24hr TTL. No RLS. |
 | `recommendation_history` | Actual columns: `(id, company_id, shown_date, industry, created_at)` — **no `user_id`**, so the 7-day rotation is GLOBAL (a company shown to anyone recently is excluded for everyone), not per-user. Cron writes after picking email recommendations. |
+| `weekly_lead_history` | `(id, week_ending, angle, headline, art_style, created_at)`. Backend-only, no RLS. The weekly digest logs the chosen lead angle + banner art style each Friday send; `computeWeeklyDigest` reads the last 2 rows so the rotating "My take" lead + image style don't repeat week to week. See JOBS.md (DEV-43). |
 | `scrape_issues`, `help_submissions` | Bug-reporting tables. |
 | `scraper_events` | Audit log of self-healing actions. See JOBS.md. |
 | `security_snapshots` | Weekly npm audit snapshot. See JOBS.md. |
