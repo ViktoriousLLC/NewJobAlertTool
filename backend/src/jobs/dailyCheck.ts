@@ -374,8 +374,13 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
           const discovery = await broadATSDiscovery(company.careers_url, company.name);
           if (discovery && discovery.platformType !== company.platform_type) {
             console.log(`${company.name}: Broad discovery found NEW platform ${discovery.platformType} (was: ${prevPlatform})`);
-            // Re-scrape with discovered platform, reusing same stats out-param
+            // Re-scrape with discovered platform, reusing same stats out-param.
+            // Reset BOTH reachability signals: the first (failed) scrape may have
+            // set sourceReachable=true (e.g. a keyword-search API that 200'd with
+            // 0 PMs); leaving it set would let the re-scrape's stale "healthy" flag
+            // green-light stale-removal even if the new platform never proves reachable.
             scrapeStats.totalScanned = 0;
+            scrapeStats.sourceReachable = undefined;
             rawJobs = await scrapeCompanyCareers(company.careers_url, discovery.platformType, discovery.platformConfig, scrapeStats);
             console.log(`${company.name}: Re-scrape with ${discovery.platformType} found ${rawJobs.length} raw jobs (scanned ${scrapeStats.totalScanned})`);
 

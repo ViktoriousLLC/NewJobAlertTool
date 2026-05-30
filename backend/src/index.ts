@@ -46,7 +46,13 @@ Sentry.init({
 // silently turned this probe into dead code — the exact failure class this probe
 // exists to catch. A manually-set var that can be cleared can't guard the thing
 // that detects silent breakage; the platform-injected var can't be cleared.
-if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+const isProdRuntime = process.env.RAILWAY_ENVIRONMENT_NAME === "production";
+// Log the resolved guard value at boot so a future env rename that silently
+// disables the prod-only guards (Sentry probes, auth fail-closed, JWKS probe)
+// is visible in deploy logs immediately — the exact silent-failure class DEV-47
+// exists to prevent.
+console.log(`[boot] RAILWAY_ENVIRONMENT_NAME=${process.env.RAILWAY_ENVIRONMENT_NAME ?? "(unset)"} → prod-only guards ${isProdRuntime ? "ACTIVE" : "INACTIVE"}`);
+if (isProdRuntime) {
   import("./lib/sentryHealth")
     .then(({ reportSentryHealth }) => reportSentryHealth("boot"))
     .catch((err) => console.error("[observability] Sentry boot probe crashed:", err));

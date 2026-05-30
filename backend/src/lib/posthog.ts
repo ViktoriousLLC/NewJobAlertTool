@@ -18,6 +18,15 @@ const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://us.i.posthog.com";
 // Same key as frontend NEXT_PUBLIC_POSTHOG_KEY (publishable, safe to use here).
 const POSTHOG_KEY = process.env.POSTHOG_API_KEY || process.env.NEXT_PUBLIC_POSTHOG_KEY;
 
+// capturePosthogEvent fires on the happy path of EVERY authed request
+// (auth.jwt_verify_path). If the PostHog ingest pipeline goes down, reporting
+// each failure to Sentry would flood the issue stream and burn quota — burying
+// the real errors, the opposite of the DEV-40 intent. So report a capture
+// outage at most once per window, and fingerprint it so Sentry collapses the
+// rest into one dedupable issue.
+const CAPTURE_FAILURE_REPORT_INTERVAL_MS = 5 * 60 * 1000;
+let lastCaptureFailureReportedAt = 0;
+
 export function capturePosthogEvent(
   event: string,
   distinctId: string | null,
@@ -44,8 +53,13 @@ export function capturePosthogEvent(
     // Non-fatal — analytics never breaks the user flow — but DEV-40: report it
     // so a broken capture pipeline isn't indistinguishable from "no events."
     console.error(`[posthog] capture failed for event "${event}":`, err);
-    Sentry.captureException(err instanceof Error ? err : new Error(`PostHog capture failed for "${event}": ${String(err)}`), {
-      tags: { area: "posthog.capture", event },
-    });
+    const now = Date.now();
+    if (now - lastCaptureFailureReportedAt >= CAPTURE_FAILURE_REPORT_INTERVAL_MS) {
+      lastCaptureFailureReportedAt = now;
+      Sentry.captureException(err instanceof Error ? err : new Error(`PostHog capture failed for "${event}": ${String(err)}`), {
+        tags: { area: "posthog.capture", event },
+        fingerprint: ["posthog-capture-failed"],
+      });
+    }
   });
 }
