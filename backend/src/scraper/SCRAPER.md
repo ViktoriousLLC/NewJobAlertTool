@@ -49,7 +49,7 @@ This sidecar collects everything the next agent (human or AI) needs to know befo
 
 **Three-tier recovery** (added 2026-05-08, refined 2026-05-11): when any company's source returns 0 raw jobs (NOT just 0 PMs), cron runs three tiers in order:
 
-1. **Configured platform scraper** — uses `platform_type` from DB. Filter-heavy scrapers (Greenhouse/Workday/Ashby) write their pre-PM-filter count to a `ScrapeStats` out-param so we distinguish "source returned 0" (try recovery) from "source returned 50 but 0 PMs" (no recovery needed).
+1. **Configured platform scraper** — uses `platform_type` from DB. Filter-heavy scrapers (Greenhouse/Workday/Ashby) write their pre-PM-filter count to a `ScrapeStats` out-param so we distinguish "source returned 0" (try recovery) from "source returned 50 but 0 PMs" (no recovery needed). `ScrapeStats` also carries `sourceReachable?: boolean` (DEV-33, 2026-05-30): keyword-search/DOM scrapers (amazon, icims-api, oracle_hcm, intuit) that never see the full board set it after a successful HTTP 200, since they throw on non-ok. It's the "source alive" signal for scrapers whose `totalScanned` is always 0, and feeds the cron's stale-removal coverage (see JOBS.md → Stale-Job Anti-Flap Removal).
 2. **broadATSDiscovery** — auto-detects new ATS, updates DB. Skipped for `CUSTOM_SCRAPER_HOSTS`.
 3. **`stealthFallbackScrape`** — generic last-resort using `puppeteer-extra` + `puppeteer-extra-plugin-stealth`. Sniffs JSON XHRs for job-shaped arrays, falls back to DOM extraction. Returns sniffed URL + jobs.
 
