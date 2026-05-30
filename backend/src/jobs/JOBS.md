@@ -167,4 +167,4 @@ Jobs with no detected `job_level` pass through every threshold — preferring ov
 - **Cron endpoint**: Must `await runDailyCheck()` — Railway auto-sleep kills fire-and-forget.
 - **Railway Cron only**: No in-process schedulers — causes duplicate runs.
 - **Local CRON_SECRET mismatch**: Local `.env` CRON_SECRET doesn't match Railway production. Can't trigger manual cron from local — use Railway dashboard or wait for scheduled run.
-- **Resend quota**: 100 emails/day on free tier. Per-user alerts + admin digest + magic links all share this. Watch the daily count.
+- **Resend quota**: PAID Transactional Pro = 50,000 emails/month (NOT the free tier). The old "100/day free tier" note here was stale and caused a 2026-05-29 misdiagnosis of the daily-email bug — quota is effectively never the constraint at current volume (~75 daily recipients). See the corrected note higher in this file for detail.
