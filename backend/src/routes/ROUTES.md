@@ -97,6 +97,7 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
          Optional: ?forceMondayDigest=true — Forces the Monday digest on any day
 GET    /api/cron/self-check-suspects     — Returns the daily self-check suspect set as JSON for the DEV-41 remote routine
                                            (which has no Supabase access). Filters in Node; EXCLUDES is_verified_zero. See JOBS.md.
+                                           Auth: accepts CRON_SECRET OR the scoped read-only SELF_CHECK_TOKEN (least privilege).
 ```
 
 ## Input Validation
