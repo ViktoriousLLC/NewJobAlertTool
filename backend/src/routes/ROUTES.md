@@ -95,6 +95,8 @@ GET    /api/admin/users                  — User list + subs + email prefs
 GET    /api/cron/trigger                 — Must await runDailyCheck() — Railway kills idle processes
          Optional: ?skipEmails=true      — Skips per-user alerts (for safe manual re-runs)
          Optional: ?forceMondayDigest=true — Forces the Monday digest on any day
+GET    /api/cron/self-check-suspects     — Returns the daily self-check suspect set as JSON for the DEV-41 remote routine
+                                           (which has no Supabase access). Filters in Node; EXCLUDES is_verified_zero. See JOBS.md.
 ```
 
 ## Input Validation

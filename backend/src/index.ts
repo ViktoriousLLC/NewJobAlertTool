@@ -18,6 +18,7 @@ import interviewsRouter, { interviewsDiagnosticsHandler } from "./routes/intervi
 import { runDailyCheck } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
+import { fetchAllRows } from "./lib/fetchAllRows";
 import { scrapeCompanyCareers } from "./scraper/scraper";
 import { detectPlatform } from "./scraper/detectPlatform";
 import { validateScrapeResults } from "./scraper/validateScrape";
@@ -279,6 +280,87 @@ app.get("/api/cron/trigger", async (req, res) => {
     Sentry.captureException(err);
     console.error("Daily check failed:", err);
     res.status(500).json({ error: "Daily check failed" });
+  }
+});
+
+// Self-check suspect feed (DEV-41). The daily-self-check workflow runs in a
+// remote routine (Anthropic cloud) that has no Supabase access, so it pulls
+// today's suspect set from here over HTTPS. CRON_SECRET-gated, same pattern as
+// /api/cron/trigger. "Suspects" = looks-broken-but-not-already-explained,
+// EXCLUDING is_verified_zero (auto-managed, known-zero). Mirrors the suspect
+// filter documented in JOBS.md "Daily Self-Check Agent".
+app.get("/api/cron/self-check-suspects", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!safeCompareSecret(secret, process.env.CRON_SECRET)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  type CompanyRow = {
+    id: string;
+    name: string;
+    platform_type: string | null;
+    platform_config: unknown;
+    careers_url: string | null;
+    last_check_status: string | null;
+    subscriber_count: number | null;
+    consecutive_failure_count: number | null;
+    consecutive_healthy_zero_days: number | null;
+    total_product_jobs: number | null;
+    auto_disabled: boolean | null;
+    is_verified_zero: boolean | null;
+  };
+
+  try {
+    // Catalog is growing toward 1000 companies — paginate so the suspect feed
+    // can't silently truncate at the PostgREST 1000-row cap.
+    const companies = await fetchAllRows<CompanyRow>((from, to) =>
+      supabase
+        .from("companies")
+        .select(
+          "id, name, platform_type, platform_config, careers_url, last_check_status, subscriber_count, consecutive_failure_count, consecutive_healthy_zero_days, total_product_jobs, auto_disabled, is_verified_zero",
+        )
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
+
+    const isSuspect = (c: CompanyRow): boolean => {
+      if (c.is_verified_zero === true) return false; // auto-managed, known-zero — not a real suspect
+      const status = c.last_check_status || "";
+      return (
+        /error/i.test(status) ||
+        /0 jobs from source/i.test(status) ||
+        /quality: 0\/100/i.test(status) ||
+        c.auto_disabled === true ||
+        (c.consecutive_failure_count || 0) > 0 ||
+        ((c.consecutive_healthy_zero_days || 0) > 0 && (c.subscriber_count || 0) > 0)
+      );
+    };
+
+    const suspects = companies.filter(isSuspect).map((c) => ({
+      id: c.id,
+      name: c.name,
+      platform_type: c.platform_type,
+      platform_config: c.platform_config,
+      careers_url: c.careers_url,
+      last_check_status: c.last_check_status,
+      subscriber_count: c.subscriber_count,
+      consecutive_failure_count: c.consecutive_failure_count,
+      consecutive_healthy_zero_days: c.consecutive_healthy_zero_days,
+      total_product_jobs: c.total_product_jobs,
+    }));
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      total: companies.length,
+      count: suspects.length,
+      suspects,
+    });
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("GET /api/cron/self-check-suspects error:", err);
+    res.status(500).json({ error: "Failed to compute suspect set" });
   }
 });
 
