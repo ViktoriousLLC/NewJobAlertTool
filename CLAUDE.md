@@ -55,6 +55,17 @@ The sidecars hold subsystem detail (gotchas, platform-specific notes, historical
 curl -s "https://api.<your-domain>/api/health"   # verify backend after merge
 ```
 
+## Git & PR Workflow — always `/ship`
+
+**Every change reaches `main` through `/ship`** (`.claude/commands/ship.md`). It removes the per-session improvisation (branch vs local main, worktree or not, cleanup, savecc) that caused a 4-window `main` divergence on 2026-05-29. Just say "ship it"; it asks once, then runs the whole chain: branch off `origin/main` → commit → review → PR → merge → delete the branch + reset local main → bundle the doc updates into the same PR.
+
+**Rules (hold even outside `/ship`):**
+- **Never commit to local `main`.** Branch off `origin/main` (`claude/<slug>`), always.
+- **One worktree per parallel session** (`git worktree add ../<dir> -b claude/<slug> origin/main`) so two sessions never collide on files or branches. Skip `npm ci` unless the change needs it (Windows long-path).
+- **After any merge, reset local main:** `git fetch origin --prune && git checkout main && git reset --hard origin/main`. Keeps your local main matching GitHub — avoids the "real main vs stale local main" trap that misled a window on 2026-05-29.
+- **`main` is a repository ruleset (id 16381419), 0 required approvals** — not classic branch protection. Direct push is blocked; `gh pr merge` works without a human approver, so `/ship` can merge (it's a convention gate, not a hard one). (The "Deployment" steps above describe the manual long-form of this.)
+- **Docs ride in the change's PR (savecc-on-ship):** the project-history entry + any CLAUDE.md/sidecar currency fix go in the same PR; MEMORY.md updates right after.
+
 ## Subagents
 
 13 specialized agents in `.claude/agents/`. Full catalog: `.claude/agents/README.md`. Auto-discovered at session start.
