@@ -1805,6 +1805,26 @@ The days after the auth incident closed out with a cluster of small fixes and on
 
 ---
 
+## 2026-05-26 → 2026-05-29 — Interview / voice-AI feature stream (DEV-31, PRs #78-#100)
+
+The largest user-facing build in this window, spread across ~15 PRs and admin-gated for now (ElevenLabs minutes are real money). It's the headline of the upcoming Pro tier.
+
+**What shipped (admin-only, `/interview-test`).** A real-time spoken mock interview. One ElevenLabs conversational agent is reused across all three interview types via per-call prompt overrides; the browser connects straight over WebSocket on a short-lived signed URL minted by `POST /api/interviews/token` (we never proxy audio). Three types: behavioral, product sense, analytics. Post-call, the transcript is scored by three LLMs in parallel (Claude `claude-sonnet-4-6`, Gemini `gemini-2.5-pro`, OpenAI `gpt-4o`), all in Vik's voice via a shared eval system prompt, shown side by side. Dimensional rubrics distilled from Vik's coaching docs + real interviewer personas shipped in PR #100; the live agent is a clean interviewer (calibrates on role + seniority, one question at a time, probes "I" vs "we", stays in character, no mid-call coaching) and all scoring/coaching happens after the call. Persistence in `interview_sessions` (raw transcript + 3 evals, wiped after 7 days) plus a rolling per-user summary that survives the wipe and is injected into the next session's agent prompt (multi-session memory). `elevenlabs_conversation_id` column added (PR #95) so the raw audio can be re-fetched later for delivery analysis (only protects future sessions; past ids were never stored).
+
+**The spike that de-risked the moat (DEV-31).** The differentiator is feedback on *how you sounded*, which transcript-only competitors can't give. Validated on a real 2:26 recording before building: a hybrid of ElevenLabs Scribe (word-level timestamps, so WPM, pause length/location, and filler counts are computed deterministically) for the numbers, and Gemini multimodal for the tone/emotion judgment. Proof it was real: both engines independently flagged the same two pauses, which means Gemini is listening to the audio, not paraphrasing the transcript. Build note that fell out of it: real pause detection must exclude spans where the *other* diarized speaker is talking (Scribe flagged a 12s "pause" that was actually the interviewer's turn; Gemini correctly ignored it). Source-of-truth split: numbers from Scribe (tighter), judgment from Gemini.
+
+**Decisions / alternatives considered.**
+- **ElevenLabs** for the live voice layer (real-time, server-minted signed URLs, per-call overrides, browser-direct). Predates this window; not re-litigated.
+- **Three-LLM A/B kept, not yet collapsed.** Whether to keep all three evaluators or collapse to one + the delivery report is deliberately undecided until they can be compared head-to-head on the upgraded rubric.
+- **Hume AI rejected** as the emotion engine: it sunsets 2026-06-14. Don't build on it.
+- **Gemini billing wrinkle:** the free tier 503'd and 429'd ("prepayment credits depleted"); after a ~$10 top-up, `gemini-2.5-pro` verified working and set as `GEMINI_MODEL` on Railway. Keep the model-fallback + backoff chain even on paid (it still 503s under load).
+
+**Deferred (the main remaining build).** The server-side delivery endpoint (fetch audio by conversation_id → Scribe metrics → Gemini tone → synthesized report → cache + show on the results page) is NOT built; design in `docs/specs/dev-31-voice-delivery-analysis.md`. The pause-detection turn-boundary fix must land in that build. The new interviewer personas (PR #100) are live but untested by ear and need a listen-through to tune.
+
+**Monetization fit.** Headline Pro feature ($20/mo Pro; 30 voice minutes included, paid add-on minutes, a BYOK option) under DEV-22. The delivery/tone report (DEV-31) is positioned as the v1 differentiator and the real moat.
+
+---
+
 ## 2026-05-28 — Auth hardening: HS256 → JWKS / ES256 JWT verification (PR #93, #94)
 
 **What changed.** Supabase migrated this project off the legacy HS256 shared secret; tokens are now ES256 (asymmetric). The backend was still pinned to HS256 only, so every JWT verification *failed* and fell through to a ~150ms network round-trip per authenticated request. Found by poking around Railway logs, not by an alert. Fix: verify with the `jose` library + `createRemoteJWKSet` against Supabase's published keys, keep the network call as a defense-in-depth fallback, and add a boot-time probe that surfaces a misconfig early. PR #94 added a PostHog `auth.jwt_verify_path` event so the fast-vs-fallback split is finally visible.
