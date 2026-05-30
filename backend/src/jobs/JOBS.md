@@ -28,15 +28,20 @@ This sidecar collects everything needed before touching `backend/src/jobs/dailyC
 - **Manual triggers**: `?forceWeeklyDigest=true` on `/api/cron/trigger`, `/api/cron/weekly-digest` (CRON_SECRET), `POST /api/admin/weekly-digest/send` (admin JWT), `GET /api/admin/weekly-digest/preview` (admin JWT, no send).
 - **LinkedIn post structure** is locked editorially (approved 2026-05-22): intro → banking takeaway with industry counts → top 10 companies by volume → top company example role areas → top 5 AI-PM-hiring companies with titles → reader question close. When editing the post text in `renderLinkedInPost()`, read `docs/Viks Voice/vik_voice_style_guide.md` first.
 
-## Daily Self-Check Agent (PR #20+)
+## Daily Self-Check Agent (PR #20+; reworked into a parallel fan-out workflow in DEV-41, 2026-05-30)
 
-Separate remote agent fires daily at 14:30 UTC via `CronCreate`. Reads:
-- `companies` for new failures + watch list + auto-disabled + unverified-zeros with subs > 0
-- `scraper_events` for last 24h
-- `security_snapshots` delta on Mondays only
-- cross-domain stealth rejection events
+A daily remote agent (routine) fires ~14:30 UTC, after the 14:00 scrape, and runs the **`daily-self-check` workflow** (`.claude/workflows/daily-self-check.js`) instead of the old serial scraper-doctor loop.
 
-Investigates each issue (spawns scraper-doctor), pushes curated report only if actionable.
+**Suspect set (what gets checked):** companies that look broken but are NOT already explained — `last_check_status` contains 'error' / '0 jobs from source' / the legacy 'quality: 0/100', OR `auto_disabled`, OR `consecutive_failure_count > 0`, OR `consecutive_healthy_zero_days > 0` (with subs) — **excluding `is_verified_zero`** (auto-managed, known-zero, not real suspects). On 2026-05-30 that was 12 of 247 (79 before the is_verified_zero exclusion). The routine computes this set and passes it to the workflow as `args`.
+
+**The workflow:** `pipeline(suspects, diagnose, adversarialVerify)`, capped at 20 (overflow reported, never silently dropped):
+- **diagnose** — one `scraper-doctor` per suspect; reads SCRAPER.md, hits the live ATS board itself, decides broken vs benign.
+- **adversarialVerify** — a second, independent `scraper-doctor` tries to REFUTE the diagnosis in BOTH directions: prove a "broken" verdict is a false alarm, AND prove a "healthy" verdict is secretly broken (the mislabeled-healthy case that let zombie jobs sit live for weeks — the serial check missed it). Only diagnoses that survive as a real, fixable, subscriber-affecting problem count.
+- Returns the confirmed list; the routine emails admin ONLY if it's non-empty ("email only if actionable" preserved).
+
+**Cost:** ~83k tokens/company (diagnose + verify), so ~1M tokens for a ~12-company run. Always scoped to the suspect set, never all 247.
+
+Why the rework: the old serial scraper-doctor loop was single-perspective and mislabeled delisted companies as healthy for weeks (the 2026-05-29 zombie-job class). The adversarial refute pass is what catches that. The routine also reads `scraper_events` (last 24h), the `security_snapshots` delta (Mondays), and cross-domain stealth rejection events for the report context.
 
 ## Self-Healing Pipeline (refer to SCRAPER.md for detail)
 

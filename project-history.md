@@ -1921,3 +1921,19 @@ Shipped a liveness probe (`backend/src/lib/sentryHealth.ts`, content landed on m
 - **Bundled all doc updates into the backend PR** (this entry + the CLAUDE.md guard/Sentry gotchas + JOBS.md/SCRAPER.md `sourceReachable` notes) so the two PRs don't collide on shared files.
 
 **Lessons.** The whole wave is one theme: *a guard, a write, or a scrape that fails silently is worse than one that fails loudly, because silence reads as health.* Every ticket here replaces a silent path with a loud one — and the meta-trap (DEV-47) was that even the loud paths had been silently disabled by an unset env var. The new boot log exists so that can't happen invisibly again.
+
+---
+
+## 2026-05-30 (later) — DEV-41: daily self-check becomes a parallel, self-verifying workflow
+
+**Context.** The daily self-check agent walked the suspect companies serially, one `scraper-doctor` at a time, single perspective. That shape mislabeled delisted companies as "healthy" for weeks — it's what let the 2026-05-29 zombie-job bug hide. A manual parallel sweep with an adversarial refute step is what finally caught it. DEV-41 makes that shape permanent.
+
+**What changed.** New committed workflow `.claude/workflows/daily-self-check.js`: `pipeline(suspects, diagnose, adversarialVerify)`. Each suspect gets a `scraper-doctor` diagnosis that hits the live ATS board itself, then a second independent `scraper-doctor` that tries to *refute* the diagnosis in both directions (prove a "broken" verdict is a false alarm; prove a "healthy" verdict is secretly broken). Only diagnoses that survive as a real, subscriber-affecting, fixable problem are reported; empty list = no email, preserving "email only if actionable." Capped at 20 suspects with overflow reported, never silently dropped. Had to un-ignore `.claude/workflows/` in `.gitignore` (the dir was excluded) so the workflow versions and reaches the remote routine.
+
+**Suspect scoping.** The key correction: the raw "looks off" filter matched 79 companies, but 67 were auto-managed `is_verified_zero` (known-zero, already handled) — not real suspects. Excluding those gives ~12 true suspects, which is the right fan-out size. The suspect query lives in the trigger, documented in JOBS.md.
+
+**Validated on 3 live suspects** (Plaid, Slack, Cloudflare). All three correctly cleared as false alarms (0 actionable → no email): Plaid's repoint confirmed working (verifier independently found 5 live US PM roles on the Ashby board), Slack and Cloudflare confirmed genuinely 0-PM from healthy boards. Cost ~83k tokens/company, so ~1M for a full ~12-company run — in the approved band. Useful side finding: today's 12 suspects are all the stale `quality: 0/100` label that PR #98 retired but hadn't overwritten yet (it merged the day before); the 14:00 cron clears them, so the daily suspect set shrinks toward zero on its own.
+
+**Decisions.** Trigger = daily auto-run (~14:30 UTC remote routine), chosen by Vik over a session-start sweep or on-demand, because the watchdog's whole value is catching breakage while he's away; the scoped suspect set + sonnet `scraper-doctor` agents keep it bounded. Workflow kept as a pure pipeline (suspects passed in by the trigger) rather than self-fetching, so the DB query stays in one place.
+
+**Note:** DEV-45 (voice delivery-analysis endpoint) is Vik's own build, not a Claude task — independent of this.
