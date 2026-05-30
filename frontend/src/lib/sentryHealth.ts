@@ -15,10 +15,11 @@
 // fire-and-forget and drops rejected events without surfacing the failure.
 //
 // This mirrors backend/src/lib/sentryHealth.ts. The frontend has two DSNs:
-//   - NEXT_PUBLIC_SENTRY_DSN  (browser/client config; baked at build time)
-//   - SENTRY_DSN              (server config; the Next.js server runtime)
-// Both are probed -- the truncated value that bit us in the past was the
-// NEXT_PUBLIC one.
+//   - NEXT_PUBLIC_SENTRY_DSN  (browser/client config; baked at build time) -- required
+//   - SENTRY_DSN              (server config; the Next.js server runtime)   -- optional
+// The NEXT_PUBLIC one is always probed (it's the truncated value that bit us
+// before). SENTRY_DSN is only probed when it's set, so an intentionally-unset
+// server DSN doesn't raise a standing false alarm.
 //
 // Reporting channel: console.error (visible in Vercel logs) + a PostHog
 // `observability.sentry_unhealthy` event (the SAME alert channel the backend
@@ -151,32 +152,41 @@ async function capturePosthogEvent(
 }
 
 /**
- * Probe BOTH frontend Sentry DSNs, log the result loudly, and emit a PostHog
- * event per DSN. Notification is PostHog + console only (no admin email --
- * Resend isn't wired into the Vercel frontend runtime; the backend's daily
- * probe owns the email channel).
+ * Probe the frontend Sentry DSN(s), log every result loudly, and emit a PostHog
+ * `observability.sentry_unhealthy` event ONLY on failure (the healthy path is
+ * console-only, since register() runs on every Vercel cold start). Notification
+ * is PostHog + console only (no admin email -- Resend isn't wired into the
+ * Vercel frontend runtime; the backend's daily probe owns the email channel).
  *
  * Fire-and-forget: callers (instrumentation.ts) must not block server startup
  * on this, and any throw is contained here.
  */
 export async function reportFrontendSentryHealth(source: "boot"): Promise<void> {
-  const targets: Array<{ envVarName: string; dsn: string | undefined }> = [
-    { envVarName: "NEXT_PUBLIC_SENTRY_DSN", dsn: process.env.NEXT_PUBLIC_SENTRY_DSN },
-    { envVarName: "SENTRY_DSN", dsn: process.env.SENTRY_DSN },
+  // NEXT_PUBLIC_SENTRY_DSN is the client error-reporting DSN and is the one that
+  // was silently truncated before — it MUST be set, so a missing/broken value
+  // alerts. SENTRY_DSN (server runtime) is optional: if it's simply unset the
+  // public DSN still covers reporting, so we skip it rather than raise a standing
+  // false "unhealthy" alarm — but we DO probe it when it's set, to catch a
+  // set-but-broken value.
+  const targets: Array<{ envVarName: string; dsn: string | undefined; required: boolean }> = [
+    { envVarName: "NEXT_PUBLIC_SENTRY_DSN", dsn: process.env.NEXT_PUBLIC_SENTRY_DSN, required: true },
+    { envVarName: "SENTRY_DSN", dsn: process.env.SENTRY_DSN, required: false },
   ];
 
   await Promise.all(
-    targets.map(async ({ envVarName, dsn }) => {
+    targets.map(async ({ envVarName, dsn, required }) => {
+      if (!dsn && !required) {
+        console.log(`[observability] Frontend Sentry: ${envVarName} not set (optional) — skipping probe`);
+        return;
+      }
       const health = await probeSentryDsn(dsn, envVarName);
       if (health.ok) {
+        // Healthy path: console only. register() runs on every Vercel cold
+        // start, so emitting a PostHog event here would flood the project with
+        // sentry_healthy noise. The unhealthy event below is the alert signal.
         console.log(
           `[observability] Frontend Sentry ingest healthy for ${envVarName} via ${source} probe (event ${health.eventId})`,
         );
-        await capturePosthogEvent("observability.sentry_healthy", {
-          source,
-          surface: "frontend",
-          env_var: envVarName,
-        });
       } else {
         console.error(
           `[observability] Frontend Sentry ingest UNHEALTHY for ${envVarName} (${source}): ${health.reason}: ${health.detail}`,
