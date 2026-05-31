@@ -15,7 +15,7 @@ import feedRouter from "./routes/feed";
 import preferencesRouter from "./routes/preferences";
 import adminRouter from "./routes/admin";
 import interviewsRouter, { interviewsDiagnosticsHandler } from "./routes/interviews";
-import { runDailyCheck } from "./jobs/dailyCheck";
+import { runDailyCheck, scrapeAndRecordCompany, createScrapeContext, PerCompanyScrapeResult } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
 import { fetchAllRows } from "./lib/fetchAllRows";
@@ -280,6 +280,129 @@ app.get("/api/cron/trigger", async (req, res) => {
     Sentry.captureException(err);
     console.error("Daily check failed:", err);
     res.status(500).json({ error: "Daily check failed" });
+  }
+});
+
+// Scrape-on-demand (DEV-52). Scrapes companies and reconciles seen_jobs WITHOUT
+// running ANY email-distribution step — the daily 14:00 UTC cron couples
+// scraping with the per-user email + admin digest, so adding a company means
+// waiting for the daily run to surface its jobs. This decouples the two: it
+// reuses the EXACT per-company scrape + seen_jobs upsert logic the daily cron
+// runs (scrapeAndRecordCompany), but never calls sendPerUserAlerts /
+// sendConsolidatedAdminDigest / sendWeeklyDigest. CRON_SECRET-gated, same
+// constant-time pattern as /api/cron/trigger.
+//
+// Body: { companyIds?: string[] }
+//   - companyIds present → scrape exactly those companies (validated as UUIDs).
+//   - omitted           → scrape is_active companies that currently have ZERO
+//                          seen_jobs rows (i.e. freshly added, never scraped).
+// Idempotent: re-running just re-reconciles seen_jobs (insert-new / flip-returned
+// / refresh / mark-removed) and re-stamps last_check_status. No duplicate rows
+// (company_id+job_url_path is UNIQUE) and no emails, ever.
+// Returns: { scraped, jobsAdded, perCompany: [{ id, name, status, jobsAdded, totalActive, error? }] }
+app.post("/api/cron/scrape-only", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!safeCompareSecret(secret, process.env.CRON_SECRET)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const rawIds = req.body?.companyIds;
+  if (rawIds !== undefined) {
+    if (!Array.isArray(rawIds)) {
+      res.status(400).json({ error: "companyIds must be an array of UUID strings" });
+      return;
+    }
+    if (rawIds.length > 250) {
+      res.status(400).json({ error: "companyIds too long (max 250)" });
+      return;
+    }
+    if (!rawIds.every((id) => typeof id === "string" && UUID_REGEX.test(id))) {
+      res.status(400).json({ error: "companyIds must all be valid UUIDs" });
+      return;
+    }
+  }
+  const companyIds: string[] | undefined = rawIds;
+
+  const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let companies: any[];
+
+    if (companyIds && companyIds.length > 0) {
+      // Targeted: scrape exactly the requested companies (de-duped). Chunk the
+      // .in() filter so a large id list can't blow past PostgREST limits.
+      const uniqueIds = Array.from(new Set(companyIds));
+      companies = [];
+      const CHUNK = 100;
+      for (let i = 0; i < uniqueIds.length; i += CHUNK) {
+        const slice = uniqueIds.slice(i, i + CHUNK);
+        const { data, error } = await supabase
+          .from("companies")
+          .select("*")
+          .in("id", slice);
+        if (error) throw error;
+        if (data) companies.push(...data);
+      }
+    } else {
+      // Default: is_active companies that currently have ZERO seen_jobs rows —
+      // i.e. freshly added companies that have never been scraped. Pull all
+      // active companies (paginate past the 1000-row cap) and the set of
+      // company_ids that already have seen_jobs, then keep the difference.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const activeCompanies = await fetchAllRows<any>((from, to) =>
+        supabase
+          .from("companies")
+          .select("*")
+          .eq("is_active", true)
+          .order("id", { ascending: true })
+          .range(from, to)
+      );
+
+      // Collect the distinct company_ids that already have at least one seen_jobs
+      // row. seen_jobs can far exceed 1000 rows, so paginate; we only need the id.
+      const seenCompanyIds = new Set<string>();
+      const seenRows = await fetchAllRows<{ company_id: string }>((from, to) =>
+        supabase
+          .from("seen_jobs")
+          .select("company_id")
+          .order("company_id", { ascending: true })
+          .range(from, to)
+      );
+      for (const r of seenRows) seenCompanyIds.add(r.company_id);
+
+      companies = activeCompanies.filter((c) => !seenCompanyIds.has(c.id));
+    }
+
+    console.log(`[scrape-only] Scraping ${companies.length} company(ies)${companyIds ? " (targeted)" : " (freshly-added, zero seen_jobs)"} — NO email`);
+
+    // Force isProbeDay=true so an auto-disabled target is still actually scraped
+    // (the daily loop would skip it on a non-Monday). For freshly-added companies
+    // this is a no-op; for a manual re-scrape of a broken company it's what the
+    // caller wants — a real attempt now, not "wait for Monday."
+    const ctx = createScrapeContext(true);
+    const perCompany: PerCompanyScrapeResult[] = [];
+
+    for (let i = 0; i < companies.length; i++) {
+      const result = await scrapeAndRecordCompany(companies[i], ctx);
+      perCompany.push(result);
+      // Same inter-company spacing the daily loop uses, to be gentle on sources.
+      if (i < companies.length - 1) await delay(5000);
+    }
+
+    const jobsAdded = perCompany.reduce((sum, r) => sum + r.jobsAdded, 0);
+    res.json({
+      scraped: perCompany.length,
+      jobsAdded,
+      perCompany,
+    });
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("Scrape-only failed:", err);
+    res.status(500).json({ error: "Scrape-only failed" });
   }
 });
 
