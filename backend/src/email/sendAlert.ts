@@ -503,6 +503,17 @@ export interface AdminDigestInput {
   autoFixed?: { name: string; ruleId: string; description: string; message: string }[];
   reEnabled: { name: string; jobCount: number }[];
   emailBatchResult: BatchSendResult;
+  // DEV-49 L6: aggregate delivery counts for the top-of-email visibility line.
+  // Undefined when emails were skipped this run (manual re-run) — the line is
+  // simply omitted. eligible = subscribers who should have gotten an email,
+  // built = payloads assembled, sent = Resend accepted.
+  emailDeliveryStats?: {
+    eligible: number;
+    built: number;
+    sent: number;
+    failed: number;
+    companiesWithNewJobs: number;
+  };
   isMondayDigest: boolean;
   weeklyHealth?: { healthy: number; disabled: number; watchListCount: number };
   weeklyEvents?: { event_type: string; company_name: string; created_at: string; details: Record<string, unknown> | null }[];
@@ -582,6 +593,23 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
   }
 
   let html = `<div style="font-family:${font};max-width:700px;color:#1A1A2E;">`;
+
+  // -------- Top-of-email delivery line (DEV-49 L6) --------
+  // The single most important number for "did today's emails actually go out?"
+  // Sits ABOVE the TL;DR rollup so it's the first thing read. Send rate (sent /
+  // built) goes bold + red below 95% so a partial Resend rejection or a
+  // build-side drop is impossible to miss. Omitted when emails were skipped.
+  const ds = input.emailDeliveryStats;
+  if (ds) {
+    const sendRate = ds.built > 0 ? Math.round((ds.sent / ds.built) * 100) : 100;
+    const rateStyle = sendRate < 95 ? "font-weight:bold;color:#dc2626;" : "color:#16a34a;";
+    html += `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 16px;margin-bottom:16px;font-size:14px;line-height:1.6;color:#1e3a8a;">`;
+    html += `📧 Emails: built <strong>${ds.built}</strong> / eligible <strong>${ds.eligible}</strong> / sent <span style="${rateStyle}">${ds.sent} (${sendRate}%)</span>`;
+    if (ds.companiesWithNewJobs > 0) {
+      html += ` <span style="color:#60a5fa;">· ${ds.companiesWithNewJobs} compan${ds.companiesWithNewJobs === 1 ? "y" : "ies"} posted new jobs</span>`;
+    }
+    html += `</div>`;
+  }
 
   // -------- Top-of-email TL;DR (PR #19) --------
   // Severity rollup so the admin can triage from the subject line + this
@@ -750,11 +778,19 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
   }
 
   // -------- Monday-only weekly digest sections --------
+  // DEV-49 L6: render these in a DISTINCT blue (#2563eb) — and wrap the whole
+  // block in a blue left border + tinted background — so the weekly-only add-on
+  // (system health + self-heal log + security scan) is visually unmistakable
+  // against the daily content's red. The per-status colors INSIDE the tables
+  // (green healthy counts, red disabled, severity colors) stay as-is; only the
+  // structural section headings carry the blue "this is the weekly section" cue.
+  const WEEKLY_BLUE = "#2563eb";
   if (input.isMondayDigest) {
-    html += `<h2 style="margin:32px 0 12px 0;color:#1A1A2E;border-top:1px solid #e7e5e4;padding-top:24px;">Weekly digest</h2>`;
+    html += `<div style="border-left:4px solid ${WEEKLY_BLUE};background:#eff6ff;border-radius:0 6px 6px 0;padding:4px 16px 16px 16px;margin-top:32px;">`;
+    html += `<h2 style="margin:16px 0 12px 0;color:${WEEKLY_BLUE};">📅 Weekly digest</h2>`;
 
     if (input.weeklyHealth) {
-      html += `<h3 style="margin:16px 0 6px 0;color:#16a34a;">System health</h3>`;
+      html += `<h3 style="margin:16px 0 6px 0;color:${WEEKLY_BLUE};">System health</h3>`;
       html += `<table style="border-collapse:collapse;font-size:14px;margin-bottom:12px;">
         <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Healthy scrapers</td><td style="font-weight:bold;color:#16a34a;">${input.weeklyHealth.healthy} / ${input.totalCompanies}</td></tr>
         <tr><td style="padding:4px 16px 4px 0;color:#78716c;">Watch list</td><td style="font-weight:bold;color:#ea580c;">${input.weeklyHealth.watchListCount}</td></tr>
@@ -778,7 +814,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
         auto_disabled: { label: "Auto-disabled", color: "#ea580c" },
       };
 
-      html += `<h3 style="margin:16px 0 6px 0;color:#1A1A2E;">Self-heal log (past 7 days)</h3>`;
+      html += `<h3 style="margin:16px 0 6px 0;color:${WEEKLY_BLUE};">Self-heal log (past 7 days)</h3>`;
       for (const [type, list] of Object.entries(byType)) {
         const meta = eventTypeLabels[type] || { label: type, color: "#6b7280" };
         html += `<p style="margin:12px 0 4px 0;font-weight:bold;color:${meta.color};">${meta.label} (${list.length})</p>`;
@@ -796,7 +832,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
 
     // Show today's just-happened events on Monday for completeness
     if (input.reEnabled.length > 0) {
-      html += `<h3 style="margin:16px 0 6px 0;color:#16a34a;">Re-enabled today (${input.reEnabled.length})</h3>`;
+      html += `<h3 style="margin:16px 0 6px 0;color:${WEEKLY_BLUE};">Re-enabled today (${input.reEnabled.length})</h3>`;
       html += `<ul style="font-size:13px;">`;
       for (const r of input.reEnabled) html += `<li>${escapeHtml(r.name)}: ${r.jobCount} jobs</li>`;
       html += `</ul>`;
@@ -813,7 +849,7 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
         info: "#9ca3af",
       };
 
-      html += `<h3 style="margin:24px 0 6px 0;color:#1A1A2E;">Security check (npm audit)</h3>`;
+      html += `<h3 style="margin:24px 0 6px 0;color:${WEEKLY_BLUE};">Security check (npm audit)</h3>`;
 
       // One-line cross-surface summary so a frontend regression is visible at a
       // glance, not buried (the backend detail below still gets the full diff).
@@ -874,6 +910,9 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
 
       html += `<p style="font-size:11px;color:#9ca3af;margin:4px 0 0 0;">Production dependencies only, both backend and frontend (omit=dev).</p>`;
     }
+
+    // Close the DEV-49 L6 blue weekly-section wrapper opened above.
+    html += `</div>`;
   }
 
   html += `<p style="margin-top:24px;padding-top:12px;border-top:1px solid #e7e5e4;font-size:11px;color:#a8a29e;">
