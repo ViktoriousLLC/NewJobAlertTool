@@ -257,6 +257,34 @@ export interface PerCompanyScrapeResult {
   error?: string;
 }
 
+// Scrape an explicit set of companies by id, NO email. Used fire-and-forget by
+// the subscribe route so a freshly-added catalog company populates within a few
+// minutes instead of waiting for the 14:00 cron. Idempotent (seen_jobs is UNIQUE
+// on company_id+job_url_path) and the daily cron re-scrapes everything anyway, so
+// a partial run (e.g. if the host process is recycled mid-scrape) is self-healing.
+export async function scrapeCompaniesByIds(companyIds: string[]): Promise<PerCompanyScrapeResult[]> {
+  const uniqueIds = Array.from(new Set(companyIds));
+  if (uniqueIds.length === 0) return [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const companies: any[] = [];
+  const CHUNK = 100;
+  for (let i = 0; i < uniqueIds.length; i += CHUNK) {
+    const slice = uniqueIds.slice(i, i + CHUNK);
+    const { data, error } = await supabase.from("companies").select("*").in("id", slice);
+    if (error) throw error;
+    if (data) companies.push(...data);
+  }
+  // isProbeDay=true so an auto-disabled target is still actually scraped now (the
+  // daily loop would otherwise skip it until Monday).
+  const ctx = createScrapeContext(true);
+  const perCompany: PerCompanyScrapeResult[] = [];
+  for (let i = 0; i < companies.length; i++) {
+    perCompany.push(await scrapeAndRecordCompany(companies[i], ctx));
+    if (i < companies.length - 1) await delay(5000);
+  }
+  return perCompany;
+}
+
 // Scrape one company, run the self-healing tiers, and reconcile seen_jobs
 // (insert new, flip returned, refresh stale, mark removed). This is the EXACT
 // per-company body the daily cron loop has always run, extracted verbatim so

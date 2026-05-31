@@ -33,7 +33,7 @@ This sidecar collects everything the next agent (human or AI) needs to know befo
 | **KPMG WordPress** (2026-05-18) | Bespoke WordPress + PHP search endpoint | KPMG (`kpmguscareers.com`). Returns JSON with HTML fragments. NOT SuccessFactors despite SSO. **Verified 0 US PM yield** — `is_verified_zero=true`. |
 | **Deel job-boards** (2026-05-18) | RSC: 1 header → React Server Components stream | Klarna (`jobs.deel.com/klarna`). Generic `scrapeDeelCareers(orgSlug, label, stats)`. **Klarna verified 0 US PM yield** (Stockholm-only). |
 | **Revolut Next.js** (2026-05-18) | `/_next/data/{buildId}/careers.json` (Cloudflare bypass) | Revolut only. buildId rotates each deploy → on 404 returns `[]` so stealth tier rescues + `inferPlatformFromSniffedUrl` auto-updates the new buildId. |
-| Stealth tier (yield to) | hostname guard returns `[]` from `scrapeCompanyCareers` | Meta, TikTok, Tesla, Wayfair — all actively block (Akamai 403, FB session-gating, Stargate gateway 2012, Workday 401/422). |
+| Stealth tier (yield to) | hostname guard returns `[]` from `scrapeCompanyCareers` | Meta, TikTok, Tesla, Wayfair — all actively block (Akamai 403, FB session-gating, Stargate gateway 2012, Workday 401/422). Now flagged `scrape_blocked=true` (badge, non-addable) and restorable via `platform_type='rapidapi_linkedin'` — DEV-51/#144 date-gated auto-pull, dormant until July 1; see JOBS.md → RapidAPI Restore. |
 | Puppeteer | HTML scraping (120s timeout) | Google, fallback for unknown |
 
 ## Key Modules

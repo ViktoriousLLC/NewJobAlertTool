@@ -24,6 +24,7 @@ This sidecar collects everything needed before touching `backend/src/jobs/dailyC
 - **Idempotent**: re-runs just re-reconcile `seen_jobs` (UNIQUE on company_id+job_url_path prevents dupes) and re-stamp `last_check_status`. 5s inter-company delay, same as the daily loop.
 - **Returns** `{ scraped, jobsAdded, perCompany: [{ id, name, status, jobsAdded, totalActive, error? }] }`.
 - **Never** calls `sendPerUserAlerts` / `sendConsolidatedAdminDigest` / `sendWeeklyDigest`.
+- **`scrapeCompaniesByIds(ids)`** (exported from `dailyCheck.ts`) is the reusable "scrape these ids, no email" core. The `POST /api/subscriptions` route calls it **fire-and-forget** (DEV-54) for just-subscribed companies with zero jobs (capped 25, skips `scrape_blocked`) so a freshly-added catalog company populates within minutes instead of waiting for the 14:00 cron. The daily cron is the guaranteed backstop; idempotent, so a partial run (host recycled mid-scrape) self-heals.
 
 ## RapidAPI Restore of Scraping-Blocked Employers (DEV-51)
 
