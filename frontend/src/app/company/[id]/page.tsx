@@ -25,6 +25,10 @@ interface CompanyDetail {
   last_checked_at: string | null;
   last_check_status: string | null;
   total_product_jobs: number;
+  // True when the employer's career site hard-blocks scraping. Shows a neutral
+  // "Restricted" badge instead of an empty job list so it reads as the employer
+  // denying access, not our scraper failing.
+  scrape_blocked?: boolean | null;
   jobs: Job[];
 }
 
@@ -329,7 +333,14 @@ function CompanyDetailContent() {
             </a>
           </div>
           <div className="flex items-center gap-2">
-            {company.last_check_status?.startsWith("success") ? (
+            {company.scrape_blocked ? (
+              <span
+                className="bg-stone-100 text-stone-600 border border-stone-200 px-3 py-1 rounded-full text-xs font-medium"
+                title="This employer blocks automated access to their careers site, so we can't list their roles here."
+              >
+                Restricted
+              </span>
+            ) : company.last_check_status?.startsWith("success") ? (
               <span className="px-3 py-1 rounded-full text-xs font-medium" style={{ backgroundColor: "var(--badge-bg)", color: "var(--badge-text)" }}>
                 {company.last_check_status.includes("quality:")
                   ? company.last_check_status.replace("success ", "").replace("(", "").replace(")", "")
@@ -417,6 +428,23 @@ function CompanyDetailContent() {
           </div>
         </div>
       </div>
+
+      {/* Restricted notice — explains the empty job list for employers that
+          hard-block scraping, so it reads as the employer denying access
+          rather than our failure. */}
+      {company.scrape_blocked && (
+        <div className="bg-stone-50 border border-stone-200 rounded-xl p-4 mb-6 flex items-start gap-3">
+          <svg className="w-5 h-5 text-stone-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+          </svg>
+          <div>
+            <div className="text-sm font-semibold text-stone-700">Restricted</div>
+            <p className="text-sm text-stone-500 mt-0.5">
+              This employer blocks automated access to their careers site, so we can&apos;t list their roles here. You can still browse openings directly on their site using the link above.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Compensation section */}
       {compData && (

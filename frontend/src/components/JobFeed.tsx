@@ -83,6 +83,7 @@ interface FeedJob {
     name: string;
     careers_url: string;
     industry: string;
+    scrape_blocked?: boolean | null;
   };
   comp: { min: number; max: number; median: number | null; tier: string } | null;
 }
@@ -612,7 +613,7 @@ export default function JobFeed() {
 // the user sees a visual identifier. Image (DuckDuckGo first, Google
 // second) loads on top via two onError swaps.
 // ------------------------------------------------------------
-function CompanyCell({ company }: { company: { id: string; name: string; careers_url: string; industry: string } }) {
+function CompanyCell({ company }: { company: { id: string; name: string; careers_url: string; industry: string; scrape_blocked?: boolean | null } }) {
   const brand = getBrandColor(company.name);
   const softBg = softenColor(brand, 0.82);
   const primaryUrl = getFaviconUrl(company.name, company.careers_url);
@@ -649,7 +650,17 @@ function CompanyCell({ company }: { company: { id: string; name: string; careers
         />
       </div>
       <div className="min-w-0">
-        <div className="text-[13px] font-bold text-[#1A1A2E] truncate" title={company.name}>{company.name}</div>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[13px] font-bold text-[#1A1A2E] truncate" title={company.name}>{company.name}</span>
+          {company.scrape_blocked && (
+            <span
+              className="shrink-0 text-[9px] font-semibold uppercase tracking-wide bg-stone-100 text-stone-500 border border-stone-200 rounded px-1.5 py-0.5"
+              title="This employer blocks automated access to their careers site, so we can't list their roles here."
+            >
+              Restricted
+            </span>
+          )}
+        </div>
         <div className="text-[10px] text-stone-400 uppercase tracking-wide truncate">{industryLabel}</div>
       </div>
     </div>

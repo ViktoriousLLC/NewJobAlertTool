@@ -23,6 +23,10 @@ interface Company {
   total_product_jobs: number;
   new_jobs_today: number;
   latest_new_job_at: string | null;
+  // True when the employer's career site hard-blocks scraping. We show a
+  // neutral "Restricted" badge instead of "0 roles" so it reads as the
+  // employer denying access, not our scraper failing.
+  scrape_blocked?: boolean | null;
 }
 
 
@@ -384,58 +388,88 @@ function DashboardContent() {
                     </span>
                   </div>
 
-                  {/* Card body — centered content */}
-                  <div className={`flex flex-col items-center justify-center flex-1 ${company.new_jobs_today > 0 ? "gap-[10px]" : ""}`} style={{ padding: "4px 10px 0" }}>
-                    {company.new_jobs_today > 0 && (
+                  {/* Card body — centered content. A "Restricted" employer
+                      replaces the role count + status footer entirely: the
+                      employer blocks scraping, so "0 roles" would misread as
+                      our failure. */}
+                  {company.scrape_blocked ? (
+                    <div className="flex flex-col items-center justify-center flex-1" style={{ padding: "4px 10px 0" }}>
                       <span
-                        className="font-[700] text-[11px]"
+                        className="font-[600] text-[12px]"
                         style={{
-                          backgroundColor: "#E8F5EE",
-                          color: "#16874D",
+                          backgroundColor: "#F1F1F4",
+                          color: "#6E6E80",
+                          border: "1px solid #E0E0E6",
                           borderRadius: 6,
                           padding: "3px 12px",
                           letterSpacing: "0.02em",
                         }}
+                        title="This employer blocks automated access to their careers site, so we can't list their roles here."
                       >
-                        +{company.new_jobs_today} new
-                      </span>
-                    )}
-                    <div className="text-center">
-                      <span className="text-[26px] font-bold text-[#1A1A2E]">
-                        {company.total_product_jobs}
-                      </span>
-                      <span className="text-[13px] text-[#6E6E80] ml-1">
-                        {company.total_product_jobs === 1 ? "role" : "roles"}
+                        Restricted
                       </span>
                     </div>
-                  </div>
+                  ) : (
+                    <div className={`flex flex-col items-center justify-center flex-1 ${company.new_jobs_today > 0 ? "gap-[10px]" : ""}`} style={{ padding: "4px 10px 0" }}>
+                      {company.new_jobs_today > 0 && (
+                        <span
+                          className="font-[700] text-[11px]"
+                          style={{
+                            backgroundColor: "#E8F5EE",
+                            color: "#16874D",
+                            borderRadius: 6,
+                            padding: "3px 12px",
+                            letterSpacing: "0.02em",
+                          }}
+                        >
+                          +{company.new_jobs_today} new
+                        </span>
+                      )}
+                      <div className="text-center">
+                        <span className="text-[26px] font-bold text-[#1A1A2E]">
+                          {company.total_product_jobs}
+                        </span>
+                        <span className="text-[13px] text-[#6E6E80] ml-1">
+                          {company.total_product_jobs === 1 ? "role" : "roles"}
+                        </span>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Footer — separated with border-top */}
                   <div className="flex items-center justify-center gap-1.5 shrink-0" style={{ borderTop: "1px solid #E0E0E6", padding: "5px 10px" }}>
-                    {company.last_check_status?.startsWith("success") ? (
-                      <span
-                        className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
-                        style={{ backgroundColor: "var(--status-ok)" }}
-                        title="Status: OK"
-                      />
-                    ) : company.last_check_status?.startsWith("error") ? (
-                      <span
-                        className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
-                        style={{ backgroundColor: "var(--status-error)" }}
-                        title={company.last_check_status}
-                      />
+                    {company.scrape_blocked ? (
+                      <span className="text-[10px] text-[#9494A8]">
+                        Access restricted by employer
+                      </span>
                     ) : (
-                      <span
-                        className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
-                        style={{ backgroundColor: "var(--status-neutral)" }}
-                        title="Pending"
-                      />
+                      <>
+                        {company.last_check_status?.startsWith("success") ? (
+                          <span
+                            className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
+                            style={{ backgroundColor: "var(--status-ok)" }}
+                            title="Status: OK"
+                          />
+                        ) : company.last_check_status?.startsWith("error") ? (
+                          <span
+                            className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
+                            style={{ backgroundColor: "var(--status-error)" }}
+                            title={company.last_check_status}
+                          />
+                        ) : (
+                          <span
+                            className="w-[5px] h-[5px] rounded-full inline-block shrink-0"
+                            style={{ backgroundColor: "var(--status-neutral)" }}
+                            title="Pending"
+                          />
+                        )}
+                        <span className="text-[10px] text-[#9494A8]">
+                          {company.last_check_status?.startsWith("error")
+                            ? "Failed"
+                            : formatTime(company.last_checked_at)}
+                        </span>
+                      </>
                     )}
-                    <span className="text-[10px] text-[#9494A8]">
-                      {company.last_check_status?.startsWith("error")
-                        ? "Failed"
-                        : formatTime(company.last_checked_at)}
-                    </span>
                   </div>
 
                   {/* Remove button — absolute, hover-only */}
