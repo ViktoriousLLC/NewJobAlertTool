@@ -2083,7 +2083,8 @@ async function scrapeOracleHCMCareers(
 async function scrapeICIMSCareers(
   company: string,
   baseUrl: string,
-  companyLabel: string
+  companyLabel: string,
+  stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Scraping iCIMS careers page at ${baseUrl}`);
 
@@ -2104,7 +2105,7 @@ async function scrapeICIMSCareers(
       SCRAPER_UA
     );
 
-    await page.goto(baseUrl, { waitUntil: "networkidle2", timeout: 60000 });
+    const gotoResp = await page.goto(baseUrl, { waitUntil: "networkidle2", timeout: 60000 });
 
     // Wait for job listings to load
     await new Promise((r) => setTimeout(r, 2000));
@@ -2179,6 +2180,17 @@ async function scrapeICIMSCareers(
 
       return results;
     }, baseUrl);
+
+    // DEV-33 zombie-job fix (2026-05-30): mark the source "alive" only on a real
+    // HTTP 2xx. page.goto does NOT throw on a 4xx/5xx (it resolves with the error
+    // response), so we must check gotoResp.ok() — otherwise a 200-served error page
+    // or a persistent selector break would set sourceReachable=true and (after the
+    // 2-day buffer) wrongly retire real DocuSign/Joby roles. This mirrors the
+    // res.ok gate the API scrapers use (scrapeICIMSAPICareers). On a genuine 2xx
+    // that renders 0 PMs, "genuinely 0" is far likelier than "selector broke", and
+    // removal is still buffered 2 days; the adversarial self-check is the backstop
+    // for silent selector drift.
+    if (stats && gotoResp && gotoResp.ok()) stats.sourceReachable = true;
 
     console.log(`${companyLabel}: iCIMS scraper found ${jobs.length} jobs`);
     return jobs;
@@ -3549,7 +3561,7 @@ export async function scrapeCompanyCareers(
         if (ICIMS_API_HOSTS.some((host) => baseUrl.includes(host))) {
           return scrapeICIMSAPICareers(baseUrl.replace(/\/+$/, ""), label, "product manager", stats);
         }
-        return scrapeICIMSCareers(platformConfig.company || label, baseUrl, label);
+        return scrapeICIMSCareers(platformConfig.company || label, baseUrl, label, stats);
       }
       case "oracle_hcm":
         if (platformConfig.tenantUrl && platformConfig.siteNumber) {
@@ -3735,7 +3747,7 @@ export async function scrapeCompanyCareers(
   if (hostname.endsWith(".icims.com")) {
     const slug = hostname.replace(/\.icims\.com$/, "").replace(/^careers-/, "");
     console.log(`Detected iCIMS careers page (company: ${slug})`);
-    return scrapeICIMSCareers(slug, careersUrl, slug);
+    return scrapeICIMSCareers(slug, careersUrl, slug, stats);
   }
 
   // Amazon Jobs API
