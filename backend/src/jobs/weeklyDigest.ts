@@ -509,6 +509,22 @@ function formatDateLabel(yyyyMmDd: string): string {
 // above-the-fold dated volume -> "My take this week:" (rotating, voice-written) ->
 // generic stats block (@-tagged) -> CTA. Plain text on purpose -- Vik bolds the
 // opener + numbered headers in AuthoredUp; do not add Unicode/markdown bold here.
+// Prefix "@" to any company name appearing in free text (the Claude-written
+// lead) so every company in the post is a LinkedIn mention, matching the already
+// @-tagged structured sections. Guards: longest-name-first (so "American Express"
+// tags before "American"), word boundaries (won't tag inside "Metadata"), and a
+// not-already-@ check (won't produce "@@Google"). Case-sensitive so it only tags
+// proper-cased company mentions, never lowercase common words ("adobe", "uber").
+function tagCompanyMentions(text: string, names: string[]): string {
+  const sorted = [...new Set(names.filter(Boolean))].sort((a, b) => b.length - a.length);
+  for (const name of sorted) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(^|[^@\\w])(${escaped})\\b`, "g");
+    text = text.replace(re, (_m, pre, nm) => `${pre}@${nm}`);
+  }
+  return text;
+}
+
 export function renderLinkedInPost(d: WeeklyDigestData): string {
   const total = d.totalNewJobs;
   const aiRatio = d.aiRoles.count > 0 ? Math.round(total / d.aiRoles.count) : 0;
@@ -521,8 +537,15 @@ export function renderLinkedInPost(d: WeeklyDigestData): string {
     .map((c) => `@${c.name}: ${c.titles.slice(0, 2).map(cleanTitle).join("; ")}`)
     .join("\n");
 
+  const leadNames = [
+    ...d.topCompanies.map((c) => c.name),
+    ...d.aiRoles.topCompanies.map((c) => c.name),
+  ];
   const takeLine = d.suggestedLead
-    ? `My take this week: ${d.suggestedLead.hook} ${d.suggestedLead.support}`.replace(/\s+/g, " ").trim()
+    ? tagCompanyMentions(
+        `My take this week: ${d.suggestedLead.hook} ${d.suggestedLead.support}`.replace(/\s+/g, " ").trim(),
+        leadNames,
+      )
     : "My take this week: here is where PM hiring landed.";
 
   return [
@@ -635,7 +658,10 @@ function costFooter(d: WeeklyDigestData, imageAttached: boolean): string {
 
 export function renderEmailHtml(d: WeeklyDigestData, imageAttached = false): string {
   const post = renderLinkedInPost(d);
-  const postHtml = escapeHtml(post).replace(/\n/g, "<br/>");
+  // Keep real newlines (do NOT convert to <br/>): a <pre> element preserves them
+  // in the plain-text clipboard flavor, so copy-paste into LinkedIn keeps line
+  // breaks. The old <br/>-in-a-div collapsed to one line when pasted.
+  const postHtml = escapeHtml(post);
 
   return `<!DOCTYPE html>
 <html><body style="margin:0;padding:0;background:#f9fafb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#111827;">
@@ -646,7 +672,7 @@ export function renderEmailHtml(d: WeeklyDigestData, imageAttached = false): str
   <p style="margin:0 0 24px 0;color:#6b7280;font-size:14px;">${d.totalNewJobs} new PM roles across ${d.trackedCompanies} companies. Copy + paste below into LinkedIn (bold the opener and the numbered headers in AuthoredUp).</p>
 
   <div style="background:#f3f4f6;border-left:4px solid #0EA5E9;padding:20px;border-radius:6px;margin-bottom:32px;">
-    <div style="font-size:15px;line-height:1.6;color:#111827;white-space:pre-wrap;">${postHtml}</div>
+    <pre style="margin:0;font-family:inherit;font-size:15px;line-height:1.6;color:#111827;white-space:pre-wrap;word-break:break-word;">${postHtml}</pre>
   </div>
 
   <h2 style="${SECTION_HEADER_STYLE}">Alternate leads (swap into "My take this week")</h2>
@@ -715,8 +741,10 @@ export async function sendWeeklyDigest(now: Date = new Date()): Promise<{ sent: 
   const image = data.imagePrompt ? await generateDigestImage(data.imagePrompt) : null;
 
   const resend = new Resend(process.env.RESEND_API_KEY);
-  // Unicode-bold WEEKLY so it renders bold in Gmail's subject column.
-  const subject = `\u{1D5EA}\u{1D5D8}\u{1D5D8}\u{1D5DE}\u{1D5DF}\u{1D5EC}: LinkedIn Job Summary for ${data.fridayDate}`;
+  // Leading 📬📬📬 (open mailbox with raised flag) so Vik can spot the weekly
+  // digest at a glance in his inbox; Unicode-bold WEEKLY renders bold in Gmail's
+  // subject column.
+  const subject = `\u{1F4EC}\u{1F4EC}\u{1F4EC} \u{1D5EA}\u{1D5D8}\u{1D5D8}\u{1D5DE}\u{1D5DF}\u{1D5EC}: LinkedIn Job Summary for ${data.fridayDate}`;
 
   try {
     await resend.emails.send({
