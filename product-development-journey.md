@@ -994,6 +994,26 @@ The voice was the hard part, and it humbled me. I have a written style guide and
 
 ---
 
+## Phase 29: Auditing the Whole System Before Charging for It, and Building Email That Can't Quietly Fail
+
+**Goal:** before I add payments and the voice feature, make sure the foundation is sound, and fix the one thing that genuinely scared me.
+
+I'm about to start charging money and add a voice feature, both of which open up new ways for things to go wrong. So before building anything new, I stopped and audited the whole system end to end: the scrapers, the security headers, the login flow, whether one user can see another user's data, and where the app is slow. I asked for a plain report first, not fixes on the fly, so I could read it and decide what mattered.
+
+Most of it was healthy. But the audit kept finding the same shape of problem, the same one that had bitten me twice already that week: things that fail silently. A query that quietly returns only the first thousand rows. A safety check that's switched off by a missing setting. A scrape that finds nothing and still reports "success." None of these throw an error. They just quietly do less than they should, and silence looks exactly like health.
+
+Two findings actually scared me. The first: a single capped query had silently dropped almost half my subscribers from a daily email earlier that week, and nothing caught it but a user. The second: two database tables were technically readable by the public browser key, one of them holding feedback people had submitted. Both invisible in normal use, both the kind of thing you only discover when someone exploits it.
+
+So I fixed the foundation, each change reviewed independently before it shipped: swept out every remaining query that could silently truncate and added an automated check that blocks new ones, locked down the two tables and added a rule that a new table can't ship without that lock, and turned off a pointless, legally risky arms race I'd been running against a few employers' bot-blockers.
+
+The email fix is the one I cared about most. I didn't want one safeguard, I wanted, in my own words, a backup and a backup for the backup. So I built it in layers, each catching a different way the same disaster could happen: the recipient list can no longer be cut short at the source; if a day somehow produces zero emails when there are people to email, it screams before sending anything; after sending, it checks what it meant to send against what it actually sent; and every day it records how many people were eligible and compares that to the recent normal, so a slow erosion gets caught within a day even if every other check passes. One check at one layer is exactly what let the original failure hide.
+
+The last piece was about honesty. A handful of big employers, Meta, Tesla, TikTok, Wayfair, block us from reading their careers pages. We'd been showing "0 roles" for them, which makes it look like they're not hiring and makes the product look broken. That's a lie of omission. Now they show a plain "Scraping blocked" badge that tells the user exactly what's happening and to apply on the company's own site, and you can't add them to your tracker since we can't actually track them. I went back and forth on that wording for a while, because the first word I tried, "Restricted," sounded like I was the one restricting access. The honest version names whose decision it really is. And rather than keep fighting their bot-blockers, I decided to buy that data from a jobs-data provider instead, so those companies will come back with real listings soon.
+
+**What I learned:** audit before you monetize, because new revenue and new features both widen the surface you can get hurt on. And the throughline of the whole phase, the same lesson the weekly headline taught me, is that the most dangerous failures are the quiet ones. A loud failure gets fixed in an hour. A silent one runs for months looking like everything's fine. Defense-in-depth isn't paranoia, it's putting a different alarm at each altitude so silence can't pass for health.
+
+---
+
 ## Summary of Concepts Learned
 
 | # | Concept | Where I Learned It |
@@ -1072,3 +1092,6 @@ The voice was the hard part, and it humbled me. I have a written style guide and
 | 72 | Once the editorial structure is approved, lock the post template so it can't drift without a deliberate sign-off | Weekly digest post structure freeze (Phase 24) |
 | 73 | Your own data pipeline can manufacture a fake trend that looks exactly like insight (a catalog bulk-add reads as a hiring surge) | Rotating weekly-digest lead (Phase 28) |
 | 74 | Getting AI to write in your voice means injecting the actual voice files verbatim on every run, not a paraphrase — even the AI building the feature silently substitutes its own summary | Rotating weekly-digest lead (Phase 28) |
+| 75 | Audit the whole system before you monetize — new revenue and new features both widen the surface you can get hurt on | Pre-Stripe read-only audit (Phase 29) |
+| 76 | The most dangerous failures are silent ones — they look identical to health and run for months; layer a different alarm at each altitude (defense-in-depth) | Email reliability layers (Phase 29) |
+| 77 | When the system can't do something, say so plainly in the UI — a misleading "0" costs more trust than an honest "we can't see this one" | "Scraping blocked" badge (Phase 29) |

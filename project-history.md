@@ -1957,3 +1957,58 @@ Shipped a liveness probe (`backend/src/lib/sentryHealth.ts`, content landed on m
 - **Single LLM call + human gate.** No critic/refine pass in v1 (the build-proof run used one); the email goes only to Vik, who reviews before posting. Add the critic if voice drifts.
 
 **Lesson.** Two. (1) Your own data pipeline can manufacture a fake trend that reads exactly like insight — the headline I'd repeated for weeks was my catalog growth, not the market, and I only checked because the repetition annoyed me. (2) "Read the voice guide" is not "use the voice guide": even the AI building the feature silently substituted its own summary until the real files were structurally injected into the prompt.
+
+---
+
+## 2026-05-30 — Pre-Stripe system audit (read-only) and the fix wave it triggered
+
+**Context.** Before adding payments (Stripe) and the voice feature — both of which widen the attack and data surface — ran a deliberate read-only end-to-end audit of the live system: scraping, security headers, auth, cross-user data isolation, RLS, and app-layer performance. The ask was a plain-language findings report first, not fixes-in-flight (Vik was AFK and wanted to read it before any change). Report lives at repo-root `auditreportMay30.md` (kept local, not committed). The audit confirmed the system was fundamentally sound but surfaced a tier of "silent failure" gaps — same theme as the hardening wave — plus two genuinely scary ones. The fixes then shipped as a series of independently change-reviewed, CI-gated PRs:
+
+- **#115 — dependency health.** Next.js 16.2.6 security bump; committed a Dependabot config (it had been opening ungrouped PRs).
+- **#116 — the last truncation reads.** A repo-wide sweep for unbounded PostgREST selects (the 1000-row silent-cap class that had already dropped 43% of subscribers from one daily email). Routed the remaining ones through `fetchAllRows`; added a CI guard that fails the build on a new unbounded `.select()` against a growing table. An exhaustive re-sweep found zero stragglers.
+- **#123 — cron correctness + stop fighting blockers.** Fixed an N+1 in the Monday weekly-digest path (pre-fetch the weekly snapshot once). Turned OFF the puppeteer-extra-stealth tier aimed at Meta/Tesla/TikTok/Wayfair — it was ~0 yield and the one piece of real DMCA-1201 / post-block legal exposure the scraping-legality review (DEV-30) had flagged. Fixed an iCIMS "zombie jobs" bug where the scraper could over-remove live roles: `page.goto` doesn't throw on a 4xx/5xx, so `sourceReachable` is now gated on `gotoResp.ok()` — a non-200 no longer counts as "source confirmed empty, safe to delist."
+
+**Decisions / alternatives.**
+- **Report first, fix second.** Vik explicitly wanted a read-only overhaul he could read while AFK before any change. Kept the audit and the fixes as separate phases so the findings weren't contaminated by in-flight edits.
+- **Stop the stealth arms race rather than escalate it.** Heavier anti-detection loses on both axes (still ~0 yield against these four, highest legal-exposure surface). Retiring it and sourcing those employers legitimately (see the scraping-blocked entry below) is cheaper and safer.
+
+**Lesson.** The audit's recurring finding was the same sentence as the weekly-digest lesson and the hardening wave: *silence reads as health.* The two scary ones — an email path that could silently drop recipients, and two tables readable by the anon key — were both invisible-until-exploited, which is why they got dedicated fixes below.
+
+---
+
+## 2026-05-30 — DEV-49: email defense-in-depth so recipients can't silently drop at scale (#128)
+
+**Context.** The scariest audit finding, and the one Vik flagged as "the biggest issue": earlier in the week a single unbounded query had silently dropped 43% of subscribers from a daily email (PostgREST's 1000-row cap), and nothing noticed until a user did. The #116 sweep fixed the *known* truncation reads, but Vik wanted structural insurance — "a backup, and a backup for the backup" — so no future bug (truncation or otherwise) can quietly send to fewer people than it should.
+
+**What changed — six layers in `dailyCheck.ts`, from "can't happen" to "we'd know within a day":**
+- **L1 / L2 — paginate the inputs.** `user_subscriptions` and `user_preferences` both read through `fetchAllRows`, so the recipient list can't be truncated at the source (the original bug class).
+- **L3 — wipeout tripwire.** If the build produces *zero* email payloads on a day that has eligible subscribers, alert immediately, before sending. (First written as a partial-drop *ratio* — payloads < 90% of eligible — which change-reviewer correctly flagged as a daily false-positive: "built" (users with a new job today) is naturally far below "eligible" (all subscribers). Narrowed to wipeout-only; partial-drop detection moved to L5 on a stable metric.)
+- **L4 — built-vs-sent reconciliation.** After the send loop, compare payloads built against sends attempted; a gap means the loop dropped someone mid-flight — surfaced, not swallowed.
+- **L5 — daily baseline.** New `email_send_log` table records, per run, the day's eligible / built / sent counts. `checkEmailBaseline` compares today's `eligible` against the recent trend and alerts on an unexplained drop. `eligible` is the right metric because it's stable day-to-day (unlike "built," which swings with how many companies posted), so a real drop in reachable subscribers stands out.
+- **L6 — history.** The log is durable, so the baseline has something to compare against and the trend is auditable.
+
+**Verified.** tsc green; change-reviewer no blockers after the L3 fix; `email_send_log` confirmed RLS-on in prod.
+
+**Lesson.** Defense-in-depth means layering checks at *different altitudes*: prevent the known cause (paginate), catch the catastrophic case before sending (wipeout), reconcile the actual send (built-vs-sent), and detect slow erosion after the fact (baseline). A single check at one layer is what let the original 43% drop hide.
+
+---
+
+## 2026-05-30 — RLS backfill + a guard so a new table can't ship without it (#129)
+
+**Context.** The audit's data-isolation pass found two tables readable by the Supabase anon key: `weekly_lead_history` (low-sensitivity) and `help_submissions` (user-submitted PII from the legacy feedback flow). The backend uses the service-role key (which bypasses RLS), so these were invisible in normal operation — but the anon key ships to the browser, so the rows were technically reachable.
+
+**What changed.** Migrations enable RLS on both (and audited all 14 tables — the rest were already covered). Added a CI audit guard that fails the build when a new table is created without an RLS policy, so this can't recur silently. Tamed Dependabot in the same PR — it had been opening ~9 ungrouped PRs per run; now one grouped PR per ecosystem per week.
+
+**Lesson.** "The backend uses the service key so RLS doesn't matter" is true right up until the anon key touches the same table — RLS-by-default plus a CI guard is cheaper than auditing it by hand each time.
+
+---
+
+## 2026-05-30 — "Scraping blocked": telling users the truth, and the decision to license the data (#130 / #133 / #134)
+
+**Context.** Four employers — Meta, Tesla, TikTok, Wayfair — actively block automated access to their careers sites. The scraper returned 0 for them, so the UI showed "0 roles," which reads as "this company has no PM openings" — false, and it makes the product look broken. #123 had already turned off the futile stealth arms race against them; this is the user-facing half.
+
+**What changed.** New `companies.scrape_blocked` flag (set true for those four). Everywhere a company's role count shows — the catalog, dashboard cards, the company page, the job feed — a blocked company now shows a **"Scraping blocked"** badge with a tooltip explaining the employer blocks scraping and to apply on their site directly, instead of a misleading "0 roles." In the Add-Companies catalog they're non-selectable (you can't track what we can't pull); anyone already tracking one keeps it (not auto-removed). The label went through a naming jam — Restricted (implied *we* restrict it) → Unlisted → Apply Direct → "Scraping blocked," which Vik picked because the audience is technical and the word is honest about whose decision it is.
+
+**The strategic decision (next-session build).** Rather than escalate the bot-detection fight, license the roles from a third-party jobs-data API (Fantastic.jobs on RapidAPI — both the LinkedIn and ATS feeds, now subscribed; key `RAPIDAPI_KEY` on Railway). Once wired, the four blocked employers get real jobs back and the badge disappears. Captured as a handoff for a fresh session.
+
+**Lesson.** When the system can't do something, say so plainly in the UI — a misleading "0" costs more trust than an honest "we can't see this one." And when a fight is unwinnable and low-value (stealth vs. these four), buy the data instead of escalating the arms race.
