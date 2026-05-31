@@ -417,9 +417,24 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
       // that just happened to contain zero PM matches. After Layer 2 (2026-05-11),
       // companies like Block/Wiz/Confluent (50+ raw jobs, 0 PMs) no longer trigger
       // Puppeteer-with-stealth — that was burning ~10 min of cron time daily for
-      // no benefit. Custom scrapers (Coinbase etc.) still trigger because they
-      // typically return [] on capture failure, which counts as source-empty.
-      if (rawJobs.length === 0 && scrapeStats.totalScanned === 0) {
+      // no benefit.
+      //
+      // Custom-scraper exclusion (added 2026-05-30): skip the generic stealth tier
+      // for CUSTOM_SCRAPER_HOSTS, same guard Tier-2 (broadATSDiscovery) already
+      // uses. Meta / TikTok / Tesla / Wayfair are PERMANENTLY blocked (Akamai 403,
+      // FB session-gating, Stargate gateway 2012, Workday 401/422) and return []
+      // by design — running generic stealth against them only burns ~10 min of
+      // Puppeteer time daily for provably zero yield (and is the DMCA-1201 /
+      // post-block exposure flagged in DEV-30).
+      //
+      // Coinbase tension (intentional, noted not broken): Coinbase is in
+      // CUSTOM_SCRAPER_HOSTS, so this gate also stops the GENERIC stealth tier for
+      // it. That is fine — scrapeCoinbaseCareers() (scraper.ts) is ITSELF a
+      // dedicated stealth-Puppeteer scraper at Tier 1, so Coinbase keeps real
+      // stealth coverage; it only loses the generic Tier-3 backstop, which per
+      // SCRAPER.md was already useless for Coinbase ("/v2/careers rejects scraping
+      // with 400 even from stealth Puppeteer"). No PM yield is lost.
+      if (rawJobs.length === 0 && scrapeStats.totalScanned === 0 && !isCustomScraper) {
         const lastStatus = company.last_check_status || "";
         const isTransientFailure = /timeout|ETIMEDOUT|ECONNRESET|ENOTFOUND/i.test(lastStatus);
         if (!isTransientFailure) {
@@ -1114,12 +1129,29 @@ async function sendPerUserAlerts(
     min_relevant_seniority: string | null;
   };
   type RecommendationHistoryRow = { company_id: string };
-  const [allCompaniesRows, recentJobsRows, recentShownRows] = await Promise.all([
+  // Weekly digest used to call getWeeklyAlerts() inside the per-user loop —
+  // 2 DB round-trips per weekly user (companies + 7-day jobs), re-querying the
+  // SAME global 7-day window the recommendation block already fetches below.
+  // We now pre-fetch ONE global 7-day jobs snapshot (recentJobsRows, reused for
+  // both recommendations AND weekly alerts) plus a companion id→{name,careersUrl}
+  // lookup over ALL companies (NOT industry-filtered — a weekly user can be
+  // subscribed to an industry-null company that allCompaniesRows excludes), then
+  // filter in memory per user. Mirrors how the daily path pre-fetches companyAlerts
+  // and filters by subscription in memory. No per-user DB calls in the loop.
+  type CompanyInfoDbRow = { id: string; name: string; careers_url: string };
+  const [allCompaniesRows, allCompanyInfoRows, recentJobsRows, recentShownRows] = await Promise.all([
     fetchAllRows<CompanyIndustryDbRow>((from, to) =>
       supabase
         .from("companies")
         .select("id, name, careers_url, industry, min_relevant_seniority")
         .not("industry", "is", null)
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
+    fetchAllRows<CompanyInfoDbRow>((from, to) =>
+      supabase
+        .from("companies")
+        .select("id, name, careers_url")
         .order("id", { ascending: true })
         .range(from, to)
     ),
@@ -1168,6 +1200,13 @@ async function sendPerUserAlerts(
     });
     recentJobsByCompany.set(row.company_id, list);
   }
+  // Companion id→{name,careersUrl} lookup for the weekly in-memory filter below.
+  // Covers ALL companies (recentJobsByCompany / allCompaniesWithIndustry would
+  // miss industry-null ones a weekly user may track).
+  const companyInfoById = new Map<string, { name: string; careersUrl: string }>();
+  for (const c of allCompanyInfoRows) {
+    companyInfoById.set(c.id, { name: c.name, careersUrl: c.careers_url });
+  }
 
   // Collect all email payloads first, then batch-send via Resend batch API
   const emailPayloads: EmailPayload[] = [];
@@ -1210,8 +1249,22 @@ async function sendPerUserAlerts(
     }
 
     if (freq === "weekly") {
-      // Weekly digest: fetch jobs from the past 7 days for this user's subscriptions
-      const weeklyAlerts = await getWeeklyAlerts(userCompanyIds);
+      // Weekly digest: filter the pre-fetched global 7-day jobs snapshot in
+      // memory for this user's subscriptions. Mirrors the old getWeeklyAlerts()
+      // exactly: emit an alert for every subscribed company that exists (even
+      // with 0 new jobs → empty newJobs), so weeklyAlerts.length === 0 only when
+      // NONE of the user's companies resolve. No per-user DB round-trips.
+      const weeklyAlerts: NewJobAlert[] = [];
+      for (const companyId of userCompanyIds) {
+        const info = companyInfoById.get(companyId);
+        if (!info) continue;
+        const jobs = recentJobsByCompany.get(companyId) || [];
+        weeklyAlerts.push({
+          companyName: info.name,
+          careersUrl: info.careersUrl,
+          newJobs: jobs.map((j) => ({ title: j.title, urlPath: j.urlPath })),
+        });
+      }
       if (weeklyAlerts.length === 0) continue;
 
       emailPayloads.push(buildAlertEmailPayload(user.email, weeklyAlerts, "weekly", recommendations));
@@ -1544,53 +1597,8 @@ async function buildDigestAnalysis(input: {
   return { perCompanyTrends, crossCuttingPatterns };
 }
 
-/**
- * Fetch new jobs from the past 7 days for a set of companies.
- * Used for weekly digest emails.
- */
-async function getWeeklyAlerts(companyIds: string[]): Promise<NewJobAlert[]> {
-  const sevenDaysAgo = new Date();
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-  // Parallel: fetch companies + recent jobs
-  const [companiesResult, jobsResult] = await Promise.all([
-    supabase
-      .from("companies")
-      .select("id, name, careers_url")
-      .in("id", companyIds),
-    supabase
-      .from("seen_jobs")
-      .select("company_id, job_title, job_url_path")
-      .in("company_id", companyIds)
-      .eq("is_baseline", false)
-      .eq("status", "active")
-      .gte("first_seen_at", sevenDaysAgo.toISOString())
-      .order("first_seen_at", { ascending: false }),
-  ]);
-
-  const companies = companiesResult.data || [];
-  const jobs = jobsResult.data || [];
-
-  const companyMap = new Map(companies.map((c) => [c.id, c]));
-
-  // Group jobs by company
-  const jobsByCompany = new Map<string, { title: string; urlPath: string }[]>();
-  for (const job of jobs) {
-    const list = jobsByCompany.get(job.company_id) || [];
-    list.push({ title: job.job_title, urlPath: job.job_url_path });
-    jobsByCompany.set(job.company_id, list);
-  }
-
-  const alerts: NewJobAlert[] = [];
-  for (const companyId of companyIds) {
-    const company = companyMap.get(companyId);
-    if (!company) continue;
-    alerts.push({
-      companyName: company.name,
-      careersUrl: company.careers_url,
-      newJobs: jobsByCompany.get(companyId) || [],
-    });
-  }
-
-  return alerts;
-}
+// getWeeklyAlerts() removed (N+1 fix): the weekly digest now filters a
+// pre-fetched global 7-day jobs snapshot in memory inside sendPerUserAlerts
+// (see the weekly branch of the per-user loop). The old per-user query made
+// 2 DB round-trips per weekly user over the same global window the
+// recommendation block already fetches.

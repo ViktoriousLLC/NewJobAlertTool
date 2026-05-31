@@ -2083,7 +2083,8 @@ async function scrapeOracleHCMCareers(
 async function scrapeICIMSCareers(
   company: string,
   baseUrl: string,
-  companyLabel: string
+  companyLabel: string,
+  stats?: ScrapeStats
 ): Promise<ScrapedJob[]> {
   console.log(`${companyLabel}: Scraping iCIMS careers page at ${baseUrl}`);
 
@@ -2179,6 +2180,17 @@ async function scrapeICIMSCareers(
 
       return results;
     }, baseUrl);
+
+    // DEV-33 zombie-job fix (2026-05-30): page.goto (networkidle2) + page.evaluate
+    // both completed without throwing, so the iCIMS board was reachable. Set the
+    // "source alive" signal so the daily cron's stale-removal (sourceReachable ===
+    // true) can retire delisted DocuSign/Joby roles after the 2-day buffer. Before
+    // this, the Puppeteer iCIMS variant set NO stats, so it was preserve-conservative
+    // forever and stale jobs never aged out. Mirrors scrapeICIMSAPICareers. A
+    // reachable page that renders 0 PMs is far likelier "genuinely 0" than "selector
+    // broke", and removal is buffered 2 days regardless. A failed goto throws above
+    // and never reaches here, so the flag is only set on a real success.
+    if (stats) stats.sourceReachable = true;
 
     console.log(`${companyLabel}: iCIMS scraper found ${jobs.length} jobs`);
     return jobs;
@@ -3549,7 +3561,7 @@ export async function scrapeCompanyCareers(
         if (ICIMS_API_HOSTS.some((host) => baseUrl.includes(host))) {
           return scrapeICIMSAPICareers(baseUrl.replace(/\/+$/, ""), label, "product manager", stats);
         }
-        return scrapeICIMSCareers(platformConfig.company || label, baseUrl, label);
+        return scrapeICIMSCareers(platformConfig.company || label, baseUrl, label, stats);
       }
       case "oracle_hcm":
         if (platformConfig.tenantUrl && platformConfig.siteNumber) {
@@ -3735,7 +3747,7 @@ export async function scrapeCompanyCareers(
   if (hostname.endsWith(".icims.com")) {
     const slug = hostname.replace(/\.icims\.com$/, "").replace(/^careers-/, "");
     console.log(`Detected iCIMS careers page (company: ${slug})`);
-    return scrapeICIMSCareers(slug, careersUrl, slug);
+    return scrapeICIMSCareers(slug, careersUrl, slug, stats);
   }
 
   // Amazon Jobs API
