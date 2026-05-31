@@ -947,11 +947,18 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
 
   // --- Per-user email alerts ---
   let emailBatchResult: BatchSendResult = { sent: 0, failed: 0, errors: [] };
+  // L6: delivery stats threaded out of sendPerUserAlerts so the admin digest
+  // can render a "built X / eligible Y / sent Z" line at the top of the email.
+  // Undefined when emails were skipped (manual re-run) — the digest omits the
+  // line in that case.
+  let emailDeliveryStats: EmailDeliveryStats | undefined;
   if (options?.skipEmails) {
     console.log("skipEmails=true — skipping per-user email alerts");
   } else {
     try {
-      emailBatchResult = await sendPerUserAlerts(companyAlerts);
+      const result = await sendPerUserAlerts(companyAlerts);
+      emailBatchResult = result.sendResult;
+      emailDeliveryStats = result.deliveryStats;
     } catch (err) {
       console.error("Failed to send per-user alerts:", err);
       // A total pipeline crash must NOT look like a quiet day. Report to Sentry
@@ -981,6 +988,7 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     reEnabled,
     qualityData,
     emailBatchResult,
+    emailDeliveryStats,
     forceMondayDigest: options?.forceMondayDigest ?? false,
   });
 
@@ -1056,9 +1064,46 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
 // treat it as a silent data bug (truncation / mapping) rather than a quiet day.
 const EMAIL_TRIPWIRE_MIN_ELIGIBLE = 25;
 
+// DEV-49 email-delivery defense-in-depth.
+//
+// L3 = silent-WIPEOUT tripwire (built === 0 on a day jobs posted). We do NOT
+// alarm on a built/eligible RATIO: on a normal day only a few of ~250 companies
+// post, so most subscribers legitimately get no email and a ratio floor would
+// false-fire daily. PARTIAL drops are caught by the L5 baseline on `eligible`
+// (below) — the right tool, since it only moves when users vanish from the query.
+
+// L4 (built vs sent): Resend can accept fewer than we built (rotated key, 429,
+// 422 on a batch — sendBatchAlerts already counts those as failed). A small gap
+// is surfaced only in the digest delivery line; a gap this large or larger is
+// also pushed to Sentry as its own signal.
+const EMAIL_SENT_GAP_ALERT_FRACTION = 0.1;
+
+// L5 (baseline / dead-man's-switch): after the send we log today's aggregate
+// counts and compare today's `eligible` against the trailing-7-day average. A
+// collapse below this fraction means users silently vanished from the user /
+// subscription query — and because BOTH built and eligible shrink together,
+// the L3 built/eligible ratio looks fine. This is the independent backstop.
+const EMAIL_BASELINE_LOOKBACK_DAYS = 7;
+const EMAIL_BASELINE_DROP_FLOOR = 0.75;
+// Don't alarm on baseline noise when the catalog is tiny / brand-new — the
+// 7-day average needs a real population to be meaningful.
+const EMAIL_BASELINE_MIN_ELIGIBLE = 25;
+
+// Delivery stats threaded out of sendPerUserAlerts so the admin digest can
+// render a top-of-email "built X / eligible Y / sent Z" line (L6) and so the
+// caller never has to recompute what the send path already knows.
+interface EmailDeliveryStats {
+  eligible: number;
+  built: number;
+  sent: number;
+  failed: number;
+  companiesWithNewJobs: number;
+}
+
 async function sendPerUserAlerts(
   companyAlerts: Map<string, { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }>
-): Promise<BatchSendResult> {
+): Promise<{ sendResult: BatchSendResult; deliveryStats: EmailDeliveryStats }> {
+  const companiesWithNewJobs = companyAlerts.size;
   // Get ALL users via proper pagination. The earlier `{ perPage: 1000 }`
   // bump fixed the immediate bug but would re-break at 1001 users. listAllUsers
   // iterates pages until exhausted.
@@ -1067,7 +1112,10 @@ async function sendPerUserAlerts(
 
   if (users.length === 0) {
     console.log("No users found — skipping email alerts");
-    return { sent: 0, failed: 0, errors: [] };
+    return {
+      sendResult: { sent: 0, failed: 0, errors: [] },
+      deliveryStats: { eligible: 0, built: 0, sent: 0, failed: 0, companiesWithNewJobs },
+    };
   }
 
   // Get all user preferences. One row per user with a non-default preference;
@@ -1351,23 +1399,144 @@ async function sendPerUserAlerts(
     return (userSubsMap.get(u.id)?.length ?? 0) > 0;
   }).length;
   console.log(
-    `sendPerUserAlerts: eligibleSubscribed=${eligibleSubscribed}, payloadsBuilt=${emailPayloads.length}, companiesWithNewJobs=${companyAlerts.size}`
+    `sendPerUserAlerts: eligibleSubscribed=${eligibleSubscribed}, payloadsBuilt=${emailPayloads.length}, sent=${sendResult.sent}, failed=${sendResult.failed}, companiesWithNewJobs=${companyAlerts.size}`
   );
 
+  // L3 (silent-WIPEOUT tripwire). If a meaningful eligible pool builds ZERO
+  // emails on a day companies DID post new jobs, that's a silent data bug
+  // (truncation / mapping), not a quiet day. We deliberately do NOT alarm on a
+  // built-vs-eligible RATIO: on a normal day only a few of ~250 companies post,
+  // so most subscribers legitimately get no email and a ratio floor would
+  // false-fire daily (and train the admin to ignore the alert). PARTIAL drops
+  // are caught instead by the L5 day-over-day baseline on `eligible` below — a
+  // stable metric that only collapses when users silently vanish from the query
+  // (the PR #97 shape) — and surfaced for human eyes by the L6 delivery line.
   if (
+    companyAlerts.size > 0 &&
     eligibleSubscribed >= EMAIL_TRIPWIRE_MIN_ELIGIBLE &&
-    emailPayloads.length === 0 &&
-    companyAlerts.size > 0
+    emailPayloads.length === 0
   ) {
     const msg = `Email tripwire: ${eligibleSubscribed} eligible subscribers but 0 emails built, despite ${companyAlerts.size} companies posting new jobs today. Likely a silent data bug (truncation / mapping), not a quiet day.`;
     console.error(msg);
     sendResult.errors.push(msg);
-    if (sendResult.failed === 0) sendResult.failed = eligibleSubscribed; // force the admin digest to fire
+    // Force the admin digest even if Resend reported zero send failures (the gap
+    // is in the BUILD, not the send). The digest gate keys off failed > 0.
+    if (sendResult.failed === 0) sendResult.failed = eligibleSubscribed;
     Sentry.captureMessage(msg, "error");
   }
 
+  // L4 (built vs sent gap). sendBatchAlerts already records a rejected batch in
+  // sendResult.failed/errors, so the gap is visible in the digest delivery line
+  // (L6). Additionally raise a dedicated Sentry signal when the gap is large —
+  // i.e. Resend silently accepting only a fraction of what we built is its own
+  // failure mode (rotated key / sustained 429), distinct from a build-side drop.
+  const sentGap = emailPayloads.length - sendResult.sent;
+  if (
+    emailPayloads.length > 0 &&
+    sentGap >= Math.max(1, Math.ceil(EMAIL_SENT_GAP_ALERT_FRACTION * emailPayloads.length))
+  ) {
+    const gapPct = Math.round((sentGap / emailPayloads.length) * 100);
+    const msg = `Email send-gap: Resend accepted only ${sendResult.sent} of ${emailPayloads.length} built emails (${gapPct}% gap). Likely a rotated key, sustained 429, or batch validation error — check Resend dashboard.`;
+    console.error(msg);
+    Sentry.captureMessage(msg, "error");
+  }
+
+  // L5 (baseline log + dead-man's-switch). Persist today's aggregate counts,
+  // then compare today's `eligible` against the trailing-N-day average. This is
+  // INDEPENDENT of L3: L3 compares built-vs-eligible within a single run and is
+  // blind when BOTH shrink together (a smaller user/subscription query produces
+  // proportionally fewer eligible AND fewer built, so the ratio still looks
+  // healthy). A baseline collapse is the only thing that catches "users silently
+  // vanished from the query." Best-effort: a logging/read failure must never
+  // block the send result from returning.
+  await checkEmailBaseline({
+    eligible: eligibleSubscribed,
+    built: emailPayloads.length,
+    sent: sendResult.sent,
+    failed: sendResult.failed,
+    companiesWithNewJobs: companyAlerts.size,
+  });
+
   // Email-send failures are surfaced in the admin digest (built at end of run).
-  return sendResult;
+  return {
+    sendResult,
+    deliveryStats: {
+      eligible: eligibleSubscribed,
+      built: emailPayloads.length,
+      sent: sendResult.sent,
+      failed: sendResult.failed,
+      companiesWithNewJobs: companyAlerts.size,
+    },
+  };
+}
+
+/**
+ * L5 dead-man's-switch: insert today's delivery counts into email_send_log and
+ * compare today's `eligible` against the trailing-N-day average. Fires a Sentry
+ * alert if eligible collapses below EMAIL_BASELINE_DROP_FLOOR of that average.
+ *
+ * Why a separate trend signal: the in-run L3 ratio (built / eligible) is blind
+ * to a shrunk user/subscription query — both numerator and denominator drop
+ * together, so the ratio stays ~constant while real subscribers silently fall
+ * out of the email entirely. Comparing today's eligible to its own recent
+ * history is the only way to see that class of bug.
+ *
+ * Best-effort: every DB touch is guarded; a failure logs + reports to Sentry
+ * but never throws, so it can't block the cron's email send result.
+ */
+async function checkEmailBaseline(today: EmailDeliveryStats): Promise<void> {
+  try {
+    const runDate = new Date().toISOString().slice(0, 10);
+
+    // Read the trailing prior rows BEFORE inserting today's, so today's row
+    // never pollutes its own baseline. Bounded select (no row-cap risk: one row
+    // per day, ordered most-recent-first, limited to the lookback window).
+    const { data: priorRows, error: priorErr } = await supabase
+      .from("email_send_log")
+      .select("eligible")
+      .lt("run_date", runDate)
+      .order("run_date", { ascending: false })
+      .limit(EMAIL_BASELINE_LOOKBACK_DAYS);
+    if (priorErr) {
+      reportWriteError(priorErr, "read email_send_log baseline");
+    }
+
+    // Upsert today's row (unique on run_date) so a same-day manual re-run updates
+    // rather than duplicating. Guarded so a write failure is reported, not swallowed.
+    const { error: insertErr } = await supabase
+      .from("email_send_log")
+      .upsert(
+        {
+          run_date: runDate,
+          eligible: today.eligible,
+          built: today.built,
+          sent: today.sent,
+          failed: today.failed,
+          companies_with_new_jobs: today.companiesWithNewJobs,
+        },
+        { onConflict: "run_date" },
+      );
+    reportWriteError(insertErr, "upsert email_send_log");
+
+    const prior = (priorRows || []).map((r) => r.eligible as number).filter((n) => typeof n === "number");
+    if (prior.length === 0) return; // no history yet — nothing to compare against
+
+    const avgEligible = prior.reduce((sum, n) => sum + n, 0) / prior.length;
+    // Only alarm once the baseline reflects a real population — a tiny early
+    // catalog would trip on normal day-to-day jitter.
+    if (avgEligible < EMAIL_BASELINE_MIN_ELIGIBLE) return;
+
+    if (today.eligible < EMAIL_BASELINE_DROP_FLOOR * avgEligible) {
+      const dropPct = Math.round((1 - today.eligible / avgEligible) * 100);
+      const msg = `Email baseline alert: today's eligible subscribers (${today.eligible}) dropped ${dropPct}% vs the ${prior.length}-day average (${avgEligible.toFixed(1)}) — users may have silently vanished from the user / subscription query.`;
+      console.error(msg);
+      Sentry.captureMessage(msg, "error");
+    }
+  } catch (err) {
+    // Never let baseline bookkeeping break the cron.
+    console.error("email baseline check failed (non-fatal):", err);
+    Sentry.captureException(err, { tags: { area: "dailyCheck.emailBaseline" } });
+  }
 }
 
 /**
@@ -1388,6 +1557,9 @@ async function sendConsolidatedAdminDigest(input: {
   reEnabled: { name: string; jobCount: number }[];
   qualityData: Map<string, CompanyQualityData>;
   emailBatchResult: BatchSendResult;
+  // L6: built/eligible/sent counts for the digest's top delivery line. Undefined
+  // when emails were skipped this run.
+  emailDeliveryStats?: EmailDeliveryStats;
   forceMondayDigest: boolean;
 }): Promise<void> {
   // Weekly digest fires Monday UTC. The Tuesday safety-net duplicate was
@@ -1493,6 +1665,7 @@ async function sendConsolidatedAdminDigest(input: {
       autoFixed: input.autoFixed,
       reEnabled: input.reEnabled,
       emailBatchResult: input.emailBatchResult,
+      emailDeliveryStats: input.emailDeliveryStats,
       isMondayDigest,
       weeklyHealth,
       weeklyEvents,
