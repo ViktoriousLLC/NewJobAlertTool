@@ -13,7 +13,7 @@
     "@sentry/nextjs": "^10.38.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.93.3",
-    "next": "16.1.6",
+    "next": "16.2.6",
     "posthog-js": "^1.345.5",
     "react": "19.2.3",
     "react-dom": "19.2.3"
@@ -27,7 +27,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.1.6",
+    "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

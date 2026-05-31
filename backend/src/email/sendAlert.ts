@@ -513,6 +513,11 @@ export interface AdminDigestInput {
     newSinceLastWeek: { package: string; severity: string; fixAvailable: boolean; via: string }[];
     resolvedSinceLastWeek: { package: string; severity: string; fixAvailable: boolean; via: string }[];
     isFirstSnapshot: boolean;
+    frontend: {
+      totalVulns: number;
+      bySeverity: { info: number; low: number; moderate: number; high: number; critical: number };
+      ok: boolean;
+    } | null;
   } | null;
   // ---- Analysis layer (PR #19) ----
   // Optional. When provided, the digest renders per-company trend annotations
@@ -810,6 +815,12 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
 
       html += `<h3 style="margin:24px 0 6px 0;color:#1A1A2E;">Security check (npm audit)</h3>`;
 
+      // One-line cross-surface summary so a frontend regression is visible at a
+      // glance, not buried (the backend detail below still gets the full diff).
+      const feVulns = s.frontend && s.frontend.ok ? s.frontend.totalVulns : null;
+      const feText = feVulns === null ? "frontend audit unavailable" : `frontend ${feVulns} vuln${feVulns === 1 ? "" : "s"}`;
+      html += `<p style="font-size:13px;margin:4px 0;font-weight:bold;">Dependencies: backend ${s.totalVulns} vuln${s.totalVulns === 1 ? "" : "s"}, ${feText}.</p>`;
+
       if (s.totalVulns === 0) {
         html += `<p style="font-size:13px;color:#16a34a;margin:4px 0;">✓ 0 known vulnerabilities in production dependencies.</p>`;
       } else {
@@ -851,7 +862,17 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
         }
       }
 
-      html += `<p style="font-size:11px;color:#9ca3af;margin:4px 0 0 0;">Backend production dependencies only. Frontend audit runs at Vercel build time.</p>`;
+      // Frontend severity breakdown when it has vulns (the backend block above
+      // already rendered the backend detail). Keeps frontend regressions actionable.
+      if (s.frontend && s.frontend.ok && s.frontend.totalVulns > 0) {
+        const feSummary = (["critical", "high", "moderate", "low", "info"] as const)
+          .filter((sev) => s.frontend!.bySeverity[sev] > 0)
+          .map((sev) => `<span style="color:${sevColors[sev]};font-weight:bold;">${s.frontend!.bySeverity[sev]} ${sev}</span>`)
+          .join(", ");
+        html += `<p style="font-size:13px;margin:8px 0 0 0;">Frontend: ${feSummary}. Dependabot opens the fix PRs weekly.</p>`;
+      }
+
+      html += `<p style="font-size:11px;color:#9ca3af;margin:4px 0 0 0;">Production dependencies only, both backend and frontend (omit=dev).</p>`;
     }
   }
 

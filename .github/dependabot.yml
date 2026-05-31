@@ -1,0 +1,36 @@
+# Dependabot config — auto-opens dependency-update PRs for the two npm projects.
+# Grouped minor+patch so we get one PR per project per week instead of a flood;
+# majors still come as individual PRs (they need a human read). The Monday admin
+# digest already surfaces npm-audit deltas, so this is the "fix it" lane to that
+# "notice it" signal. See backend/src/jobs/JOBS.md (Dependency Health).
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "frontend"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "npm"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "backend"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
