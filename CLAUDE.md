@@ -110,6 +110,7 @@ POST   /api/interviews/evaluate              (ADMIN ONLY; scores a transcript wi
 GET    /api/cron/trigger (requires CRON_SECRET; see JOBS.md)
 GET    /api/cron/weekly-digest (requires CRON_SECRET; see JOBS.md)
 GET    /api/cron/self-check-suspects (requires CRON_SECRET; feeds the DEV-41 daily self-check remote routine — it has no DB access; see JOBS.md)
+POST   /api/cron/scrape-only (requires CRON_SECRET; DEV-52: scrapes companies + reconciles seen_jobs with NO email — body {companyIds?}; default = is_active companies with 0 seen_jobs. Decouples scraping from the daily email; see JOBS.md)
 ```
 
 The whole `/api/interviews/*` router is `requireAdmin` (`req.userEmail === ADMIN_EMAIL`) — ElevenLabs minutes cost real money, so the voice mock-interview is admin-gated for now. The planned "how you sounded" delivery-analysis endpoint is DEV-45.

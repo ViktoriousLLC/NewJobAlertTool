@@ -2012,3 +2012,17 @@ Shipped a liveness probe (`backend/src/lib/sentryHealth.ts`, content landed on m
 **The strategic decision (next-session build).** Rather than escalate the bot-detection fight, license the roles from a third-party jobs-data API (Fantastic.jobs on RapidAPI — both the LinkedIn and ATS feeds, now subscribed; key `RAPIDAPI_KEY` on Railway). Once wired, the four blocked employers get real jobs back and the badge disappears. Captured as a handoff for a fresh session.
 
 **Lesson.** When the system can't do something, say so plainly in the UI — a misleading "0" costs more trust than an honest "we can't see this one." And when a fight is unwinnable and low-value (stealth vs. these four), buy the data instead of escalating the arms race.
+
+---
+
+## 2026-05-31 — Catalog expansion to 519, add-by-category UI, scrape-on-demand, and a process lesson
+
+**Context.** A long session aimed at growing the catalog toward 1,000 and clearing the engineering follow-ups before pivoting to voice/UI/Stripe. Linear: DEV-52 (scrape-on-demand), DEV-53 (this record); DEV-51 (RapidAPI) remains due July 1.
+
+**What shipped (all merged):**
+- **Catalog 247 → 519.** 87 vetted companies (catalog-scout) + 185 from a Levels.fyi top-1500 detection pass — Levels publishes a public 33.8k-company roster at `/js/companyList.json` (their jobs feed is NOT openly accessible; only the company list is), which became the discovery backbone. Detection fanned out via the Workflow tool (board-verification required after the first pass shipped some wrong greenhouse tokens). Configs were then verified + recovered: re-derived real greenhouse boards (Grafana→grafanalabs, Gong→gongio, etc.), nulled genuinely-broken ones so they auto-detect. **Important nuance:** inserting a company does NOT populate its jobs — that happens on the 14:00 UTC cron or via the new scrape-only endpoint.
+- **#139 scrape-on-demand (DEV-52)** — `POST /api/cron/scrape-only` (CRON_SECRET-gated) extracts the per-company scrape + seen_jobs upsert into a shared `scrapeAndRecordCompany()` (verbatim relocation, independently reviewed) and runs it with NO email-distribution step. Decouples scraping from emailing so a freshly-added company can be backfilled immediately instead of waiting for the daily cron.
+- **#140 add-by-category UI** — `companies.sub_industry` migration; catalog grouped by industry with **tech split into AI / Dev Tools / SaaS / Big Tech / Security / Consumer apps** (226/229 tagged; Big Tech limited to the 5 giants); "Add all in {category}" delta button (only adds untracked, skips scraping-blocked).
+- **#138 + #141 Sentry noise** — stopped reporting routine JWT expiries and *expected* scrape failures (board-not-found, source-unreachable) at error level; they're warnings now (visible, no high-priority email). Same "silence the expected, surface the real" pattern. Also: Dependabot now ignores puppeteer* (Docker-pinned; closed the unsafe #137 bump).
+
+**Lesson (process, on me).** These shipped via **manual git** (branch → commit → PR → merge), NOT the `/ship` command — so the savecc-on-ship discipline (`/ship` bundles the project-history entry + CLAUDE.md/sidecar currency into the PR, then updates MEMORY + Linear) was silently skipped, and the docs + Linear lagged a full session until the user caught it. The manual fast-path re-introduced exactly the drift `/ship` was built to prevent. Fix: use `/ship` (or run its full doc+Linear discipline) for every change — the catch-up (this entry, the CLAUDE.md endpoint, DEV-52→Done, DEV-53) is this PR.
