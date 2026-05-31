@@ -20,10 +20,11 @@ If the user already said "ship" / "just ship", treat that as the yes and skip st
   - For large/parallel work, prefer an isolated worktree: `git worktree add ../<dir> -b claude/<slug> origin/main` (skip `npm ci` unless the change needs it — Windows long-path).
 - `<slug>` = short kebab summary of the change.
 
-## Step 2 — Bundle the docs INTO this change (savecc-on-ship)
+## Step 2 — Bundle the docs AND the Linear task INTO this change (savecc-on-ship)
 Make the PR self-documenting before committing:
+- **Linear task (NOT optional) — every ship has one.** Find the Linear issue this work belongs to; if none exists, **create it** in the Development team (`DEV-N`) before opening the PR. Reference it in the commit/PR body. (Marking it Done/In-Progress + linking the PR happens at merge, Step 8.) A PR with no Linear task is an incomplete ship.
 - **project-history.md** — append a dated `## YYYY-MM-DD — <theme>` entry (what changed, why, alternatives). Key by date + theme, never by PR number.
-- **product-development-journey.md** — ONLY for a major user-facing capability shift (not bug fixes / chores). Plain, flowing, book-voice — **read `docs/Viks Voice/vik_voice_style_guide.md` first**, and keep the TL;DR table row to a plain one-line "what + why" (no jargon, no story, no fancy framing).
+- **product-development-journey.md** — ONLY for a major user-facing capability shift (not bug fixes / chores). Plain, flowing, book-voice — **read `docs/Viks Voice/vik_voice_style_guide.md` first**, and keep the TL;DR table row to a plain one-line "what + why" (no jargon, no story, no fancy framing). When you add a phase, add its TL;DR table row in the SAME edit (a phase without a row is a half-update).
 - **Operational-doc currency check** — if the change touches an API endpoint, DB table/column, env var, gotcha, or convention, update **CLAUDE.md** and the relevant sidecar (`SCRAPER.md` / `AUTH.md` / `ROUTES.md` / `JOBS.md` / `COMPONENTS.md`) in THIS SAME PR.
 
 ## Step 3 — Commit + push
@@ -46,15 +47,18 @@ Make the PR self-documenting before committing:
 - `git branch -D <branch>`; if a worktree was used, `git worktree remove <dir>`.
 
 ## Step 8 — Finish + verify
+- **Linear: close the loop.** Move the Step 2 task to **Done** (or **In Progress** if it's multi-part / blocked on something) and add the PR link / a one-line "shipped in #N" comment. This is the merge-time half of the Step 2 Linear rule — don't skip it.
 - Update **MEMORY.md** (memory dir, instant) with the project-state change + any new lesson.
 - After a backend merge: `curl -s https://api.newpmjobs.com/api/health` (expect `{"status":"ok"}`).
-- Report: PR # + merge commit, what shipped, which docs updated, local main reset, branch cleaned, health check.
+- Report: PR # + merge commit, the **Linear task ID + its new state**, what shipped, which docs updated, local main reset, branch cleaned, health check.
 
 ## Hard rules
 - NEVER commit to local `main`. Branch always.
 - ONE confirmation (Step 0); after that, no more push/merge questions.
 - Cleanup (Step 7) and local-main reset are NOT optional.
 - Doc updates ride in the SAME PR as the change (Step 2). That is the savecc-on-ship; there is no separate "remember to savecc later".
+- **Every ship has a Linear task** — create it if one doesn't exist (Step 2) and move it to its new state + link the PR on merge (Step 8). Docs AND Linear, every time.
+- **This binds EVERY PR, not just `/ship`.** If you push a branch and open a PR by hand (no `/ship`), you STILL owe the Linear task + the Step 2 docs in that same PR. The manual-git fast-path is the exact thing that let docs + Linear lag a whole session on 2026-05-31 — there is no shortcut that skips them.
 
 ## When to pause instead of merging
 CI red/pending; the `change-reviewer` found a blocker; the diff touches auth / security / payments and a human should look; or the user said "PR only, don't merge".
