@@ -2105,7 +2105,7 @@ async function scrapeICIMSCareers(
       SCRAPER_UA
     );
 
-    await page.goto(baseUrl, { waitUntil: "networkidle2", timeout: 60000 });
+    const gotoResp = await page.goto(baseUrl, { waitUntil: "networkidle2", timeout: 60000 });
 
     // Wait for job listings to load
     await new Promise((r) => setTimeout(r, 2000));
@@ -2181,16 +2181,16 @@ async function scrapeICIMSCareers(
       return results;
     }, baseUrl);
 
-    // DEV-33 zombie-job fix (2026-05-30): page.goto (networkidle2) + page.evaluate
-    // both completed without throwing, so the iCIMS board was reachable. Set the
-    // "source alive" signal so the daily cron's stale-removal (sourceReachable ===
-    // true) can retire delisted DocuSign/Joby roles after the 2-day buffer. Before
-    // this, the Puppeteer iCIMS variant set NO stats, so it was preserve-conservative
-    // forever and stale jobs never aged out. Mirrors scrapeICIMSAPICareers. A
-    // reachable page that renders 0 PMs is far likelier "genuinely 0" than "selector
-    // broke", and removal is buffered 2 days regardless. A failed goto throws above
-    // and never reaches here, so the flag is only set on a real success.
-    if (stats) stats.sourceReachable = true;
+    // DEV-33 zombie-job fix (2026-05-30): mark the source "alive" only on a real
+    // HTTP 2xx. page.goto does NOT throw on a 4xx/5xx (it resolves with the error
+    // response), so we must check gotoResp.ok() — otherwise a 200-served error page
+    // or a persistent selector break would set sourceReachable=true and (after the
+    // 2-day buffer) wrongly retire real DocuSign/Joby roles. This mirrors the
+    // res.ok gate the API scrapers use (scrapeICIMSAPICareers). On a genuine 2xx
+    // that renders 0 PMs, "genuinely 0" is far likelier than "selector broke", and
+    // removal is still buffered 2 days; the adversarial self-check is the backstop
+    // for silent selector drift.
+    if (stats && gotoResp && gotoResp.ok()) stats.sourceReachable = true;
 
     console.log(`${companyLabel}: iCIMS scraper found ${jobs.length} jobs`);
     return jobs;
