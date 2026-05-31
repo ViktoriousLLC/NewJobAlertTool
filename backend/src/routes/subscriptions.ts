@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
+import { scrapeCompaniesByIds } from "../jobs/dailyCheck";
 
 const router = Router();
 
@@ -73,7 +74,25 @@ router.post("/", async (req: Request, res: Response) => {
       })
     );
 
-    res.json({ success: true, subscribed: company_ids.length });
+    // Fire-and-forget: scrape just-subscribed companies that have no jobs yet, so a
+    // freshly-added catalog company populates within minutes instead of waiting for
+    // the 14:00 cron. Skip scrape_blocked employers (their careers site is hard-blocked;
+    // they're restored via the RapidAPI pull, not scraping) and anything already
+    // populated. Capped at 25 so a large bulk add can't run unbounded — the daily cron
+    // is the guaranteed backstop for the remainder, and scrapeCompaniesByIds is idempotent.
+    const { data: coRows } = await supabase
+      .from("companies")
+      .select("id, total_product_jobs, scrape_blocked")
+      .in("id", company_ids);
+    const needScrape = (coRows || [])
+      .filter((c) => !c.scrape_blocked && (c.total_product_jobs ?? 0) === 0)
+      .map((c) => c.id)
+      .slice(0, 25);
+    if (needScrape.length > 0) {
+      void scrapeCompaniesByIds(needScrape).catch((e) => Sentry.captureException(e));
+    }
+
+    res.json({ success: true, subscribed: company_ids.length, populating: needScrape.length });
   } catch (err) {
     Sentry.captureException(err);
     console.error("POST /api/subscriptions error:", err);

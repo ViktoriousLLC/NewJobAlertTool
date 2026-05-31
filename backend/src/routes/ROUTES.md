@@ -45,6 +45,11 @@ States: `input` → `checking` → `preview` → `retry`
 - `ADMIN_EMAIL` from env var with hardcoded fallback in `lib/constants.ts`.
 - Admin hard-delete: `DELETE /api/companies/{id}?hard=true` → CASCADE deletes jobs, subscriptions, etc.
 
+## Subscribe Semantics
+
+- **`POST /api/subscriptions`** (body `{ company_ids: string[] }`) upserts subscriptions, bumps `subscriber_count`, sets `is_active=true`, then **fires a fire-and-forget background scrape** (`scrapeCompaniesByIds` from `jobs/dailyCheck`, NO email) for just-subscribed companies that have zero jobs and aren't `scrape_blocked`, capped at 25 (DEV-54). So a freshly-added catalog company populates within minutes instead of waiting for the 14:00 cron. The daily cron is the guaranteed backstop; the scrape is idempotent. Response: `{ success, subscribed, populating }`.
+- Don't `await` the scrape — it would block the response (and a large bulk add would blow past the Cloudflare ~100s timeout). Fire-and-forget + `.catch(Sentry)` is intentional.
+
 ## Delete Semantics
 
 - **Dashboard "Remove"** = unsubscribe only. Updates `subscriber_count` and `is_active`.
