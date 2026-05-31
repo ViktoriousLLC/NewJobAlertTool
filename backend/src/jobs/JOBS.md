@@ -14,6 +14,17 @@ This sidecar collects everything needed before touching `backend/src/jobs/dailyC
 - `?skipEmails=true` — skips per-user alerts (safe for manual re-runs)
 - `?forceMondayDigest=true` — forces the Monday-style weekly digest on any day
 
+## Scrape-on-demand (DEV-52)
+
+`POST /api/cron/scrape-only` (in `backend/src/index.ts`) — scrapes companies and reconciles `seen_jobs` **without ANY email-distribution step**. Decouples scraping from emailing so a freshly added company's jobs show up immediately instead of waiting for the 14:00 UTC daily run. CRON_SECRET-gated (same `safeCompareSecret` pattern as `/api/cron/trigger`).
+
+- **Body** `{ companyIds?: string[] }`: present → scrape exactly those (UUID-validated, max 250, de-duped, chunked `.in()`); omitted → default to `is_active` companies that currently have **zero `seen_jobs` rows** (freshly added, never scraped).
+- **Shared logic**: reuses `scrapeAndRecordCompany(company, ctx)` — the exact per-company scrape + self-healing tiers (auto-fix / broadATSDiscovery / stealth) + `seen_jobs` diff (insert-new / flip-returned / refresh / mark-removed) + status/zero-streak writes the daily cron loop runs. It was extracted verbatim from `runDailyCheckInner`; the daily path now delegates to it, so behavior is identical. `ScrapeContext` carries the per-run accumulators the admin digest reads; scrape-only passes a throwaway context and never builds a digest or sends mail.
+- **isProbeDay forced true** here so an auto-disabled target is actually scraped now (the daily loop would skip it until Monday).
+- **Idempotent**: re-runs just re-reconcile `seen_jobs` (UNIQUE on company_id+job_url_path prevents dupes) and re-stamp `last_check_status`. 5s inter-company delay, same as the daily loop.
+- **Returns** `{ scraped, jobsAdded, perCompany: [{ id, name, status, jobsAdded, totalActive, error? }] }`.
+- **Never** calls `sendPerUserAlerts` / `sendConsolidatedAdminDigest` / `sendWeeklyDigest`.
+
 ## Weekly LinkedIn-Draft Digest (PR #52, added 2026-05-22)
 
 **Friday auto-trigger inside `runDailyCheck()`.** When UTC day-of-week === 5, after the consolidated admin digest, `sendWeeklyDigest()` from `backend/src/jobs/weeklyDigest.ts` fires. Owned by the existing 14:00 UTC daily Railway cron — no separate schedule.
