@@ -30,6 +30,9 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # puppeteer is pinned EXACT to match the Docker image's bundled Chrome
+      # (SCRAPER.md) — ANY bump breaks the scrapers, so never raise it.
+      - dependency-name: "puppeteer*"
 
   - package-ecosystem: "npm"
     directory: "/backend"
@@ -51,3 +54,6 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # puppeteer is pinned EXACT to match the Docker image's bundled Chrome
+      # (SCRAPER.md) — ANY bump breaks the scrapers, so never raise it.
+      - dependency-name: "puppeteer*"
