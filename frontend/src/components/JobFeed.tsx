@@ -655,9 +655,9 @@ function CompanyCell({ company }: { company: { id: string; name: string; careers
           {company.scrape_blocked && (
             <span
               className="shrink-0 text-[9px] font-semibold uppercase tracking-wide bg-stone-100 text-stone-500 border border-stone-200 rounded px-1.5 py-0.5"
-              title="This employer blocks automated access to their careers site, so we can't list their roles here."
+              title="This employer blocks scraping of their careers site, so we can't list their roles here. Apply on their site directly."
             >
-              Restricted
+              Scraping blocked
             </span>
           )}
         </div>
