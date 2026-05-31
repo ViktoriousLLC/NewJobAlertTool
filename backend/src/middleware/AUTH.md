@@ -12,11 +12,9 @@ This sidecar collects everything needed before touching `backend/src/middleware/
 
 ## Backend JWT Verification
 
-- `requireAuth` middleware does **local JWT verification** via `SUPABASE_JWT_SECRET` (~0ms), fallback to Supabase API (~150ms).
-- **Pinned algorithm**: HS256.
-- **Validates** `audience: "authenticated"` and `issuer: <supabase-url>/auth/v1`.
-- **Fails closed at boot** in production if `SUPABASE_JWT_SECRET` missing.
-- Sentry warning fires when local-verify fails and code falls back to Supabase API.
+- `requireAuth` middleware does **local JWT verification via JWKS** (`createRemoteJWKSet`, ES256, ~0ms after first JWKS fetch), fallback to Supabase API (~150ms). Migrated from HS256/`SUPABASE_JWT_SECRET` to JWKS in #93 (DEV) — Supabase moved to asymmetric ES256 keys.
+- **Validates** signature + algorithm + `exp` + `audience: "authenticated"` + `issuer: <supabase-url>/auth/v1`.
+- On local-verify failure the code falls back to the Supabase API. A Sentry warning (`phase: auth-fallback`) fires **only for UNEXPECTED failures** (bad signature/issuer/audience, JWKS drift, forgery attempts). Routine token **expiries are NOT reported** — they're the normal refresh case and were flooding Sentry (silenced 2026-05-31).
 
 ## Data Scoping
 

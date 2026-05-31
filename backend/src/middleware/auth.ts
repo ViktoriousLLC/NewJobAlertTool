@@ -104,14 +104,21 @@ export async function requireAuth(
       }
     } catch (err) {
       // Local verification failed; fall back to Supabase API call.
-      // Tagged so a Sentry alert rule can fire if this becomes frequent
-      // (which would mean JWKS rotation drift or actual attempted forgery).
       const message = err instanceof Error ? err.message : "unknown";
       console.warn(`[auth] JWKS verify failed (${message}); falling back to Supabase getUser()`);
-      Sentry.captureMessage(`JWT JWKS verify failed: ${message}`, {
-        level: "warning",
-        tags: { phase: "auth-fallback" },
-      });
+      // An EXPIRED token is the normal case (it outlived its ~1h TTL; the client
+      // refreshes and retries). Reporting it floods Sentry and buries the failures
+      // we actually care about. Only capture UNEXPECTED failures (bad signature,
+      // wrong issuer/audience, JWKS rotation drift, forgery attempts) — which is
+      // what an alert rule should fire on. (Expiry noise silenced 2026-05-31.)
+      const code = (err as { code?: string } | undefined)?.code;
+      const isExpired = code === "ERR_JWT_EXPIRED" || /exp.*claim|jwt expired|"exp"/i.test(message);
+      if (!isExpired) {
+        Sentry.captureMessage(`JWT JWKS verify failed: ${message}`, {
+          level: "warning",
+          tags: { phase: "auth-fallback" },
+        });
+      }
     }
   }
 
