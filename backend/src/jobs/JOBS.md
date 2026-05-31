@@ -25,6 +25,30 @@ This sidecar collects everything needed before touching `backend/src/jobs/dailyC
 - **Returns** `{ scraped, jobsAdded, perCompany: [{ id, name, status, jobsAdded, totalActive, error? }] }`.
 - **Never** calls `sendPerUserAlerts` / `sendConsolidatedAdminDigest` / `sendWeeklyDigest`.
 
+## RapidAPI Restore of Scraping-Blocked Employers (DEV-51)
+
+Auto-restores the 4 scraping-blocked employers (Meta / Tesla / TikTok / Wayfair) by pulling their US Product Manager roles from the Fantastic.jobs RapidAPI LinkedIn feed, WITHOUT ever touching their hard-blocked career sites. Lives in `backend/src/scraper/rapidApiBlocked.ts`; does not change any existing scraper or `CUSTOM_SCRAPER_HOSTS`.
+
+- **Why**: these employers carry `companies.scrape_blocked = true` (PRs #130/#134) because direct scraping is hard-blocked (Akamai 403, FB session-gating, Stargate gateway 2012, Workday 401/422). The RapidAPI LinkedIn aggregator indexes their public LinkedIn postings, so their PM roles can be restored via a paid third-party feed.
+- **Module**: `pullRapidApiBlockedEmployers()` queries every company still `scrape_blocked = true`, calls `GET https://linkedin-job-search-api.p.rapidapi.com/active-jb-7d` (`title_filter="Product Manager"`, `location_filter="United States"`, `organization_filter=<company.name>`, `offset=0`, `description_type=text`) with headers `x-rapidapi-host` + `x-rapidapi-key: $RAPIDAPI_KEY`. Maps each job to the `seen_jobs` shape (title; `job_url_path` = normalized apply URL with query/hash stripped; location from `cities_derived[0] || locations_derived[0]`) and runs it through the SAME `validateScrapeResults` PM_KEYWORDS + US filter used everywhere.
+- **Insert-or-refresh ONLY, never removal** (critical): the feed is a rolling 7-day window, so the standard diff-removal would wrongly delist older still-live roles. New listings INSERT active; known removed/archived listings flip back to active; active listings get title/location refreshed. Nothing is ever marked removed here — older roles age out via the existing 60-day archive sweep instead.
+- **Self-restore + self-stop**: on a company that yields >=1 US PM job, sets `scrape_blocked=false`, `platform_type='rapidapi_linkedin'`, `platform_config={"orgName": <name>}`. A restored company stops matching the `scrape_blocked = true` query, so re-runs self-skip it. A company with nothing on LinkedIn (Wayfair: 0 PM/US on the feed) simply stays flagged and is retried cheaply each run.
+- **Never throws on a single-company failure**: each company is wrapped in try/catch — failures are recorded in the result row and the loop continues; `scrape_blocked` is left UNCHANGED on any per-company error.
+- **Free-tier quota** (250 jobs + 25 requests/month): logs `x-ratelimit-jobs-remaining` + `x-ratelimit-requests-remaining` from every response and emits a Sentry `warning` (never throws) when either nears zero.
+- **Confirmed 7d PM/US counts (live probe)**: Meta 8, Tesla 22, TikTok 4, Wayfair 0.
+
+### Date-gated auto-trigger (no manual step)
+
+Inside `runDailyCheckInner()`, immediately after the per-company scrape loop, the cron calls `isRapidApiActivationDue()` and, if due, runs `pullRapidApiBlockedEmployers()` once and folds a one-line summary into the console log.
+
+- **`isRapidApiActivationDue()`** returns true only when `RAPIDAPI_KEY` is set AND today's UTC date (`YYYY-MM-DD`) `>= RAPIDAPI_ACTIVATION_DATE` (default `"2026-07-01"`, when the free RapidAPI monthly quota resets). Before that date it is a pure no-op, so the feature stays dormant until July 1 with zero quota spend.
+- Wrapped in try/catch in the cron — a RapidAPI failure can never break the daily run, and (per the module) leaves `scrape_blocked` unchanged.
+- **Env (Railway)**: `RAPIDAPI_KEY` (required to activate), `RAPIDAPI_ACTIVATION_DATE` (optional override, default `2026-07-01`).
+
+### Manual trigger
+
+`POST /api/cron/rapidapi-blocked` (in `backend/src/index.ts`) — CRON_SECRET-gated (same `safeCompareSecret` pattern as `/api/cron/trigger`). Runs `pullRapidApiBlockedEmployers()` on demand for testing once the quota resets. Unlike the daily auto-trigger it is NOT date-gated (deliberate manual override), but still no-ops cleanly when `RAPIDAPI_KEY` is unset or there are no `scrape_blocked` companies. No email. Returns `{ checked, restored: string[], jobsAdded, perCompany: [{ company, jobsAdded, blockedClearedFor, error? }] }`.
+
 ## Weekly LinkedIn-Draft Digest (PR #52, added 2026-05-22)
 
 **Friday auto-trigger inside `runDailyCheck()`.** When UTC day-of-week === 5, after the consolidated admin digest, `sendWeeklyDigest()` from `backend/src/jobs/weeklyDigest.ts` fires. Owned by the existing 14:00 UTC daily Railway cron — no separate schedule.

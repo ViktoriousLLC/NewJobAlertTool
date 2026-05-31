@@ -1025,6 +1025,35 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     if (willScrape) await delay(5000);
   }
 
+  // --- RapidAPI restore of scraping-blocked employers (DEV-51) ---
+  // Auto-trigger, NO manual step: on/after RAPIDAPI_ACTIVATION_DATE (default
+  // 2026-07-01, when the free RapidAPI monthly quota resets) AND only when
+  // RAPIDAPI_KEY is set, pull the still-blocked employers (Meta/Tesla/TikTok/
+  // Wayfair) from the Fantastic.jobs LinkedIn feed and restore the ones that
+  // yield >=1 US PM job. Before the activation date this is a pure no-op, so it
+  // stays dormant until July 1; after it, it self-skips any company that is no
+  // longer scrape_blocked, so it effectively retries each day until it succeeds
+  // and then stops. Wrapped in try/catch so a failure can NEVER break the daily
+  // cron — and pullRapidApiBlockedEmployers() leaves scrape_blocked unchanged on
+  // any per-company error, so a bad run can't strand an employer.
+  try {
+    const { isRapidApiActivationDue, pullRapidApiBlockedEmployers } = await import("../scraper/rapidApiBlocked");
+    if (isRapidApiActivationDue()) {
+      const rapidResults = await pullRapidApiBlockedEmployers();
+      const restored = rapidResults.filter((r) => r.blockedClearedFor.length > 0);
+      const addedTotal = rapidResults.reduce((sum, r) => sum + r.jobsAdded, 0);
+      const failures = rapidResults.filter((r) => r.error);
+      console.log(
+        `[rapidapi] daily restore: checked ${rapidResults.length} blocked employer(s), ` +
+        `restored ${restored.length} (${restored.map((r) => r.company).join(", ") || "none"}), ` +
+        `+${addedTotal} new PM job(s)${failures.length ? `, ${failures.length} failed` : ""}.`
+      );
+    }
+  } catch (err) {
+    console.error("RapidAPI blocked-employer restore failed (non-fatal):", err);
+    Sentry.captureException(err, { tags: { area: "dailyCheck.rapidApiBlocked" } });
+  }
+
   // --- Per-user email alerts ---
   let emailBatchResult: BatchSendResult = { sent: 0, failed: 0, errors: [] };
   // L6: delivery stats threaded out of sendPerUserAlerts so the admin digest

@@ -406,6 +406,44 @@ app.post("/api/cron/scrape-only", async (req, res) => {
   }
 });
 
+// RapidAPI blocked-employer restore (DEV-51). On-demand trigger for the same
+// pull the daily cron runs automatically on/after RAPIDAPI_ACTIVATION_DATE —
+// pulls the still-blocked employers (Meta/Tesla/TikTok/Wayfair) from the
+// Fantastic.jobs LinkedIn feed and restores any that yield >=1 US PM job. Exists
+// so the restore can be exercised manually once the monthly RapidAPI quota
+// resets, without waiting for the next 14:00 UTC daily run. Unlike the daily
+// auto-trigger this is NOT date-gated (a deliberate manual override for
+// testing) but still no-ops cleanly when RAPIDAPI_KEY is unset or there are no
+// scrape_blocked companies. Idempotent + non-destructive (insert-or-refresh
+// only; never marks jobs removed; leaves scrape_blocked unchanged on failure).
+// CRON_SECRET-gated, same constant-time pattern as /api/cron/trigger. No email.
+// Returns the per-company summary.
+app.post("/api/cron/rapidapi-blocked", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!safeCompareSecret(secret, process.env.CRON_SECRET)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  try {
+    const { pullRapidApiBlockedEmployers } = await import("./scraper/rapidApiBlocked");
+    const results = await pullRapidApiBlockedEmployers();
+    const restored = results.filter((r) => r.blockedClearedFor.length > 0).map((r) => r.company);
+    const jobsAdded = results.reduce((sum, r) => sum + r.jobsAdded, 0);
+    res.json({
+      checked: results.length,
+      restored,
+      jobsAdded,
+      perCompany: results,
+    });
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error("RapidAPI blocked-employer restore failed:", err);
+    res.status(500).json({ error: "RapidAPI blocked-employer restore failed" });
+  }
+});
+
 // Self-check suspect feed (DEV-41). The daily-self-check workflow runs in a
 // remote routine (Anthropic cloud) that has no Supabase access, so it pulls
 // today's suspect set from here over HTTPS. CRON_SECRET-gated, same pattern as
