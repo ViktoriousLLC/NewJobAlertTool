@@ -2060,3 +2060,16 @@ Behavior-only; the lead engine, data window, and image pipeline are unchanged.
 **What shipped.** Extracted `scrapeCompaniesByIds(ids)` from the scrape-only logic into a reusable export in `dailyCheck.ts`, and had `POST /api/subscriptions` call it **fire-and-forget** after activating the subscriptions: it scrapes just-subscribed companies that have zero jobs and aren't `scrape_blocked`, capped at 25. So adds (single or bulk "Add all in {category}") populate within a couple minutes instead of waiting a day. The daily cron remains the guaranteed backstop, and the scrape is idempotent, so a host recycle mid-scrape self-heals. Deliberately not awaited (would block the response, and a large bulk add would exceed the Cloudflare ~100s timeout). No big manual backfill run was needed — the user noted the cron runs within the hour anyway; this is the durable wiring, not a one-off.
 
 **Lesson.** The blocker wasn't a missing feature, it was an assumption baked in early: that scraping and emailing always happen together. DEV-52 broke that coupling; this change finally connected the freed-up scrape to the action that needs it. Question the coupling before adding another button.
+
+---
+
+## 2026-05-31 — Process: every PR owes a Linear task + docs, manual git included (DEV-56)
+
+**Context.** Across this session I shipped several PRs via manual git instead of `/ship`, and the manual path silently skipped both the Linear filing and the savecc-on-ship doc bundling — so project-history / CLAUDE.md / Linear lagged a full session until the user caught it. He had to ask four times to file the Linear tasks + update docs. Root finding: `/ship` itself had doc steps but **no Linear step at all**, and nothing said the obligation applied to hand-rolled PRs.
+
+**What changed.** Made the rule bind the PR, not the command:
+- `.claude/commands/ship.md`: Step 2 creates/links the Linear task before the PR; Step 8 closes the loop (state + PR link); Hard rules state it binds EVERY PR, manual git included.
+- `CLAUDE.md` Git & PR Workflow: explicit rule that every PR has a Linear task + the Step-2 docs, and the manual-git fast-path is not a shortcut that skips them.
+- Memory `feedback_every_pr_linear_and_docs` + a `tasks/lessons.md` entry.
+
+**Lesson.** A discipline that only lives in a command gets bypassed the moment you don't run the command. Attach it to the artifact (the PR) instead, so the obligation holds no matter how the PR is created. Reaching for raw git to "move faster" is precisely what drops the paperwork that keeps the project legible.

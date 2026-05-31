@@ -65,6 +65,7 @@ curl -s "https://api.<your-domain>/api/health"   # verify backend after merge
 - **After any merge, reset local main:** `git fetch origin --prune && git checkout main && git reset --hard origin/main`. Keeps your local main matching GitHub — avoids the "real main vs stale local main" trap that misled a window on 2026-05-29.
 - **`main` is a repository ruleset (id 16381419), 0 required approvals** — not classic branch protection. Direct push is blocked; `gh pr merge` works without a human approver, so `/ship` can merge (it's a convention gate, not a hard one). (The "Deployment" steps above describe the manual long-form of this.)
 - **Docs ride in the change's PR (savecc-on-ship):** the project-history entry + any CLAUDE.md/sidecar currency fix go in the same PR; MEMORY.md updates right after.
+- **Every PR has a Linear task — no exceptions, manual git included.** Find the `DEV-N` the work belongs to, or **create one** in the Development team before opening the PR; reference it in the PR body; move it to its new state (In Progress when work starts, Done on merge) + link the PR. This binds whether you run `/ship` OR push a branch by hand — **the manual-git fast-path does NOT get to skip the Linear task or the docs.** Bypassing `/ship` is exactly what let docs + Linear lag a full session on 2026-05-31; the user had to ask four times. Docs AND Linear, every PR.
 
 ## Subagents
 
