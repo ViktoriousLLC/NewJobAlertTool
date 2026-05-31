@@ -17,6 +17,12 @@ interface CatalogCompany {
   // "Restricted" badge instead of "0 roles" so it reads as the employer denying
   // access, not our scraper failing.
   scrape_blocked?: boolean | null;
+  // Broad category (banking, fintech, tech, ...). Drives the grouped catalog view.
+  industry?: string | null;
+  // Finer category under `industry`, only meaningful for industry === "tech".
+  // When set it splits the tech bucket (ai, dev-tools, saas, big-tech,
+  // security, consumer-apps); NULL tech companies fall back to a single "Tech".
+  sub_industry?: string | null;
 }
 
 interface CheckPreview {
@@ -64,6 +70,93 @@ type FlowState = "input" | "checking" | "preview" | "retry";
 // just skipped. Users can uncheck any before confirming.
 const DEFAULT_ONBOARDING_COMPANIES = ["Google", "Anthropic", "OpenAI", "Stripe", "Capital One"];
 
+// Display labels for the grouped catalog. Industry values are the lowercase
+// taxonomy stored in companies.industry (see feed.ts VALID_INDUSTRIES). The
+// `tech` bucket is expanded into sub-buckets keyed by companies.sub_industry.
+const INDUSTRY_LABELS: Record<string, string> = {
+  banking: "Banking",
+  biotech: "Biotech",
+  consulting: "Consulting",
+  consumer: "Consumer",
+  fintech: "Fintech",
+  gaming: "Gaming",
+  hardware: "Hardware",
+  healthcare: "Healthcare",
+  media: "Media",
+  tech: "Tech",
+};
+
+// Sub-buckets that split `tech`. Keys match companies.sub_industry.
+const TECH_SUB_INDUSTRY_LABELS: Record<string, string> = {
+  ai: "AI",
+  "dev-tools": "Dev Tools",
+  saas: "SaaS",
+  "big-tech": "Big Tech",
+  security: "Security",
+  "consumer-apps": "Consumer apps",
+};
+
+const UNCATEGORIZED_LABEL = "Other";
+
+interface CatalogGroup {
+  key: string; // stable group id (industry, "tech:<sub>", "tech", or "uncategorized")
+  label: string; // display name shown on the header + "Add all in {label}"
+  companies: CatalogCompany[];
+}
+
+// Build the grouped, display-ordered catalog. Each industry is one group, except
+// `tech`, which is expanded into its sub-buckets via sub_industry. Tech companies
+// with a NULL/unknown sub_industry fall back to a single "Tech" group. Companies
+// with no industry land in an "Other" group so nothing is ever hidden.
+function groupCatalog(companies: CatalogCompany[]): CatalogGroup[] {
+  const groups = new Map<string, CatalogGroup>();
+
+  const ensure = (key: string, label: string) => {
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, label, companies: [] };
+      groups.set(key, g);
+    }
+    return g;
+  };
+
+  for (const c of companies) {
+    const industry = (c.industry || "").trim().toLowerCase();
+
+    if (!industry) {
+      ensure("uncategorized", UNCATEGORIZED_LABEL).companies.push(c);
+      continue;
+    }
+
+    if (industry === "tech") {
+      const sub = (c.sub_industry || "").trim().toLowerCase();
+      const subLabel = sub ? TECH_SUB_INDUSTRY_LABELS[sub] : undefined;
+      if (sub && subLabel) {
+        ensure(`tech:${sub}`, subLabel).companies.push(c);
+      } else {
+        // NULL or unrecognized sub_industry → single fallback Tech group.
+        ensure("tech", INDUSTRY_LABELS.tech).companies.push(c);
+      }
+      continue;
+    }
+
+    const label = INDUSTRY_LABELS[industry] || industry.charAt(0).toUpperCase() + industry.slice(1);
+    ensure(industry, label).companies.push(c);
+  }
+
+  // Sort companies within each group by name (catalog already arrives name-sorted,
+  // but grouping preserves insertion order, so re-sort defensively), then order
+  // groups alphabetically by label with "Other" pinned last.
+  const out = Array.from(groups.values());
+  for (const g of out) g.companies.sort((a, b) => a.name.localeCompare(b.name));
+  out.sort((a, b) => {
+    if (a.key === "uncategorized") return 1;
+    if (b.key === "uncategorized") return -1;
+    return a.label.localeCompare(b.label);
+  });
+  return out;
+}
+
 export default function AddCompanyModal({
   isOpen,
   onClose,
@@ -76,6 +169,8 @@ export default function AddCompanyModal({
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [subscribing, setSubscribing] = useState(false);
+  // Group key currently being bulk-added via "Add all in {category}" (null = idle).
+  const [bulkGroupKey, setBulkGroupKey] = useState<string | null>(null);
 
   // New company check-then-add state
   const [flowState, setFlowState] = useState<FlowState>("input");
@@ -198,6 +293,43 @@ export default function AddCompanyModal({
       console.error("Subscribe failed:", err);
     } finally {
       setSubscribing(false);
+    }
+  }
+
+  // "Add all in {category}" — subscribe to every company in the group the user
+  // doesn't already track, skipping already-subscribed and scrape_blocked
+  // (non-selectable) rows. Delta only: a company already in `subscribedIds` or
+  // flagged scrape_blocked is never re-sent. Reuses the same POST /api/subscriptions
+  // path as the per-row toggle, then refreshes the parent so the rows flip to
+  // "(added)" without closing the modal (user can keep adding categories).
+  async function handleAddAllInGroup(group: CatalogGroup) {
+    if (bulkGroupKey || subscribing) return;
+    const deltaIds = group.companies
+      .filter((c) => !subscribedIds.has(c.id) && !c.scrape_blocked)
+      .map((c) => c.id);
+    if (deltaIds.length === 0) return;
+
+    setBulkGroupKey(group.key);
+    try {
+      const res = await apiFetch("/api/subscriptions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ company_ids: deltaIds }),
+      });
+      if (!res.ok) throw new Error("Failed to subscribe");
+      trackEvent("companies_subscribed", { count: deltaIds.length, source: "add_all_category", category: group.label });
+      // Drop any of these from the manual selection so they don't double-submit
+      // if the user also clicks "Add Selected" afterward.
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const id of deltaIds) next.delete(id);
+        return next;
+      });
+      onCompanyAdded();
+    } catch (err) {
+      console.error("Add-all subscribe failed:", err);
+    } finally {
+      setBulkGroupKey(null);
     }
   }
 
@@ -339,6 +471,11 @@ export default function AddCompanyModal({
   const filteredCatalog = search
     ? catalog.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
     : catalog;
+
+  // Grouped view of the (search-filtered) catalog: one group per industry, with
+  // `tech` expanded into its sub-buckets. Recomputed on each render — the catalog
+  // is a few hundred rows, so the cost is negligible and not worth memoizing.
+  const catalogGroups = groupCatalog(filteredCatalog);
 
   function getStepLabel(i: number, isDone: boolean) {
     switch (i) {
@@ -745,64 +882,101 @@ export default function AddCompanyModal({
                   Loading catalog...
                 </div>
               ) : (
-                <div className="space-y-1">
-                  {filteredCatalog.map((company) => {
-                    const isSubscribed = subscribedIds.has(company.id);
-                    const isSelected = selected.has(company.id);
-                    // Scraping-blocked employers can't be tracked (we can't pull
-                    // their roles), so they're non-selectable — same treatment as
-                    // already-subscribed rows.
-                    const isBlocked = !!company.scrape_blocked;
+                <div className="space-y-5">
+                  {catalogGroups.map((group) => {
+                    // Addable = in this group, not already subscribed, not blocked.
+                    // Drives both the "Add all" button (delta count) and its
+                    // enabled/disabled state.
+                    const addableCount = group.companies.filter(
+                      (c) => !subscribedIds.has(c.id) && !c.scrape_blocked
+                    ).length;
+                    const isBulkBusy = bulkGroupKey === group.key;
                     return (
-                      <label
-                        key={company.id}
-                        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
-                          isSubscribed || isBlocked
-                            ? "opacity-50 cursor-default"
-                            : isSelected
-                            ? "bg-blue-50 border border-blue-200"
-                            : "hover:bg-stone-50 border border-transparent"
-                        }`}
-                        onClick={(e) => {
-                          if (isSubscribed || isBlocked) e.preventDefault();
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSubscribed || isSelected}
-                          disabled={isSubscribed || isBlocked}
-                          onChange={() => toggleCompany(company.id)}
-                          className="rounded border-stone-300 text-[#0EA5E9] focus:ring-[#0EA5E9]"
-                        />
-                        <img
-                          src={getFaviconUrl(company.name, company.careers_url)}
-                          alt=""
-                          width={20}
-                          height={20}
-                          className="rounded shrink-0"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = "none";
-                          }}
-                        />
-                        <span className="text-sm font-medium text-[#1A1A2E] flex-1">
-                          {company.name}
-                        </span>
-                        {company.scrape_blocked ? (
-                          <span
-                            className="shrink-0 text-[10px] font-semibold uppercase tracking-wide bg-stone-100 text-stone-500 border border-stone-200 rounded px-1.5 py-0.5"
-                            title="This employer blocks scraping of their careers site, so we can't track their roles. Apply on their site directly."
-                          >
-                            Scraping blocked
-                          </span>
-                        ) : (
-                          <span className="text-xs text-stone-400">
-                            {company.total_product_jobs} roles
-                          </span>
-                        )}
-                        {isSubscribed && (
-                          <span className="text-xs text-stone-400 italic">(added)</span>
-                        )}
-                      </label>
+                      <div key={group.key}>
+                        {/* Group header + "Add all in {category}" */}
+                        <div className="flex items-center justify-between gap-3 mb-1.5 px-1">
+                          <h3 className="text-xs font-semibold uppercase tracking-wide text-stone-500">
+                            {group.label}
+                            <span className="ml-2 font-normal normal-case text-stone-400">
+                              {group.companies.length}
+                            </span>
+                          </h3>
+                          {addableCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddAllInGroup(group)}
+                              disabled={isBulkBusy || subscribing}
+                              className="shrink-0 text-xs font-medium text-[#0EA5E9] hover:text-[#0284C7] hover:underline disabled:opacity-50 disabled:no-underline transition-colors"
+                            >
+                              {isBulkBusy
+                                ? "Adding..."
+                                : `Add all in ${group.label} (${addableCount})`}
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="space-y-1">
+                          {group.companies.map((company) => {
+                            const isSubscribed = subscribedIds.has(company.id);
+                            const isSelected = selected.has(company.id);
+                            // Scraping-blocked employers can't be tracked (we can't pull
+                            // their roles), so they're non-selectable — same treatment as
+                            // already-subscribed rows.
+                            const isBlocked = !!company.scrape_blocked;
+                            return (
+                              <label
+                                key={company.id}
+                                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
+                                  isSubscribed || isBlocked
+                                    ? "opacity-50 cursor-default"
+                                    : isSelected
+                                    ? "bg-blue-50 border border-blue-200"
+                                    : "hover:bg-stone-50 border border-transparent"
+                                }`}
+                                onClick={(e) => {
+                                  if (isSubscribed || isBlocked) e.preventDefault();
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isSubscribed || isSelected}
+                                  disabled={isSubscribed || isBlocked}
+                                  onChange={() => toggleCompany(company.id)}
+                                  className="rounded border-stone-300 text-[#0EA5E9] focus:ring-[#0EA5E9]"
+                                />
+                                <img
+                                  src={getFaviconUrl(company.name, company.careers_url)}
+                                  alt=""
+                                  width={20}
+                                  height={20}
+                                  className="rounded shrink-0"
+                                  onError={(e) => {
+                                    (e.target as HTMLImageElement).style.display = "none";
+                                  }}
+                                />
+                                <span className="text-sm font-medium text-[#1A1A2E] flex-1">
+                                  {company.name}
+                                </span>
+                                {company.scrape_blocked ? (
+                                  <span
+                                    className="shrink-0 text-[10px] font-semibold uppercase tracking-wide bg-stone-100 text-stone-500 border border-stone-200 rounded px-1.5 py-0.5"
+                                    title="This employer blocks scraping of their careers site, so we can't track their roles. Apply on their site directly."
+                                  >
+                                    Scraping blocked
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-stone-400">
+                                    {company.total_product_jobs} roles
+                                  </span>
+                                )}
+                                {isSubscribed && (
+                                  <span className="text-xs text-stone-400 italic">(added)</span>
+                                )}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
                     );
                   })}
 
