@@ -749,24 +749,28 @@ export default function AddCompanyModal({
                   {filteredCatalog.map((company) => {
                     const isSubscribed = subscribedIds.has(company.id);
                     const isSelected = selected.has(company.id);
+                    // Scraping-blocked employers can't be tracked (we can't pull
+                    // their roles), so they're non-selectable — same treatment as
+                    // already-subscribed rows.
+                    const isBlocked = !!company.scrape_blocked;
                     return (
                       <label
                         key={company.id}
                         className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
-                          isSubscribed
+                          isSubscribed || isBlocked
                             ? "opacity-50 cursor-default"
                             : isSelected
                             ? "bg-blue-50 border border-blue-200"
                             : "hover:bg-stone-50 border border-transparent"
                         }`}
                         onClick={(e) => {
-                          if (isSubscribed) e.preventDefault();
+                          if (isSubscribed || isBlocked) e.preventDefault();
                         }}
                       >
                         <input
                           type="checkbox"
                           checked={isSubscribed || isSelected}
-                          disabled={isSubscribed}
+                          disabled={isSubscribed || isBlocked}
                           onChange={() => toggleCompany(company.id)}
                           className="rounded border-stone-300 text-[#0EA5E9] focus:ring-[#0EA5E9]"
                         />
@@ -786,9 +790,9 @@ export default function AddCompanyModal({
                         {company.scrape_blocked ? (
                           <span
                             className="shrink-0 text-[10px] font-semibold uppercase tracking-wide bg-stone-100 text-stone-500 border border-stone-200 rounded px-1.5 py-0.5"
-                            title="This employer blocks automated access to their careers site, so we can't list their roles."
+                            title="This employer blocks scraping of their careers site, so we can't track their roles. Apply on their site directly."
                           >
-                            Restricted
+                            Scraping blocked
                           </span>
                         ) : (
                           <span className="text-xs text-stone-400">

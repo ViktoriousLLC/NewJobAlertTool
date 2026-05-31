@@ -404,9 +404,9 @@ function DashboardContent() {
                           padding: "3px 12px",
                           letterSpacing: "0.02em",
                         }}
-                        title="This employer blocks automated access to their careers site, so we can't list their roles here."
+                        title="This employer blocks scraping of their careers site, so we can't list their roles here. Apply on their site directly."
                       >
-                        Restricted
+                        Scraping blocked
                       </span>
                     </div>
                   ) : (
@@ -440,7 +440,7 @@ function DashboardContent() {
                   <div className="flex items-center justify-center gap-1.5 shrink-0" style={{ borderTop: "1px solid #E0E0E6", padding: "5px 10px" }}>
                     {company.scrape_blocked ? (
                       <span className="text-[10px] text-[#9494A8]">
-                        Access restricted by employer
+                        Scraping blocked by employer
                       </span>
                     ) : (
                       <>

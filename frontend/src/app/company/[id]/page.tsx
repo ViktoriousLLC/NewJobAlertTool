@@ -336,9 +336,9 @@ function CompanyDetailContent() {
             {company.scrape_blocked ? (
               <span
                 className="bg-stone-100 text-stone-600 border border-stone-200 px-3 py-1 rounded-full text-xs font-medium"
-                title="This employer blocks automated access to their careers site, so we can't list their roles here."
+                title="This employer blocks scraping of their careers site, so we can't list their roles here. Apply on their site directly."
               >
-                Restricted
+                Scraping blocked
               </span>
             ) : company.last_check_status?.startsWith("success") ? (
               <span className="px-3 py-1 rounded-full text-xs font-medium" style={{ backgroundColor: "var(--badge-bg)", color: "var(--badge-text)" }}>
@@ -438,7 +438,7 @@ function CompanyDetailContent() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
           </svg>
           <div>
-            <div className="text-sm font-semibold text-stone-700">Restricted</div>
+            <div className="text-sm font-semibold text-stone-700">Scraping blocked</div>
             <p className="text-sm text-stone-500 mt-0.5">
               This employer blocks automated access to their careers site, so we can&apos;t list their roles here. You can still browse openings directly on their site using the link above.
             </p>
