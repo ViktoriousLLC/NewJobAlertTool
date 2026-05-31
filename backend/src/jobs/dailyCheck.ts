@@ -858,9 +858,22 @@ export async function scrapeAndRecordCompany(
     const errMsg = err instanceof Error ? err.message : "unknown";
     console.error(`Error scraping ${company.name}:`, err);
 
-    Sentry.captureException(err, {
-      tags: { company: company.name, phase: "scrape" },
-    });
+    // A scrape FAILING (board not found, source unreachable, changed/blocked ATS) is an
+    // EXPECTED operational failure, not a code bug — and right after a bulk catalog-add it
+    // can hit several new companies at once. Report those as a warning (still visible in
+    // Sentry, but no high-priority page/email); the self-healing + auto-disable handle them.
+    // Only genuinely-unexpected errors page at error level. (2026-05-31)
+    const expectedScrapeFailure = /endpoints? failed|\bboard\b|not found|fetch failed|timed? ?out|ETIMEDOUT|ENOTFOUND|ECONNRESET|abort|\b40\d\b|\b50\d\b/i.test(errMsg);
+    if (expectedScrapeFailure) {
+      Sentry.captureMessage(`Scrape failed for ${company.name}: ${errMsg}`, {
+        level: "warning",
+        tags: { company: company.name, phase: "scrape" },
+      });
+    } else {
+      Sentry.captureException(err, {
+        tags: { company: company.name, phase: "scrape" },
+      });
+    }
 
     // If this was a probe-day re-attempt, the company stays disabled but we don't
     // ratchet the counter higher (it's already past the threshold).
