@@ -10,6 +10,7 @@ import { classifyJobLevel } from "../lib/classifyLevel";
 import { getCompData } from "../lib/levelsFyi";
 import { ADMIN_EMAIL } from "../lib/constants";
 import { extractKeywordsFromFeedback } from "../lib/extractKeywords";
+import { fetchAllRows } from "../lib/fetchAllRows";
 
 const router = Router();
 
@@ -107,11 +108,20 @@ function validateCareersUrl(url: string): { valid: true; parsedUrl: URL } | { va
  */
 async function findExistingCompany(careersUrl: string): Promise<{ id: string; name: string; total_product_jobs: number } | null> {
   const newDedupKey = extractDedupKey(careersUrl);
-  const { data: allCompanies } = await supabase
-    .from("companies")
-    .select("id, name, careers_url, total_product_jobs");
+  // Dedup happens on a derived URL key, so we must scan the whole catalog. The
+  // catalog already approaches PostgREST's silent 1000-row cap — an unbounded
+  // select here would stop matching against companies past row 1000, letting
+  // duplicates through. Paginate over the stable unique key (id).
+  const allCompanies = await fetchAllRows<{ id: string; name: string; careers_url: string; total_product_jobs: number | null }>(
+    (from, to) =>
+      supabase
+        .from("companies")
+        .select("id, name, careers_url, total_product_jobs")
+        .order("id", { ascending: true })
+        .range(from, to)
+  );
 
-  if (!allCompanies) return null;
+  if (!allCompanies.length) return null;
 
   const match = allCompanies.find((c) => {
     try {
@@ -248,24 +258,34 @@ router.get("/", async (req: Request, res: Response) => {
       todayStart.setUTCHours(0, 0, 0, 0);
       const todayISO = todayStart.toISOString();
 
-      // Two parallel queries: today's new jobs (DB-filtered) + latest non-baseline per company
-      const [todayResult, latestResult] = await Promise.all([
+      // Two parallel queries: today's new jobs (DB-filtered) + latest non-baseline per company.
+      // The "latest per company" scan reads EVERY non-baseline job across all of
+      // the user's subscribed companies, which is well past PostgREST's silent
+      // 1000-row cap. An unbounded select silently truncated to the 1000 oldest-
+      // by-default rows, so companies whose newest job fell outside that slice
+      // showed a stale (or missing) "latest new job" date on the dashboard. Page
+      // through the whole set via the stable unique key (id) and compute the max
+      // first_seen_at per company in Node (we can no longer lean on a DB-side
+      // DESC order, since pagination must order by id to be stable).
+      const [todayResult, latestRows] = await Promise.all([
         supabase
           .from("seen_jobs")
           .select("company_id")
           .in("company_id", companyIds)
           .eq("is_baseline", false)
           .gte("first_seen_at", todayISO),
-        supabase
-          .from("seen_jobs")
-          .select("company_id, first_seen_at")
-          .in("company_id", companyIds)
-          .eq("is_baseline", false)
-          .order("first_seen_at", { ascending: false }),
+        fetchAllRows<{ company_id: string; first_seen_at: string }>((from, to) =>
+          supabase
+            .from("seen_jobs")
+            .select("company_id, first_seen_at")
+            .in("company_id", companyIds)
+            .eq("is_baseline", false)
+            .order("id", { ascending: true })
+            .range(from, to)
+        ),
       ]);
 
       if (todayResult.error) console.error("Today jobs query failed:", todayResult.error);
-      if (latestResult.error) console.error("Latest jobs query failed:", latestResult.error);
 
       // Count today's new jobs per company
       for (const job of todayResult.data || []) {
@@ -274,13 +294,14 @@ router.get("/", async (req: Request, res: Response) => {
         statsMap.set(job.company_id, existing);
       }
 
-      // Set latest non-baseline job per company (ordered DESC, first per company wins)
-      for (const job of latestResult.data || []) {
+      // Latest non-baseline job per company = max(first_seen_at). Order is no
+      // longer guaranteed (we page by id), so keep the most recent seen so far.
+      for (const job of latestRows) {
         const existing = statsMap.get(job.company_id);
-        if (existing && !existing.latest_new_job_at) {
-          existing.latest_new_job_at = job.first_seen_at;
-        } else if (!existing) {
+        if (!existing) {
           statsMap.set(job.company_id, { new_jobs_today: 0, latest_new_job_at: job.first_seen_at });
+        } else if (!existing.latest_new_job_at || job.first_seen_at > existing.latest_new_job_at) {
+          existing.latest_new_job_at = job.first_seen_at;
         }
       }
     }
@@ -334,7 +355,12 @@ router.get("/:id", async (req: Request, res: Response) => {
         .from("seen_jobs")
         .select("id, job_title, job_location, job_url_path, first_seen_at, is_baseline, job_level, status")
         .eq("company_id", id)
-        .order("first_seen_at", { ascending: false }),
+        .order("first_seen_at", { ascending: false })
+        // Explicit cap so PostgREST's silent 1000-row default can't quietly
+        // truncate a single company's history (active + removed + archived).
+        // 2000 is comfortably above any one company's lifetime job count while
+        // still bounding the payload; the newest are kept (ORDER BY DESC).
+        .limit(2000),
       subscribedIds.length > 0
         ? supabase
             .from("companies")

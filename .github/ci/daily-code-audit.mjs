@@ -21,6 +21,12 @@
 //      that dies on browser close. Capture attributes inside the setAll
 //      callback instead. See AUTH.md gotchas + middleware.ts
 //      redirectPreservingSession.
+//   6. A newly-added `.select(` in backend/src/routes/ or backend/src/jobs/
+//      with no .range/.limit/.single/.maybeSingle nearby (and not wrapped in
+//      fetchAllRows) — PostgREST silently caps a select at 1000 rows, so an
+//      unbounded read on a growable table processes a truncated slice with no
+//      error. Dropped ~43% of subscribers from the daily email (PR #97) and
+//      showed stale dashboard dates. Page via fetchAllRows or bound the query.
 //
 // Required env (GitHub Actions step `env` block injects these):
 //   RESEND_API_KEY       — for sending the admin email on findings
@@ -240,6 +246,52 @@ for (const [file, lines] of Object.entries(byFile)) {
       "cookieStore.getAll() returns RequestCookie[] (name+value only). Copying onto response.cookies.set strips maxAge/expires and breaks session persistence (DEV-17). Capture cookies INSIDE the setAll callback into a local array with full {name, value, options}, then re-apply onto the redirect."
     );
   }
+}
+
+// 6. Unbounded PostgREST select on a growable table (1000-row truncation class)
+//
+// PostgREST silently caps any single `.select()` at 1000 rows and returns NO
+// error, so an unbounded read on a table over 1000 rows quietly processes a
+// truncated slice. This dropped ~43% of subscribers from the daily email
+// (PR #97) and showed stale "latest job" dates on the dashboard. Any global
+// read on a growable table MUST page via fetchAllRows / .range(), or bound
+// itself with .limit() / .single() / .maybeSingle().
+//
+// Heuristic: a NEWLY-ADDED `.select(` in backend/src/routes/ or
+// backend/src/jobs/ that, within the next few added lines, has none of:
+//   .range(  .limit(  .single(  .maybeSingle(
+// Selects that pass `{ head: true }` (count-only, return no rows) are exempt,
+// as are aggregate count selects. A query wrapped in fetchAllRows ends in
+// `.range(from, to)`, so the .range check covers that case too — no separate
+// fetchAllRows detection needed. Scoped to added lines only, so existing
+// already-bounded queries never re-trip.
+const SELECT_BOUND_WINDOW = 6; // added-lines lookahead from the .select( line
+for (const [file, lines] of Object.entries(byFile)) {
+  if (!file.startsWith("backend/src/routes/") && !file.startsWith("backend/src/jobs/")) continue;
+  if (file.endsWith(".md")) continue;
+  lines.forEach((text, idx) => {
+    if (isCommentLine(text)) return;
+    if (!/\.select\s*\(/.test(text)) return;
+    // Exempt count-only / head selects (they return no row data).
+    if (/head\s*:\s*true/.test(text)) return;
+    // Look at this line plus the next few added lines for a bounding clause.
+    const window = lines.slice(idx, idx + 1 + SELECT_BOUND_WINDOW).join("\n");
+    const bounded = /\.(range|limit|single|maybeSingle)\s*\(/.test(window);
+    // `.range(` may also appear a couple of lines ABOVE when the select spans a
+    // multi-line fetchAllRows callback that places .order/.range first — but in
+    // practice .range is applied last, so the forward window catches it. Also
+    // exempt a count:exact select immediately followed by .single/head handled
+    // above; here we only care about row-returning reads.
+    if (bounded) return;
+    flag(
+      "HIGH",
+      "unbounded-select",
+      file,
+      idx,
+      text.trim().slice(0, 200),
+      "PostgREST silently caps a select at 1000 rows. Wrap a growable-table read in fetchAllRows() (backend/src/lib/fetchAllRows.ts, paginates by a stable unique key), or bound it with .range()/.limit()/.single()/.maybeSingle(). If this select is genuinely tiny-and-bounded, add an explicit .limit() with a comment so the intent is clear. See PR #97 / the daily-email truncation incident."
+    );
+  });
 }
 
 // ----- Report -----

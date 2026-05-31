@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
 import { listAllUsers } from "../lib/listAllUsers";
+import { fetchAllRows } from "../lib/fetchAllRows";
 import { ADMIN_EMAIL } from "../lib/constants";
 
 const router = Router();
@@ -58,7 +59,7 @@ router.get("/stats", async (_req: Request, res: Response) => {
 // GET /api/admin/issues — combined scrape issues + help submissions, enriched with names/emails
 router.get("/issues", async (_req: Request, res: Response) => {
   try {
-    const [scrapeIssuesResult, helpResult, companiesResult, usersResult] = await Promise.all([
+    const [scrapeIssuesResult, helpResult, companyRows, usersResult] = await Promise.all([
       supabase
         .from("scrape_issues")
         .select("id, company_id, user_id, issue_type, description, created_at")
@@ -69,15 +70,22 @@ router.get("/issues", async (_req: Request, res: Response) => {
         .select("id, user_id, user_email, issue_type, message, page_url, created_at")
         .order("created_at", { ascending: false })
         .limit(100),
-      supabase
-        .from("companies")
-        .select("id, name"),
+      // Name-lookup over the whole catalog. Paginate so the map stays complete
+      // past PostgREST's silent 1000-row cap (otherwise issues for companies
+      // beyond row 1000 would show "Unknown").
+      fetchAllRows<{ id: string; name: string }>((from, to) =>
+        supabase
+          .from("companies")
+          .select("id, name")
+          .order("id", { ascending: true })
+          .range(from, to)
+      ),
       listAllUsers().then((u) => ({ data: { users: u } })),
     ]);
 
     // Build lookup maps
     const companyMap = new Map<string, string>();
-    for (const c of companiesResult.data || []) {
+    for (const c of companyRows) {
       companyMap.set(c.id, c.name);
     }
 
@@ -107,13 +115,19 @@ router.get("/issues", async (_req: Request, res: Response) => {
 // GET /api/admin/companies — all companies for management
 router.get("/companies", async (_req: Request, res: Response) => {
   try {
-    const { data: companies, error } = await supabase
-      .from("companies")
-      .select("id, name, careers_url, total_product_jobs, subscriber_count, is_active, last_checked_at, last_check_status")
-      .order("name", { ascending: true });
-
-    if (error) throw error;
-    res.json(companies || []);
+    // Full catalog for the admin management view. Paginate over the stable
+    // unique key (id) so companies past PostgREST's silent 1000-row cap aren't
+    // dropped from the table, then sort by name for display.
+    const companies = await fetchAllRows<{ id: string; name: string; careers_url: string; total_product_jobs: number | null; subscriber_count: number | null; is_active: boolean | null; last_checked_at: string | null; last_check_status: string | null }>(
+      (from, to) =>
+        supabase
+          .from("companies")
+          .select("id, name, careers_url, total_product_jobs, subscriber_count, is_active, last_checked_at, last_check_status")
+          .order("id", { ascending: true })
+          .range(from, to)
+    );
+    companies.sort((a, b) => a.name.localeCompare(b.name));
+    res.json(companies);
   } catch (err) {
     Sentry.captureException(err);
     console.error("GET /api/admin/companies error:", err);
@@ -146,14 +160,21 @@ router.get("/users", async (_req: Request, res: Response) => {
       return rows;
     };
 
-    const [usersResult, subs, prefsResult] = await Promise.all([
+    const [usersResult, subs, prefs] = await Promise.all([
       listAllUsers().then((u) => ({ data: { users: u } })),
       fetchAllSubscriptions(),
-      supabase.from("user_preferences").select("user_id, email_frequency"),
+      // One row per user with a non-default preference; paginate so it stays
+      // complete past PostgREST's silent 1000-row cap as the user base grows.
+      fetchAllRows<{ user_id: string; email_frequency: string }>((from, to) =>
+        supabase
+          .from("user_preferences")
+          .select("user_id, email_frequency")
+          .order("user_id", { ascending: true })
+          .range(from, to)
+      ),
     ]);
 
     const users = usersResult.data?.users || [];
-    const prefs = prefsResult.data || [];
 
     // Count subscriptions per user
     const subCountMap = new Map<string, number>();

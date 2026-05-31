@@ -250,12 +250,25 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     }
   }
 
-  // Scrape all companies so the catalog stays fresh (even with 0 subscribers)
-  const { data: companies, error } = await supabase
-    .from("companies")
-    .select("*");
-
-  if (error || !companies) {
+  // Scrape all companies so the catalog stays fresh (even with 0 subscribers).
+  // The catalog already approaches PostgREST's silent 1000-row cap; an unbounded
+  // select here would quietly scrape only the first 1000 companies (and leave
+  // the rest's listings to go stale forever). Paginate over the stable unique
+  // key (id) to load the whole catalog.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let companies: any[];
+  try {
+    // The untyped supabase client infers `.select("*")` rows as `any`; keep the
+    // element type `any` so the downstream per-company loop is unchanged.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    companies = await fetchAllRows<any>((from, to) =>
+      supabase
+        .from("companies")
+        .select("*")
+        .order("id", { ascending: true })
+        .range(from, to)
+    );
+  } catch (error) {
     console.error("Failed to fetch companies:", error);
     return;
   }
@@ -1042,13 +1055,21 @@ async function sendPerUserAlerts(
     return { sent: 0, failed: 0, errors: [] };
   }
 
-  // Get all user preferences
-  const { data: allPrefs } = await supabase
-    .from("user_preferences")
-    .select("user_id, email_frequency");
+  // Get all user preferences. One row per user with a non-default preference;
+  // paginate so it stays complete past PostgREST's silent 1000-row cap — an
+  // unbounded select here would silently revert users beyond row 1000 to the
+  // default frequency, the same truncation class as the subscriptions bug below.
+  const allPrefs = await fetchAllRows<{ user_id: string; email_frequency: string }>(
+    (from, to) =>
+      supabase
+        .from("user_preferences")
+        .select("user_id, email_frequency")
+        .order("user_id", { ascending: true })
+        .range(from, to)
+  );
 
   const prefsMap = new Map<string, string>();
-  for (const pref of allPrefs || []) {
+  for (const pref of allPrefs) {
     prefsMap.set(pref.user_id, pref.email_frequency);
   }
 

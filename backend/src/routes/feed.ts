@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
+import { fetchAllRows } from "../lib/fetchAllRows";
 
 const router = Router();
 
@@ -99,13 +100,21 @@ const MAX_LIMIT = 100;
 // auto_disabled). Cached at the CDN/browser level — companies change rarely.
 router.get("/companies", async (_req: Request, res: Response) => {
   try {
-    const { data, error } = await supabase
-      .from("companies")
-      .select("id, name, industry, total_product_jobs")
-      .order("name", { ascending: true });
-    if (error) throw error;
+    // The dropdown must list EVERY company. The catalog already approaches
+    // PostgREST's silent 1000-row cap, so an unbounded select would drop
+    // companies past row 1000 from the picker. Paginate (by id) to fetch all,
+    // then sort by name for display (paging order must be the stable unique key).
+    const data = await fetchAllRows<{ id: string; name: string; industry: string | null; total_product_jobs: number | null }>(
+      (from, to) =>
+        supabase
+          .from("companies")
+          .select("id, name, industry, total_product_jobs")
+          .order("id", { ascending: true })
+          .range(from, to)
+    );
+    data.sort((a, b) => a.name.localeCompare(b.name));
     res.set("Cache-Control", "public, max-age=300"); // 5 min
-    res.json(data || []);
+    res.json(data);
   } catch (err) {
     Sentry.captureException(err);
     console.error("GET /api/feed/companies error:", err);
