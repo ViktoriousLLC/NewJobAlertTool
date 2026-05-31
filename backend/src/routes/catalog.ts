@@ -12,11 +12,11 @@ router.get("/", async (req: Request, res: Response) => {
     // 1000-row cap. An unbounded select would quietly drop companies past row
     // 1000. Paginate over the stable unique key (id), then sort by name for
     // display (paging order must be the unique key, not name).
-    const companies = await fetchAllRows<{ id: string; name: string; careers_url: string; total_product_jobs: number | null; last_check_status: string | null; subscriber_count: number | null; is_active: boolean | null }>(
+    const companies = await fetchAllRows<{ id: string; name: string; careers_url: string; total_product_jobs: number | null; last_check_status: string | null; subscriber_count: number | null; is_active: boolean | null; scrape_blocked: boolean | null }>(
       (from, to) =>
         supabase
           .from("companies")
-          .select("id, name, careers_url, total_product_jobs, last_check_status, subscriber_count, is_active")
+          .select("id, name, careers_url, total_product_jobs, last_check_status, subscriber_count, is_active, scrape_blocked")
           .order("id", { ascending: true })
           .range(from, to)
     );

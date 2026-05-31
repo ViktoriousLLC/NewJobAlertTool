@@ -104,11 +104,11 @@ router.get("/companies", async (_req: Request, res: Response) => {
     // PostgREST's silent 1000-row cap, so an unbounded select would drop
     // companies past row 1000 from the picker. Paginate (by id) to fetch all,
     // then sort by name for display (paging order must be the stable unique key).
-    const data = await fetchAllRows<{ id: string; name: string; industry: string | null; total_product_jobs: number | null }>(
+    const data = await fetchAllRows<{ id: string; name: string; industry: string | null; total_product_jobs: number | null; scrape_blocked: boolean | null }>(
       (from, to) =>
         supabase
           .from("companies")
-          .select("id, name, industry, total_product_jobs")
+          .select("id, name, industry, total_product_jobs, scrape_blocked")
           .order("id", { ascending: true })
           .range(from, to)
     );
@@ -162,7 +162,7 @@ router.get("/", async (req: Request, res: Response) => {
     let query = supabase
       .from("seen_jobs")
       .select(
-        "id, job_title, job_location, job_url_path, first_seen_at, job_level, status, companies!inner ( id, name, careers_url, industry, min_relevant_seniority )",
+        "id, job_title, job_location, job_url_path, first_seen_at, job_level, status, companies!inner ( id, name, careers_url, industry, min_relevant_seniority, scrape_blocked )",
         { count: "exact" }
       )
       .eq("is_baseline", false);
@@ -235,7 +235,7 @@ router.get("/", async (req: Request, res: Response) => {
       first_seen_at: string;
       job_level: string | null;
       status: string | null;
-      companies: { id: string; name: string; careers_url: string; industry: string; min_relevant_seniority: string | null };
+      companies: { id: string; name: string; careers_url: string; industry: string; min_relevant_seniority: string | null; scrape_blocked: boolean | null };
     };
 
     const rows = (data as unknown as JoinedRow[]) || [];
