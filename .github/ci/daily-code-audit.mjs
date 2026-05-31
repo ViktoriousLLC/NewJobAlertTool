@@ -27,6 +27,14 @@
 //      unbounded read on a growable table processes a truncated slice with no
 //      error. Dropped ~43% of subscribers from the daily email (PR #97) and
 //      showed stale dashboard dates. Page via fetchAllRows or bound the query.
+//   7. A newly-added `create table` in a .sql file under backend/migrations/
+//      that has no matching `enable row level security` for that table in the
+//      same added lines — every table must ship with RLS ON. A table created
+//      RLS-off is readable by the anon/authenticated PostgREST keys (a
+//      Supabase advisor flags it), which is how weekly_lead_history /
+//      scraper_events / help_submissions drifted anon-readable. This matters
+//      most for the upcoming payments table, where RLS-off would be a real
+//      data leak.
 //
 // Required env (GitHub Actions step `env` block injects these):
 //   RESEND_API_KEY       — for sending the admin email on findings
@@ -292,6 +300,56 @@ for (const [file, lines] of Object.entries(byFile)) {
       "PostgREST silently caps a select at 1000 rows. Wrap a growable-table read in fetchAllRows() (backend/src/lib/fetchAllRows.ts, paginates by a stable unique key), or bound it with .range()/.limit()/.single()/.maybeSingle(). If this select is genuinely tiny-and-bounded, add an explicit .limit() with a comment so the intent is clear. See PR #97 / the daily-email truncation incident."
     );
   });
+}
+
+// 7. New table created in a migration without ENABLE ROW LEVEL SECURITY
+//
+// Every table must ship with RLS ON. A table created RLS-off is readable by the
+// anon/authenticated PostgREST keys (a Supabase advisor flags it) — that is how
+// weekly_lead_history / scraper_events / help_submissions drifted anon-readable.
+// This is most dangerous for the upcoming payments table.
+//
+// Heuristic, scoped to ADDED lines only (so existing migrations never re-trip):
+// for each newly-added `create table [if not exists] <name>` in a .sql file under
+// backend/migrations/, require a newly-added `enable row level security` for that
+// SAME table name somewhere in the file's added lines. Both clauses can be
+// multi-line (the table name may land on a later line than `create table`, and
+// `alter table <name> enable row level security` may sit lines below the CREATE),
+// so we scan the file's added lines as one blob. Comment lines are stripped first.
+const CREATE_TABLE_RE =
+  /\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?["`]?([a-z_][a-z0-9_]*)["`]?/gi;
+for (const [file, lines] of Object.entries(byFile)) {
+  if (!/^backend\/migrations\/.+\.sql$/i.test(file)) continue;
+  // Strip SQL comments (-- ...) so a commented-out CREATE/ENABLE doesn't count.
+  const added = lines
+    .filter((t) => !t.trimStart().startsWith("--"))
+    .map((t) => t.replace(/--.*$/, ""))
+    .join("\n");
+  if (!added.trim()) continue;
+  let m;
+  CREATE_TABLE_RE.lastIndex = 0;
+  while ((m = CREATE_TABLE_RE.exec(added)) !== null) {
+    const table = m[1];
+    // Does the same added text enable RLS for THIS table?
+    // Matches `alter table <table> ... enable row level security` (the canonical
+    // form) and also a bare `enable row level security` that names the table.
+    const rlsForTable = new RegExp(
+      `enable\\s+row\\s+level\\s+security[^;]*\\b${table}\\b` +
+        `|\\b${table}\\b[^;]*enable\\s+row\\s+level\\s+security`,
+      "i"
+    );
+    if (rlsForTable.test(added)) continue;
+    flag(
+      "HIGH",
+      "table-without-rls",
+      file,
+      0,
+      `create table ${table} (no matching ENABLE ROW LEVEL SECURITY)`,
+      "new table created without ENABLE ROW LEVEL SECURITY — every table must have RLS on, esp. before the payments table. Add `alter table " +
+        table +
+        " enable row level security;` in the same migration (the service-role key the backend uses bypasses RLS, so deny-all-to-anon does not change cron/API behavior)."
+    );
+  }
 }
 
 // ----- Report -----
