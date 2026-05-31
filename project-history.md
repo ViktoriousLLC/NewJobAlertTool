@@ -2038,3 +2038,15 @@ Three small fixes to the Friday weekly-digest email, all from real use:
 3. **Spottable subject.** Prefixed the subject with `📬📬📬` (open mailbox with raised flag) so the weekly draft is findable at a glance in the inbox.
 
 Behavior-only; the lead engine, data window, and image pipeline are unchanged.
+
+---
+
+## 2026-05-31 — RapidAPI auto-restore for the scraping-blocked employers (DEV-51), date-gated to fire itself
+
+**Context.** Four employers (Meta, Tesla, TikTok, Wayfair) hard-block automated scraping, so they carry `scrape_blocked=true` and show a "Scraping blocked" badge instead of jobs. The plan (from the 2026-05-30 honest-badge work) was to buy their roles back via the Fantastic.jobs RapidAPI LinkedIn feed instead of escalating a stealth arms race. The wrinkle: the free RapidAPI quota was already exhausted this month, so the integration **cannot be live-tested until the quota resets on July 1.**
+
+**What shipped.** `backend/src/scraper/rapidApiBlocked.ts`: `pullRapidApiBlockedEmployers()` queries every `scrape_blocked=true` company, pulls its US Product Manager roles from the LinkedIn feed, runs them through the same PM-keyword + US-location filter as every other scraper, and **inserts/refreshes only — never marks anything removed** (the 7-day feed window means older still-live roles must not be delisted). On a company that yields ≥1 role it flips `scrape_blocked=false` and `platform_type='rapidapi_linkedin'`, so the next run self-skips it — it retries daily until it succeeds, then stops. Wired into the daily cron behind `isRapidApiActivationDue()`, which returns true only when the API key is set AND the UTC date is ≥ the activation date (default July 1). **Before July 1 it is a pure no-op** — zero quota spend, zero risk to the cron (and the whole thing is wrapped so a failure can never break the daily run). A manual CRON_SECRET-gated endpoint exists for testing once the quota resets.
+
+**Built by a workflow, then independently reviewed before merge.** The implementation came from a background Workflow agent; an independent change-reviewer pass then caught a real **idempotency blocker** — the LinkedIn feed can return one listing under two derived cities, which would collide on the `(company_id, job_url_path)` unique constraint and fail the whole batch insert. Fixed by de-duping on the URL path before insert. The review also surfaced a day-after-restore interaction (a restored company would still be hit by the ATS loop and stamp a misleading "0 jobs from source" that the health check flags) — fixed by skipping `rapidapi_linkedin` companies in the daily scrape loop, since they're owned by the RapidAPI pull. Restored roles intentionally surface in the feed, not the restore-day email (documented).
+
+**Lesson.** A clean type-check and a workflow's own "done" are not a review. The blocker here would only have surfaced in production after July 1, on a duplicate-city listing — exactly the kind of latent bug an independent adversarial read catches and a build-and-ship pass does not. Worth the extra pass even for dormant code.

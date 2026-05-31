@@ -1015,6 +1015,13 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
   const { companyAlerts, failedCompanies, autoRemediated, stealthRecovered, autoDisabled, reEnabled, autoFixed, qualityData } = ctx;
 
   for (const company of companies) {
+    // RapidAPI-fed companies (blocked employers restored via the LinkedIn feed,
+    // platform_type='rapidapi_linkedin') are populated by pullRapidApiBlockedEmployers()
+    // below, NOT this ATS loop. Their careers_url is still the blocked host
+    // (metacareers.com etc.), so scraping them here would yield [] and stamp a
+    // misleading "success (0 jobs from source)" — exactly what the session-start
+    // health check flags as broken. Skip them entirely (no scrape, no delay).
+    if (company.platform_type === "rapidapi_linkedin") continue;
     // An auto-disabled company on a non-probe day returns immediately without
     // scraping (no network call) — skip the inter-company delay for it, exactly
     // as the old `continue` did, so a backlog of disabled companies doesn't pad
@@ -1023,6 +1030,35 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     await scrapeAndRecordCompany(company, ctx);
     // Delay between companies to avoid rate limiting (only after a real scrape).
     if (willScrape) await delay(5000);
+  }
+
+  // --- RapidAPI restore of scraping-blocked employers (DEV-51) ---
+  // Auto-trigger, NO manual step: on/after RAPIDAPI_ACTIVATION_DATE (default
+  // 2026-07-01, when the free RapidAPI monthly quota resets) AND only when
+  // RAPIDAPI_KEY is set, pull the still-blocked employers (Meta/Tesla/TikTok/
+  // Wayfair) from the Fantastic.jobs LinkedIn feed and restore the ones that
+  // yield >=1 US PM job. Before the activation date this is a pure no-op, so it
+  // stays dormant until July 1; after it, it self-skips any company that is no
+  // longer scrape_blocked, so it effectively retries each day until it succeeds
+  // and then stops. Wrapped in try/catch so a failure can NEVER break the daily
+  // cron — and pullRapidApiBlockedEmployers() leaves scrape_blocked unchanged on
+  // any per-company error, so a bad run can't strand an employer.
+  try {
+    const { isRapidApiActivationDue, pullRapidApiBlockedEmployers } = await import("../scraper/rapidApiBlocked");
+    if (isRapidApiActivationDue()) {
+      const rapidResults = await pullRapidApiBlockedEmployers();
+      const restored = rapidResults.filter((r) => r.blockedClearedFor.length > 0);
+      const addedTotal = rapidResults.reduce((sum, r) => sum + r.jobsAdded, 0);
+      const failures = rapidResults.filter((r) => r.error);
+      console.log(
+        `[rapidapi] daily restore: checked ${rapidResults.length} blocked employer(s), ` +
+        `restored ${restored.length} (${restored.map((r) => r.company).join(", ") || "none"}), ` +
+        `+${addedTotal} new PM job(s)${failures.length ? `, ${failures.length} failed` : ""}.`
+      );
+    }
+  } catch (err) {
+    console.error("RapidAPI blocked-employer restore failed (non-fatal):", err);
+    Sentry.captureException(err, { tags: { area: "dailyCheck.rapidApiBlocked" } });
   }
 
   // --- Per-user email alerts ---
