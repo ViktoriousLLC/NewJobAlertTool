@@ -13,6 +13,10 @@ interface CatalogCompany {
   last_check_status: string | null;
   subscriber_count: number;
   is_active: boolean;
+  // True when the employer's career site hard-blocks scraping. Show a neutral
+  // "Restricted" badge instead of "0 roles" so it reads as the employer denying
+  // access, not our scraper failing.
+  scrape_blocked?: boolean | null;
 }
 
 interface CheckPreview {
@@ -779,9 +783,18 @@ export default function AddCompanyModal({
                         <span className="text-sm font-medium text-[#1A1A2E] flex-1">
                           {company.name}
                         </span>
-                        <span className="text-xs text-stone-400">
-                          {company.total_product_jobs} roles
-                        </span>
+                        {company.scrape_blocked ? (
+                          <span
+                            className="shrink-0 text-[10px] font-semibold uppercase tracking-wide bg-stone-100 text-stone-500 border border-stone-200 rounded px-1.5 py-0.5"
+                            title="This employer blocks automated access to their careers site, so we can't list their roles."
+                          >
+                            Restricted
+                          </span>
+                        ) : (
+                          <span className="text-xs text-stone-400">
+                            {company.total_product_jobs} roles
+                          </span>
+                        )}
                         {isSubscribed && (
                           <span className="text-xs text-stone-400 italic">(added)</span>
                         )}
