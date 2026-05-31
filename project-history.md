@@ -2026,3 +2026,15 @@ Shipped a liveness probe (`backend/src/lib/sentryHealth.ts`, content landed on m
 - **#138 + #141 Sentry noise** — stopped reporting routine JWT expiries and *expected* scrape failures (board-not-found, source-unreachable) at error level; they're warnings now (visible, no high-priority email). Same "silence the expected, surface the real" pattern. Also: Dependabot now ignores puppeteer* (Docker-pinned; closed the unsafe #137 bump).
 
 **Lesson (process, on me).** These shipped via **manual git** (branch → commit → PR → merge), NOT the `/ship` command — so the savecc-on-ship discipline (`/ship` bundles the project-history entry + CLAUDE.md/sidecar currency into the PR, then updates MEMORY + Linear) was silently skipped, and the docs + Linear lagged a full session until the user caught it. The manual fast-path re-introduced exactly the drift `/ship` was built to prevent. Fix: use `/ship` (or run its full doc+Linear discipline) for every change — the catch-up (this entry, the CLAUDE.md endpoint, DEV-52→Done, DEV-53) is this PR.
+
+---
+
+## 2026-05-31 — Weekly LinkedIn digest: @-tag the lead, copyable post block, spottable subject
+
+Three small fixes to the Friday weekly-digest email, all from real use:
+
+1. **@-tag every company in the lead.** The structured sections (top-10, AI roles) always @-tagged company names, but the Claude-written "My take this week" lead is free text and mentioned companies without the `@`, so the user was hand-adding them each week before posting. New `tagCompanyMentions()` helper @-prefixes any company name (from the week's top-companies + AI-companies set) wherever it appears in the lead. Guards: longest-name-first (so "American Express" tags before "American"), word boundaries (won't tag inside "Metadata"), no-double-`@`, and case-sensitive (won't tag the lowercase word "adobe"). Verified against the real lead + edge cases.
+2. **Copyable post block.** The post sat in a `<br/>`-in-a-`div` that collapsed to a single line when pasted into LinkedIn. Switched to a `<pre>` with real newlines + `font-family:inherit` — the plain-text clipboard flavor now preserves line breaks, so it pastes correctly without the Notepad round-trip.
+3. **Spottable subject.** Prefixed the subject with `📬📬📬` (open mailbox with raised flag) so the weekly draft is findable at a glance in the inbox.
+
+Behavior-only; the lead engine, data window, and image pipeline are unchanged.
