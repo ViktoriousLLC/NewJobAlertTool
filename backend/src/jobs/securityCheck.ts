@@ -14,6 +14,18 @@ export interface VulnFinding {
   fingerprint: string;
 }
 
+/** Lightweight per-surface audit summary. The backend surface (below) also gets
+ * the full week-over-week diff; the frontend surface is summary-only for now so
+ * a frontend dependency regression is at least *visible* in the Monday digest
+ * (it auto-deploys from main like the backend, but only the backend runs the
+ * cron, so historically the frontend audit only happened at Vercel build time). */
+export interface SurfaceVulnSummary {
+  totalVulns: number;
+  bySeverity: { info: number; low: number; moderate: number; high: number; critical: number };
+  /** Null when the audit couldn't run for this surface (no lockfile, npm error). */
+  ok: boolean;
+}
+
 export interface SecurityFindings {
   totalVulns: number;
   bySeverity: { info: number; low: number; moderate: number; high: number; critical: number };
@@ -24,45 +36,76 @@ export interface SecurityFindings {
   resolvedSinceLastWeek: VulnFinding[];
   /** True if this is the first snapshot ever (no previous week to compare). */
   isFirstSnapshot: boolean;
+  /** Frontend (Next.js) production-dependency audit summary. Null if it couldn't
+   * run (e.g. frontend/ not present alongside the backend deploy). Backend totals
+   * are the top-level fields above; this surfaces frontend regressions too. */
+  frontend: SurfaceVulnSummary | null;
 }
 
 /**
- * Run npm audit against the backend's package-lock.json and return parsed findings.
- * Used by the Monday admin digest to surface new CVEs week-over-week.
- *
- * Returns null if npm audit fails for any reason (no npm binary, no package-lock,
- * malformed JSON). Failure should not break the cron — we just skip the section.
+ * Run `npm audit --json --omit=dev` in `cwd` and return the parsed JSON, or null
+ * if it couldn't run / parse. `npm audit` exits non-zero when vulns are found —
+ * that's normal and the stdout still holds valid JSON, so we recover from the
+ * thrown error's stdout before giving up.
  */
-export async function runSecurityCheck(): Promise<SecurityFindings | null> {
-  let auditJson: AuditOutput | null = null;
+async function runNpmAudit(cwd: string, surface: string): Promise<AuditOutput | null> {
   try {
-    // cwd resolves up from src/jobs to backend/ where package.json lives in dev.
-    // In production (Railway), the built file lives in dist/jobs and backend/ is
-    // the working directory anyway — both paths land on the same package.json.
-    const cwd = path.resolve(__dirname, "..", "..");
     const { stdout } = await execAsync("npm audit --json --omit=dev", {
       cwd,
       timeout: 30_000,
       maxBuffer: 10 * 1024 * 1024,
     });
-    auditJson = JSON.parse(stdout) as AuditOutput;
+    return JSON.parse(stdout) as AuditOutput;
   } catch (err) {
-    // `npm audit` exits non-zero when vulns are found — that's normal, the
-    // stdout still contains valid JSON. Try to recover from the error's stdout.
     const errObj = err as { stdout?: string; message?: string };
     if (errObj.stdout) {
       try {
-        auditJson = JSON.parse(errObj.stdout) as AuditOutput;
+        return JSON.parse(errObj.stdout) as AuditOutput;
       } catch {
         // fall through to null
       }
     }
-    if (!auditJson) {
-      console.error("Security check: npm audit failed:", errObj.message || err);
-      Sentry.captureException(err, { tags: { phase: "security-check" } });
-      return null;
-    }
+    console.error(`Security check (${surface}): npm audit failed:`, errObj.message || err);
+    Sentry.captureException(err, { tags: { phase: "security-check", surface } });
+    return null;
   }
+}
+
+/**
+ * Run npm audit against both the backend and frontend production dependencies.
+ * Used by the Monday admin digest to surface new CVEs week-over-week (backend gets
+ * the full diff; frontend is a count summary so regressions there are visible too).
+ *
+ * Returns null only if the BACKEND audit fails (no npm binary, no package-lock,
+ * malformed JSON) — that's the deploy surface running this cron. A frontend audit
+ * failure degrades to `frontend: { ok: false }` and never breaks the section.
+ */
+export async function runSecurityCheck(): Promise<SecurityFindings | null> {
+  // cwd resolves up from src/jobs to backend/ where package.json lives in dev.
+  // In production (Railway), the built file lives in dist/jobs and backend/ is
+  // the working directory anyway — both paths land on the same package.json.
+  const backendCwd = path.resolve(__dirname, "..", "..");
+  // Frontend lives as a sibling of backend/ in the repo. On Railway the deploy
+  // root is the repo, so ../frontend exists; if it doesn't (or has no lockfile),
+  // runNpmAudit returns null and the frontend summary degrades to ok:false
+  // rather than breaking the whole security section.
+  const frontendCwd = path.resolve(backendCwd, "..", "frontend");
+
+  const [auditJson, frontendAuditJson] = await Promise.all([
+    runNpmAudit(backendCwd, "backend"),
+    runNpmAudit(frontendCwd, "frontend"),
+  ]);
+
+  if (!auditJson) {
+    return null;
+  }
+
+  const frontend: SurfaceVulnSummary | null = frontendAuditJson
+    ? (() => {
+        const fe = parseAuditOutput(frontendAuditJson);
+        return { totalVulns: fe.length, bySeverity: countBySeverity(fe), ok: true };
+      })()
+    : { totalVulns: 0, bySeverity: { info: 0, low: 0, moderate: 0, high: 0, critical: 0 }, ok: false };
 
   const current = parseAuditOutput(auditJson);
   const fingerprints = current.map((v) => v.fingerprint);
@@ -102,6 +145,7 @@ export async function runSecurityCheck(): Promise<SecurityFindings | null> {
     newSinceLastWeek,
     resolvedSinceLastWeek,
     isFirstSnapshot: !prev,
+    frontend,
   };
 }
 
