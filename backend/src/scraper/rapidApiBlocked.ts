@@ -229,8 +229,15 @@ export async function pullRapidApiBlockedEmployers(): Promise<RapidApiPullResult
       // SAME PM_KEYWORDS + US-location filter every other scraper runs through.
       // validateScrapeResults returns filteredJobs already narrowed to US PM roles.
       const validation = validateScrapeResults(mapped, company.name);
-      const jobs = validation.filteredJobs;
-      console.log(`[rapidapi] ${company.name}: ${rawJobs.length} raw → ${mapped.length} mapped → ${jobs.length} US PM after filter`);
+      // De-dup within THIS response by urlPath before the batch insert. The
+      // LinkedIn feed can surface one listing under multiple derived cities (or
+      // tracking-param variants that strip to the same origin+pathname); both
+      // would collide on the (company_id, job_url_path) UNIQUE constraint and make
+      // the single batched insert throw, failing the company's entire restore.
+      const byPath = new Map<string, ScrapedJob>();
+      for (const j of validation.filteredJobs) byPath.set(j.urlPath, j); // last wins
+      const jobs = [...byPath.values()];
+      console.log(`[rapidapi] ${company.name}: ${rawJobs.length} raw → ${mapped.length} mapped → ${validation.filteredJobs.length} US PM → ${jobs.length} after de-dup`);
 
       if (jobs.length === 0) {
         // No US PM roles right now (e.g. Wayfair). Leave scrape_blocked as-is so

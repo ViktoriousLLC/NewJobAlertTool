@@ -1015,6 +1015,13 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
   const { companyAlerts, failedCompanies, autoRemediated, stealthRecovered, autoDisabled, reEnabled, autoFixed, qualityData } = ctx;
 
   for (const company of companies) {
+    // RapidAPI-fed companies (blocked employers restored via the LinkedIn feed,
+    // platform_type='rapidapi_linkedin') are populated by pullRapidApiBlockedEmployers()
+    // below, NOT this ATS loop. Their careers_url is still the blocked host
+    // (metacareers.com etc.), so scraping them here would yield [] and stamp a
+    // misleading "success (0 jobs from source)" — exactly what the session-start
+    // health check flags as broken. Skip them entirely (no scrape, no delay).
+    if (company.platform_type === "rapidapi_linkedin") continue;
     // An auto-disabled company on a non-probe day returns immediately without
     // scraping (no network call) — skip the inter-company delay for it, exactly
     // as the old `continue` did, so a backlog of disabled companies doesn't pad
