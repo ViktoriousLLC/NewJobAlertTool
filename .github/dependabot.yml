@@ -1,12 +1,13 @@
 # Dependabot config — auto-opens dependency-update PRs for the two npm projects.
 #
-# Tuned 2026-05-31: collapse EVERYTHING (dev + prod, minor + patch + major) into
-# ONE grouped PR per ecosystem per weekly run. Previously dev/prod and majors
-# split out into ~9 separate PRs a run — a pile nobody triaged. Goal is at most
-# ~1-2 dependency PRs/week total. Majors are bundled in too; the PR diff +
-# changelog links let a human read them in one place, and the Monday admin
-# digest already surfaces npm-audit deltas as the "notice it" signal, so this is
-# the consolidated "fix it" lane. See backend/src/jobs/JOBS.md (Dependency Health).
+# Tuned 2026-05-31 (v2): group ONLY minor + patch into one PR per ecosystem per
+# weekly run, and IGNORE major version bumps entirely. Majors (e.g. Express 4->5,
+# Resend 4->6, Puppeteer 24->25) carry breaking changes and, for Puppeteer, must
+# stay in lockstep with the pinned Docker Chrome image — so they get deliberate,
+# individually-tested upgrades, not an auto-PR. The Monday admin npm-audit digest
+# still surfaces security deltas (including in major-version-behind deps) as the
+# "notice it" signal. See backend/src/jobs/JOBS.md (Dependency Health) and
+# backend/src/scraper/SCRAPER.md (Puppeteer must be pinned exact to the Docker image).
 version: 2
 updates:
   - package-ecosystem: "npm"
@@ -14,8 +15,6 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    # One grouped PR per run; the group below catches every dependency, so the
-    # limit only ever needs to allow a single PR.
     open-pull-requests-limit: 1
     labels:
       - "dependencies"
@@ -28,7 +27,9 @@ updates:
         update-types:
           - "minor"
           - "patch"
-          - "major"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "npm"
     directory: "/backend"
@@ -47,4 +48,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-          - "major"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
