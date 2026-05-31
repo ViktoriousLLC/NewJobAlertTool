@@ -1066,12 +1066,11 @@ const EMAIL_TRIPWIRE_MIN_ELIGIBLE = 25;
 
 // DEV-49 email-delivery defense-in-depth.
 //
-// L3 (partial-drop): the existing total-wipeout check (built === 0) only catches
-// the ratio=0 corner. A bug that drops, say, half the subscribers from the build
-// (a mis-keyed map, a partial truncation) sails right past it. If companies DID
-// post new jobs and we built fewer than this fraction of the eligible pool,
-// treat it as a silent data bug. 0.9 = anything below 90% coverage is suspect.
-const EMAIL_DROP_RATIO_FLOOR = 0.9;
+// L3 = silent-WIPEOUT tripwire (built === 0 on a day jobs posted). We do NOT
+// alarm on a built/eligible RATIO: on a normal day only a few of ~250 companies
+// post, so most subscribers legitimately get no email and a ratio floor would
+// false-fire daily. PARTIAL drops are caught by the L5 baseline on `eligible`
+// (below) — the right tool, since it only moves when users vanish from the query.
 
 // L4 (built vs sent): Resend can accept fewer than we built (rotated key, 429,
 // 422 on a batch — sendBatchAlerts already counts those as failed). A small gap
@@ -1403,29 +1402,26 @@ async function sendPerUserAlerts(
     `sendPerUserAlerts: eligibleSubscribed=${eligibleSubscribed}, payloadsBuilt=${emailPayloads.length}, sent=${sendResult.sent}, failed=${sendResult.failed}, companiesWithNewJobs=${companyAlerts.size}`
   );
 
-  // L3 (partial-drop detection). The original tripwire only fired on a TOTAL
-  // wipeout (built === 0); a bug that drops a large MINORITY of subscribers
-  // looked healthy. This generalizes it: on a day companies posted new jobs,
-  // if we built emails for fewer than EMAIL_DROP_RATIO_FLOOR of the eligible
-  // pool (and the pool is large enough to be meaningful), treat it as a silent
-  // data bug. The built === 0 wipeout is just the ratio=0 subset of this — it
-  // still gets caught, with its own clearer message preserved below.
+  // L3 (silent-WIPEOUT tripwire). If a meaningful eligible pool builds ZERO
+  // emails on a day companies DID post new jobs, that's a silent data bug
+  // (truncation / mapping), not a quiet day. We deliberately do NOT alarm on a
+  // built-vs-eligible RATIO: on a normal day only a few of ~250 companies post,
+  // so most subscribers legitimately get no email and a ratio floor would
+  // false-fire daily (and train the admin to ignore the alert). PARTIAL drops
+  // are caught instead by the L5 day-over-day baseline on `eligible` below — a
+  // stable metric that only collapses when users silently vanish from the query
+  // (the PR #97 shape) — and surfaced for human eyes by the L6 delivery line.
   if (
     companyAlerts.size > 0 &&
     eligibleSubscribed >= EMAIL_TRIPWIRE_MIN_ELIGIBLE &&
-    emailPayloads.length < EMAIL_DROP_RATIO_FLOOR * eligibleSubscribed
+    emailPayloads.length === 0
   ) {
-    const ratioPct = eligibleSubscribed > 0 ? Math.round((emailPayloads.length / eligibleSubscribed) * 100) : 0;
-    const msg =
-      emailPayloads.length === 0
-        ? `Email tripwire: ${eligibleSubscribed} eligible subscribers but 0 emails built, despite ${companyAlerts.size} companies posting new jobs today. Likely a silent data bug (truncation / mapping), not a quiet day.`
-        : `Email partial-drop tripwire: built ${emailPayloads.length} emails for ${eligibleSubscribed} eligible subscribers (${ratioPct}%, floor ${Math.round(EMAIL_DROP_RATIO_FLOOR * 100)}%) on a day ${companyAlerts.size} companies posted new jobs. A non-trivial slice of eligible subscribers got no email — likely a silent data bug (partial truncation / mapping), not a quiet day.`;
+    const msg = `Email tripwire: ${eligibleSubscribed} eligible subscribers but 0 emails built, despite ${companyAlerts.size} companies posting new jobs today. Likely a silent data bug (truncation / mapping), not a quiet day.`;
     console.error(msg);
     sendResult.errors.push(msg);
-    // Force the admin digest to fire even if Resend reported zero send failures
-    // (the gap is in the BUILD, not the send). The existing digest gate keys off
-    // emailBatchResult.failed > 0.
-    if (sendResult.failed === 0) sendResult.failed = eligibleSubscribed - emailPayloads.length;
+    // Force the admin digest even if Resend reported zero send failures (the gap
+    // is in the BUILD, not the send). The digest gate keys off failed > 0.
+    if (sendResult.failed === 0) sendResult.failed = eligibleSubscribed;
     Sentry.captureMessage(msg, "error");
   }
 
@@ -1505,16 +1501,22 @@ async function checkEmailBaseline(today: EmailDeliveryStats): Promise<void> {
       reportWriteError(priorErr, "read email_send_log baseline");
     }
 
-    // Insert today's row. Guarded so a write failure is reported, not swallowed.
-    const { error: insertErr } = await supabase.from("email_send_log").insert({
-      run_date: runDate,
-      eligible: today.eligible,
-      built: today.built,
-      sent: today.sent,
-      failed: today.failed,
-      companies_with_new_jobs: today.companiesWithNewJobs,
-    });
-    reportWriteError(insertErr, "insert email_send_log");
+    // Upsert today's row (unique on run_date) so a same-day manual re-run updates
+    // rather than duplicating. Guarded so a write failure is reported, not swallowed.
+    const { error: insertErr } = await supabase
+      .from("email_send_log")
+      .upsert(
+        {
+          run_date: runDate,
+          eligible: today.eligible,
+          built: today.built,
+          sent: today.sent,
+          failed: today.failed,
+          companies_with_new_jobs: today.companiesWithNewJobs,
+        },
+        { onConflict: "run_date" },
+      );
+    reportWriteError(insertErr, "upsert email_send_log");
 
     const prior = (priorRows || []).map((r) => r.eligible as number).filter((n) => typeof n === "number");
     if (prior.length === 0) return; // no history yet — nothing to compare against

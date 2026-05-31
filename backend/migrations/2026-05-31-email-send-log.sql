@@ -20,7 +20,10 @@ create table if not exists email_send_log (
   sent int not null,
   failed int not null,
   companies_with_new_jobs int not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- One row per day; a same-day manual re-run upserts (updates) rather than
+  -- inserting a duplicate, so the trailing-7 baseline window is always 7 distinct days.
+  unique (run_date)
 );
 
 alter table email_send_log enable row level security;
