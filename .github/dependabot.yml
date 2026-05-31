@@ -1,8 +1,12 @@
 # Dependabot config — auto-opens dependency-update PRs for the two npm projects.
-# Grouped minor+patch so we get one PR per project per week instead of a flood;
-# majors still come as individual PRs (they need a human read). The Monday admin
-# digest already surfaces npm-audit deltas, so this is the "fix it" lane to that
-# "notice it" signal. See backend/src/jobs/JOBS.md (Dependency Health).
+#
+# Tuned 2026-05-31: collapse EVERYTHING (dev + prod, minor + patch + major) into
+# ONE grouped PR per ecosystem per weekly run. Previously dev/prod and majors
+# split out into ~9 separate PRs a run — a pile nobody triaged. Goal is at most
+# ~1-2 dependency PRs/week total. Majors are bundled in too; the PR diff +
+# changelog links let a human read them in one place, and the Monday admin
+# digest already surfaces npm-audit deltas as the "notice it" signal, so this is
+# the consolidated "fix it" lane. See backend/src/jobs/JOBS.md (Dependency Health).
 version: 2
 updates:
   - package-ecosystem: "npm"
@@ -10,27 +14,37 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
+    # One grouped PR per run; the group below catches every dependency, so the
+    # limit only ever needs to allow a single PR.
+    open-pull-requests-limit: 1
     labels:
       - "dependencies"
       - "frontend"
     groups:
-      minor-and-patch:
+      all-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
         update-types:
           - "minor"
           - "patch"
+          - "major"
 
   - package-ecosystem: "npm"
     directory: "/backend"
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
     labels:
       - "dependencies"
       - "backend"
     groups:
-      minor-and-patch:
+      all-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
         update-types:
           - "minor"
           - "patch"
+          - "major"
