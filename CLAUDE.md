@@ -11,7 +11,7 @@
 
 ## Sidecar Docs (READ BEFORE EDITING)
 
-These folders have a `.md` sidecar next to the code. **You MUST `Read` the sidecar before any `Edit`, `Write`, or new file in that folder, once per session.** Not optional. Not "if relevant." A PreToolUse hook in `.claude/settings.json` enforces this and will block the tool call if you skip it.
+These folders have a `.md` sidecar next to the code. **You MUST `Read` the sidecar before any `Edit`, `Write`, or new file in that folder, once per session.** Not optional. Not "if relevant." A PreToolUse hook (`.claude/hooks/sidecar-guard.js`, wired in `.claude/settings.json`) enforces this and blocks the tool call if you skip it. NOTE: the guard script existed but was NOT wired into settings until 2026-06-01 (DEV-60) — so this was honor-system before; it now actually fires.
 
 | When you touch this folder | First read this sidecar |
 |---|---|
@@ -66,6 +66,7 @@ curl -s "https://api.<your-domain>/api/health"   # verify backend after merge
 - **`main` is a repository ruleset (id 16381419), 0 required approvals** — not classic branch protection. Direct push is blocked; `gh pr merge` works without a human approver, so `/ship` can merge (it's a convention gate, not a hard one). (The "Deployment" steps above describe the manual long-form of this.)
 - **Docs ride in the change's PR (savecc-on-ship):** the project-history entry + any CLAUDE.md/sidecar currency fix go in the same PR; MEMORY.md updates right after.
 - **Every PR has a Linear task — no exceptions, manual git included.** Find the `DEV-N` the work belongs to, or **create one** in the Development team before opening the PR; reference it in the PR body; move it to its new state (In Progress when work starts, Done on merge) + link the PR. This binds whether you run `/ship` OR push a branch by hand — **the manual-git fast-path does NOT get to skip the Linear task or the docs.** Bypassing `/ship` is exactly what let docs + Linear lag a full session on 2026-05-31; the user had to ask four times. Docs AND Linear, every PR.
+- **A pre-merge hook now ENFORCES the above mechanically (DEV-60, 2026-06-01).** `.claude/hooks/pre-merge-guard.js` (wired in `.claude/settings.json`) blocks `gh pr merge <N>` unless the PR's diff includes a `project-history.md` entry AND a `DEV-N` is referenced (body/title/branch/commits). Fails open (never locks the shell). This is the fix for "manual git keeps dropping a doc/Linear step" — it can't be silently skipped now, whether via `/ship` or raw git. **Still judgment calls (reminded in the block message, NOT auto-blocked): the product-development-journey.md phase for a capability shift, and CLAUDE.md/sidecar currency for endpoint/schema/env changes** — when you write the forced project-history entry, run the full savecc checklist.
 - **Never merge to `main` during the daily-cron window (13:55-16:00 UTC).** A merge auto-redeploys Railway, restarting the container; on 2026-05-31 that killed the in-flight 14:00 daily cron at company 31/519 with no email and no alarm (P0, DEV-57). Enforced by the `cron-window-guard` required CI check (blocks the merge) and `/ship` refuses in-window; the airtight fix is the worker migration (the run lives off the web service, so web deploys can't touch it). The catalog-doubling lengthened the run, so widen the window if it grows.
 
 ## Subagents
