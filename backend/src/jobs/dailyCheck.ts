@@ -1403,7 +1403,17 @@ export async function sendEmailOnlyFromToday(opts?: { dryRun?: boolean; force?: 
     return { dryRun: true, companiesWithNewJobs: companyAlerts.size, totalNewJobs, sample };
   }
 
+  // Nothing to recover: a REAL send with an empty set would still fire Monday weekly
+  // digests + recommendation emails via sendPerUserAlerts. Recovery means "re-send
+  // today's NEW jobs", so no new jobs => no-op (don't blast a quiet day).
+  if (companyAlerts.size === 0) {
+    return { dryRun: false, companiesWithNewJobs: 0, totalNewJobs, sample, skipped: "no new jobs first-seen today — nothing to send" };
+  }
+
   // Double-send guard: refuse if today's daily run already emailed, unless force.
+  // NOTE: force=true re-runs the FULL send engine (per-user recommendations + Monday
+  // weekly digests + a second recommendation_history write), not just a re-delivery
+  // of today's jobs — recovery-only, not for routine re-sends.
   if (!opts?.force) {
     const { data: run } = await supabase.from("cron_runs").select("emails_sent").eq("run_date", today).eq("kind", "daily").maybeSingle();
     if (run && (run.emails_sent ?? 0) > 0) {
