@@ -111,6 +111,7 @@ POST   /api/interviews/evaluate              (ADMIN ONLY; scores a transcript wi
 GET    /api/cron/trigger (requires CRON_SECRET; see JOBS.md)
 GET    /api/cron/weekly-digest (requires CRON_SECRET; see JOBS.md)
 GET    /api/cron/self-check-suspects (requires CRON_SECRET; feeds the DEV-41 daily self-check remote routine — it has no DB access; see JOBS.md)
+GET    /api/cron/run-health (requires CRON_SECRET; DEV-57: reports whether today's daily run reached completion (reads cron_runs) — polled by the out-of-band GitHub-Actions watchdog; see JOBS.md)
 POST   /api/cron/scrape-only (requires CRON_SECRET; DEV-52: scrapes companies + reconciles seen_jobs with NO email — body {companyIds?}; default = is_active companies with 0 seen_jobs. Decouples scraping from the daily email; see JOBS.md)
 POST   /api/cron/rapidapi-blocked (requires CRON_SECRET; DEV-51: on-demand RapidAPI restore of scrape_blocked employers — NOT date-gated, for manual testing once quota resets. The daily cron runs the SAME pull auto-gated to RAPIDAPI_ACTIVATION_DATE (default 2026-07-01). No email; see JOBS.md)
 ```
@@ -142,6 +143,7 @@ The whole `/api/interviews/*` router is `requireAdmin` (`req.userEmail === ADMIN
 | `interview_sessions` | Voice mock-interview: raw transcript + 3-model evals (JSONB) per session; wiped 7 days after creation. `elevenlabs_conversation_id` (PR #95) stored so audio can be re-fetched for delivery analysis (DEV-45). |
 | `interview_user_summary` | Rolling per-user interview summary; survives the 7-day wipe and is injected into the next session's agent prompt (multi-session memory). |
 | `email_send_log` | DEV-49 (#128): per-run daily-email counts (eligible / built / sent) backing the L5 baseline drop tripwire in dailyCheck.ts. RLS-on. UNIQUE(run_date). |
+| `cron_runs` | DEV-57 (#after the 2026-05-31 P0): daily-run lifecycle — `started_at` written at the TOP of the run, `completed_at`/`status` at the end, so a run killed mid-way (e.g. a deploy SIGTERM) leaves `completed_at IS NULL`. Drives `GET /api/cron/run-health` + the out-of-band watchdog. RLS-on, service-role only. UNIQUE(run_date, kind). |
 
 Indexes, exact column lists, and partial-index details live in the migrations + JOBS.md/ROUTES.md sidecars as needed.
 
