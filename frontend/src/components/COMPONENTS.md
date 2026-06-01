@@ -13,7 +13,7 @@ This sidecar collects everything needed before touching `frontend/src/components
 ## Page Files (`frontend/src/app/`)
 
 - `page.tsx` — Auth-gated: LandingPage (unauth) or Dashboard (auth)
-- `company/[id]/page.tsx` — Company detail + jobs + saved inactive section
+- `company/[id]/page.tsx` — Company detail + jobs + saved inactive section. Fires `trackEvent("company_viewed", { company_id, company_name })` once per page view (useEffect keyed on the loaded company + a useRef id-guard, so it skips before data loads and never double-fires on re-render). Carries the company NAME so PostHog isn't stuck with opaque `/company/<uuid>` page views — enables a future "top companies viewed (by name)" insight. No PII (id + name only). (DEV-65)
 - `jobs/page.tsx` — All Jobs flat table
 - `admin/page.tsx` — Admin: stats, errors, reports, companies management (hard-delete), users
 - `settings/page.tsx` — Email preferences
@@ -50,6 +50,7 @@ Configured in `frontend/next.config.ts`:
 
 - User ID hashed with SHA-256 (no raw emails).
 - Init deferred for landing perf.
+- **Named events** via `trackEvent()` (`@/lib/analytics`). Notably `company_viewed` ({ company_id, company_name }) fires once per company-detail page view so company NAMES (not UUIDs) reach PostHog — see `company/[id]/page.tsx`. Autocapture covers raw clicks; named events are for the funnels/insights worth labelling. Never send PII as a property.
 
 ## Gotchas
 

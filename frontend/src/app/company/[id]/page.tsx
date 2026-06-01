@@ -1,9 +1,10 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
+import { trackEvent } from "@/lib/analytics";
 import { isUSLocation, JobLevel, LEVEL_LABELS, LEVEL_COLORS, ALL_LEVELS } from "@/lib/jobFilters";
 import { useToast } from "@/components/Toast";
 
@@ -139,6 +140,21 @@ function CompanyDetailContent() {
         if (data?.levels?.length > 0) setCompData(data);
       })
       .catch(() => {});
+  }, [company]);
+
+  // Fire a PostHog `company_viewed` event once per loaded company so company
+  // NAMES (not just UUIDs) surface in analytics, enabling a future "top
+  // companies viewed (by name)" insight. No PII — only company id + name.
+  // The ref guards against firing on every render or before data loads.
+  const trackedCompanyId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!company) return;
+    if (trackedCompanyId.current === company.id) return;
+    trackedCompanyId.current = company.id;
+    trackEvent("company_viewed", {
+      company_id: company.id,
+      company_name: company.name,
+    });
   }, [company]);
 
   function toggleLevel(level: JobLevel) {

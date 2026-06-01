@@ -2180,3 +2180,13 @@ The audit's rank-1 finding: the ONLY required status check on `main` was the cro
 **Non-prod email guard.** Added a guard at the `runDailyCheck()` chokepoint (both the HTTP `/api/cron/trigger` and the `dailyEntry.ts` worker pass through it): on any runtime where `RAILWAY_ENVIRONMENT_NAME !== "production"` it forces `skipEmails=true`, so staging/preview can scrape for testing but can NEVER blast the daily alert to real users. Prod is unaffected. Belt-and-suspenders with the blanked staging cron schedule + absent staging Resend key.
 
 **Pending (gated on dashboard steps + secrets):** Railway staging env (Duplicate prod → point at a `staging` branch → blank cron → staging Supabase/Resend/CRON_SECRET vars), Vercel staging deploy, staging Supabase auth redirect URLs, then run the seed and verify an end-to-end login on staging.
+
+---
+
+## 2026-06-01 — `company_viewed` analytics event: company NAMES in PostHog, not just UUIDs (DEV-65)
+
+**Why.** The admin metrics dashboard (the DEV-65 work) surfaces page views per route, but a company detail page is `/company/<uuid>` — so "which companies do people actually look at" only ever reads as opaque UUIDs in PostHog, with no way to build a "top companies viewed" insight by name. The fix is one named event that carries the company name alongside the id.
+
+**What shipped.** `frontend/src/app/company/[id]/page.tsx` now fires `trackEvent("company_viewed", { company_id, company_name })` (the existing `@/lib/analytics` helper → `posthog.capture`) once the company data has loaded. Both properties come straight off the loaded company object; **no PII** is sent (company id + name only). The fire is gated by a `useRef` holding the last-tracked company id and a `useEffect` keyed on `company`: it skips while data is still loading (`!company`) and skips a repeat for the same id, so it lands **exactly once per page view** even across re-renders (and re-fires correctly if the user navigates to the "next company" without a full remount). Data builds going forward — no backfill — which is enough to stand up a future "top companies viewed (by name)" insight.
+
+**Verification.** `npx tsc --noEmit` passes clean in `frontend`. COMPONENTS.md updated to note the event on the company page.
