@@ -54,6 +54,16 @@ Inside `runDailyCheckInner()`, immediately after the per-company scrape loop, th
 
 `POST /api/cron/rapidapi-blocked` (in `backend/src/index.ts`) — CRON_SECRET-gated (same `safeCompareSecret` pattern as `/api/cron/trigger`). Runs `pullRapidApiBlockedEmployers()` on demand for testing once the quota resets. Unlike the daily auto-trigger it is NOT date-gated (deliberate manual override), but still no-ops cleanly when `RAPIDAPI_KEY` is unset or there are no `scrape_blocked` companies. No email. Returns `{ checked, restored: string[], jobsAdded, perCompany: [{ company, jobsAdded, blockedClearedFor, error? }] }`.
 
+## Cron run lifecycle + resilience (DEV-57, after the 2026-05-31 P0)
+
+A deploy killed the 14:00 cron mid-run with NO email and NO alarm: the catalog had doubled to 519 (run stretched to ~85 min), a merge redeployed Railway mid-loop, and a SIGTERM is not a JS throw, so every in-process alarm (all downstream of the scrape loop) was bypassed. The run now has observability + resilience:
+
+- **`cron_runs` table** (migration `2026-06-01-cron-runs-lifecycle.sql`): one row per `(run_date, kind)`. `started_at` is written at the TOP of `runDailyCheckInner` (before the scrape loop); `completed_at` + `status` at the end. A killed run leaves `completed_at IS NULL` — the only completion signal that survives a process kill. The wrapper's `finally` marks a run `failed` if the inner threw before completing. RLS-on, service-role only. All writers are best-effort (never throw).
+- **Resumable run (no-email path only)**: on a `skipEmails` run (the re-scrape / backfill path), the daily loop skips companies already scraped today (`last_checked_at` date = today's UTC), so a re-triggered run resumes instead of restarting at company 1. **NOT applied on an email-bearing run** — the per-user email is built from `companyAlerts`, which only holds companies scraped THIS run, so skipping already-scraped ones would ship a *partial* email that still reports success. An email run therefore always does a full (idempotent) scrape; only the no-email path resumes. `runDailyCheck({ force: true })` bypasses the skip entirely.
+- **`GET /api/cron/run-health`** (CRON_SECRET): `{ healthy, date, run }` where `healthy` = today's daily run reached `status='completed'`. Read by the out-of-band watchdog.
+- **Graceful-shutdown alert** (`index.ts` SIGTERM/SIGINT handler): on shutdown while a run is active, `Sentry.captureMessage("interrupted at company N/M")` + marks the `cron_runs` row `interrupted`, best-effort within Railway's grace window, before exit.
+- The out-of-band watchdog (GitHub Action) + the hard merge-freeze during the cron window ship in a follow-up PR.
+
 ## Weekly LinkedIn-Draft Digest (PR #52, added 2026-05-22)
 
 **Friday auto-trigger inside `runDailyCheck()`.** When UTC day-of-week === 5, after the consolidated admin digest, `sendWeeklyDigest()` from `backend/src/jobs/weeklyDigest.ts` fires. Owned by the existing 14:00 UTC daily Railway cron — no separate schedule.

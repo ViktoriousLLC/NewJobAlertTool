@@ -15,7 +15,7 @@ import feedRouter from "./routes/feed";
 import preferencesRouter from "./routes/preferences";
 import adminRouter from "./routes/admin";
 import interviewsRouter, { interviewsDiagnosticsHandler } from "./routes/interviews";
-import { runDailyCheck, scrapeAndRecordCompany, createScrapeContext, PerCompanyScrapeResult } from "./jobs/dailyCheck";
+import { runDailyCheck, scrapeAndRecordCompany, createScrapeContext, PerCompanyScrapeResult, currentRun, recordRunInterrupted } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
 import { fetchAllRows } from "./lib/fetchAllRows";
@@ -444,6 +444,33 @@ app.post("/api/cron/rapidapi-blocked", async (req, res) => {
   }
 });
 
+// Out-of-band cron-completion probe (DEV-57). Reports whether TODAY's daily run
+// reached completion, read from the cron_runs lifecycle table. The GitHub-Actions
+// watchdog hits this on its own schedule (outside Railway) and emails the admin if
+// the run is missing/incomplete — the alarm that finally lives OUTSIDE the process
+// that can die. CRON_SECRET-gated. `healthy` = a 'completed' daily run exists today.
+app.get("/api/cron/run-health", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!safeCompareSecret(secret, process.env.CRON_SECRET)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabase
+    .from("cron_runs")
+    .select("run_date, kind, started_at, completed_at, status, companies_total, companies_scraped, emails_sent, emails_skipped, note")
+    .eq("run_date", today)
+    .eq("kind", "daily")
+    .maybeSingle();
+  if (error) {
+    res.status(500).json({ error: "cron_runs query failed" });
+    return;
+  }
+  const healthy = !!data && data.status === "completed";
+  res.json({ healthy, date: today, run: data ?? null });
+});
+
 // Self-check suspect feed (DEV-41). The daily-self-check workflow runs in a
 // remote routine (Anthropic cloud) that has no Supabase access, so it pulls
 // today's suspect set from here over HTTPS. CRON_SECRET-gated, same pattern as
@@ -660,3 +687,30 @@ Sentry.setupExpressErrorHandler(app);
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// DEV-57 graceful-shutdown alert. When Railway redeploys (or otherwise stops the
+// container) mid daily-run, the process receives SIGTERM. That is NOT a JS throw,
+// so every in-process alarm is bypassed and the run dies silently — exactly the
+// 2026-05-31 incident. This turns the silent kill into an explicit, attributed
+// alert (Sentry already emails on new issues) and marks the cron_runs row
+// interrupted, best-effort within Railway's grace window, before exiting.
+let shuttingDown = false;
+async function handleCronAwareShutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (currentRun.active && currentRun.runDate) {
+    const msg = `Daily cron INTERRUPTED by ${signal} (likely a Railway redeploy) at company ${currentRun.scraped}/${currentRun.total} on ${currentRun.runDate}. The run did NOT finish — today's email may not have been sent.`;
+    console.error(msg);
+    try { Sentry.captureMessage(msg, "error"); } catch { /* best-effort */ }
+    try { await recordRunInterrupted(currentRun.runDate, currentRun.kind, currentRun.scraped); } catch { /* best-effort */ }
+    try { await Sentry.flush(2000); } catch { /* best-effort */ }
+  }
+  process.exit(0);
+}
+// Only register on the prod service (where the daily cron actually runs and a
+// deploy can kill it). Avoids changing local-dev Ctrl-C behavior; matches the
+// DEV-47 RAILWAY_ENVIRONMENT_NAME prod-guard convention.
+if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+  process.on("SIGTERM", () => { void handleCronAwareShutdown("SIGTERM"); });
+  process.on("SIGINT", () => { void handleCronAwareShutdown("SIGINT"); });
+}

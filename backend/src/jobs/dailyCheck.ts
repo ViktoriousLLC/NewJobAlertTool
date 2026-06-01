@@ -199,6 +199,63 @@ function pickRecommendations(
 // Overlap guard: prevent concurrent daily check runs
 let dailyCheckRunning = false;
 
+// DEV-57 cron-run lifecycle. Tracked in the `cron_runs` table so a run that dies
+// mid-way is observable from OUTSIDE the process (the GitHub-Actions watchdog reads
+// it) and the SIGTERM handler can report where it was killed. `currentRun` is the
+// in-memory mirror the shutdown handler reads. ALL writers are best-effort: heartbeat
+// bookkeeping must never throw and break the cron it is meant to make observable.
+export interface CurrentRunState {
+  active: boolean;
+  runDate: string | null; // YYYY-MM-DD (UTC)
+  kind: string;
+  total: number;
+  scraped: number;
+}
+export const currentRun: CurrentRunState = { active: false, runDate: null, kind: "daily", total: 0, scraped: 0 };
+
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function recordRunStart(runDate: string, kind: string, total: number, emailsSkipped: boolean): Promise<void> {
+  try {
+    await supabase.from("cron_runs").upsert(
+      {
+        run_date: runDate, kind, started_at: new Date().toISOString(), completed_at: null,
+        status: "running", companies_total: total, companies_scraped: 0, emails_sent: null,
+        emails_skipped: emailsSkipped, note: null, updated_at: new Date().toISOString(),
+      },
+      { onConflict: "run_date,kind" }
+    );
+  } catch (err) {
+    console.error("recordRunStart failed (non-fatal):", err);
+  }
+}
+
+async function recordRunComplete(runDate: string, kind: string, scraped: number, emailsSent: number | null, status: string, note?: string): Promise<void> {
+  try {
+    await supabase.from("cron_runs").update({
+      completed_at: new Date().toISOString(), status, companies_scraped: scraped,
+      emails_sent: emailsSent, note: note ?? null, updated_at: new Date().toISOString(),
+    }).eq("run_date", runDate).eq("kind", kind);
+  } catch (err) {
+    console.error("recordRunComplete failed (non-fatal):", err);
+  }
+}
+
+// Called by the SIGTERM/SIGINT handler in index.ts when the process is shut down
+// (e.g. a Railway redeploy) while a run is in flight.
+export async function recordRunInterrupted(runDate: string, kind: string, scraped: number): Promise<void> {
+  try {
+    await supabase.from("cron_runs").update({
+      completed_at: new Date().toISOString(), status: "interrupted", companies_scraped: scraped,
+      note: "interrupted by process shutdown (likely a deploy)", updated_at: new Date().toISOString(),
+    }).eq("run_date", runDate).eq("kind", kind);
+  } catch (err) {
+    console.error("recordRunInterrupted failed (non-fatal):", err);
+  }
+}
+
 // ---- Shared per-company scrape + seen_jobs upsert ---------------------------
 // These self-healing thresholds are shared by the daily cron AND the
 // scrape-on-demand path so both behave identically.
@@ -959,7 +1016,7 @@ export async function scrapeAndRecordCompany(
   }
 }
 
-export async function runDailyCheck(options?: { skipEmails?: boolean; forceMondayDigest?: boolean; forceWeeklyDigest?: boolean }): Promise<void> {
+export async function runDailyCheck(options?: { skipEmails?: boolean; forceMondayDigest?: boolean; forceWeeklyDigest?: boolean; force?: boolean }): Promise<void> {
   if (dailyCheckRunning) {
     console.warn("Daily check already running — skipping this trigger to prevent overlap");
     return;
@@ -970,10 +1027,21 @@ export async function runDailyCheck(options?: { skipEmails?: boolean; forceMonda
     await runDailyCheckInner(options);
   } finally {
     dailyCheckRunning = false;
+    // If the inner run threw before marking itself complete, the cron_runs row is
+    // still 'running'. Record it as 'failed' so the watchdog (and a human) can tell
+    // a crashed run from one that's still going. Best-effort; never re-throws.
+    if (currentRun.active && currentRun.runDate) {
+      await recordRunComplete(currentRun.runDate, currentRun.kind, currentRun.scraped, null, "failed", "runDailyCheckInner threw before completion");
+      currentRun.active = false;
+    }
   }
 }
 
-async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayDigest?: boolean; forceWeeklyDigest?: boolean }): Promise<void> {
+// `force` bypasses the resumability skip (re-scrape every company even if already
+// checked today) — used for a deliberate full re-scrape. Default behavior is
+// resumable: companies already scraped today are skipped so a re-triggered run
+// (after a kill) continues instead of restarting at company 1.
+async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayDigest?: boolean; forceWeeklyDigest?: boolean; force?: boolean }): Promise<void> {
   console.log(`Starting daily job check...${options?.skipEmails ? " (skipEmails mode)" : ""}`);
 
   // DEV-27: verify Sentry is actually ingesting events before anything else.
@@ -1035,6 +1103,19 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
 
   console.log(`Checking ${companies.length} companies...`);
 
+  // DEV-57 heartbeat: record run START now, BEFORE the long scrape loop, so a run
+  // killed mid-loop leaves a cron_runs row with completed_at IS NULL — the only
+  // completion signal that survives a process kill (a SIGTERM is not a JS throw).
+  // currentRun mirrors it in-memory for the SIGTERM handler; runDate also drives
+  // the resumability skip below.
+  const runDate = todayUtc();
+  currentRun.active = true;
+  currentRun.runDate = runDate;
+  currentRun.kind = "daily";
+  currentRun.total = companies.length;
+  currentRun.scraped = 0;
+  await recordRunStart(runDate, "daily", companies.length, options?.skipEmails ?? false);
+
   // Per-run accumulators for the admin digest + email distribution. The shared
   // per-company scrape logic now lives in scrapeAndRecordCompany() so the
   // scrape-on-demand endpoint can reuse it; the daily path keeps these and
@@ -1050,12 +1131,25 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     // misleading "success (0 jobs from source)" — exactly what the session-start
     // health check flags as broken. Skip them entirely (no scrape, no delay).
     if (company.platform_type === "rapidapi_linkedin") continue;
+    // DEV-57 resumability: on a NO-EMAIL run (skipEmails — the re-scrape / backfill
+    // path) skip companies already scraped today, so a re-triggered run resumes
+    // instead of restarting at company 1. Deliberately NOT applied on an
+    // email-bearing run: the per-user email is built from `companyAlerts`, which
+    // only accumulates companies actually scraped THIS run, so skipping
+    // already-scraped ones would ship a PARTIAL email (subscribers to the skipped
+    // companies get nothing) that still reports success. So an email run always does
+    // a full scrape (re-scraping is idempotent); only the no-email path resumes.
+    // `force` bypasses the skip entirely.
+    if (!options?.force && options?.skipEmails && company.last_checked_at && String(company.last_checked_at).slice(0, 10) === runDate) {
+      continue;
+    }
     // An auto-disabled company on a non-probe day returns immediately without
     // scraping (no network call) — skip the inter-company delay for it, exactly
     // as the old `continue` did, so a backlog of disabled companies doesn't pad
     // the daily run with empty 5s waits.
     const willScrape = !company.auto_disabled || ctx.isProbeDay;
     await scrapeAndRecordCompany(company, ctx);
+    currentRun.scraped++;
     // Delay between companies to avoid rate limiting (only after a real scrape).
     if (willScrape) await delay(5000);
   }
@@ -1193,7 +1287,16 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
 
   console.log("Daily check complete.");
 
-  // Failure threshold: if >25% of companies failed, throw so cron returns 500
+  // DEV-57 heartbeat: mark the run complete BEFORE the >25%-failure throw below, so
+  // a high-failure (but finished) run is still recorded as completed — the throw is
+  // a separate signal (it makes the HTTP trigger return 500). The out-of-band
+  // watchdog treats a 'completed' row as healthy.
+  await recordRunComplete(runDate, "daily", currentRun.scraped, options?.skipEmails ? null : emailBatchResult.sent, "completed");
+  currentRun.active = false;
+
+  // Failure threshold: if >25% of companies failed, throw so cron returns 500.
+  // Denominator is the full catalog: on the normal email-bearing run nothing is
+  // skipped (resumability is skipEmails-only), so this is over the attempted set.
   if (companies.length > 0 && failedCompanies.length / companies.length > 0.25) {
     const pct = Math.round((failedCompanies.length / companies.length) * 100);
     throw new Error(
