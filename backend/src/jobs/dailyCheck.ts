@@ -1358,6 +1358,86 @@ interface EmailDeliveryStats {
   companiesWithNewJobs: number;
 }
 
+// DEV-58 email-only recovery: send the daily alert from ALREADY-SCRAPED data
+// (today's new active jobs in seen_jobs) WITHOUT re-scraping. For the "scrape
+// finished but the email step failed / was skipped -> just send it" case. Builds
+// the exact companyAlerts shape the daily run feeds sendPerUserAlerts.
+// SAFETY: dryRun (the endpoint default) returns what it WOULD send and sends
+// nothing; a real send refuses if today's daily run already emailed (unless force).
+export async function sendEmailOnlyFromToday(opts?: { dryRun?: boolean; force?: boolean }): Promise<{
+  dryRun: boolean;
+  companiesWithNewJobs: number;
+  totalNewJobs: number;
+  sample: { company: string; jobs: number }[];
+  sent?: number;
+  failed?: number;
+  skipped?: string;
+}> {
+  const today = todayUtc();
+
+  // Today's genuinely-new active jobs (first seen today). Paginate past the 1000 cap.
+  type SeenRow = { company_id: string; job_title: string | null; job_url_path: string };
+  const jobs = await fetchAllRows<SeenRow>((from, to) =>
+    supabase
+      .from("seen_jobs")
+      .select("company_id, job_title, job_url_path")
+      .eq("status", "active")
+      .eq("is_baseline", false)
+      .gte("first_seen_at", today)
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
+
+  const byCompany = new Map<string, { title: string; urlPath: string }[]>();
+  for (const j of jobs) {
+    if (!j.job_url_path) continue;
+    const arr = byCompany.get(j.company_id) || [];
+    arr.push({ title: j.job_title || "", urlPath: j.job_url_path });
+    byCompany.set(j.company_id, arr);
+  }
+
+  const ids = [...byCompany.keys()];
+  const companyAlerts: Map<string, { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }> = new Map();
+  const CHUNK = 100;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const slice = ids.slice(i, i + CHUNK);
+    const { data } = await supabase.from("companies").select("id, name, careers_url").in("id", slice);
+    for (const c of data || []) {
+      companyAlerts.set(c.id, { companyName: c.name, careersUrl: c.careers_url, newJobs: byCompany.get(c.id) || [] });
+    }
+  }
+
+  const totalNewJobs = jobs.length;
+  const sample = [...companyAlerts.values()].slice(0, 10).map((a) => ({ company: a.companyName, jobs: a.newJobs.length }));
+
+  if (opts?.dryRun) {
+    return { dryRun: true, companiesWithNewJobs: companyAlerts.size, totalNewJobs, sample };
+  }
+
+  // Nothing to recover: a REAL send with an empty set would still fire Monday weekly
+  // digests + recommendation emails via sendPerUserAlerts. Recovery means "re-send
+  // today's NEW jobs", so no new jobs => no-op (don't blast a quiet day).
+  if (companyAlerts.size === 0) {
+    return { dryRun: false, companiesWithNewJobs: 0, totalNewJobs, sample, skipped: "no new jobs first-seen today — nothing to send" };
+  }
+
+  // Double-send guard: refuse if today's daily run already emailed, unless force.
+  // NOTE: force=true re-runs the FULL send engine (per-user recommendations + Monday
+  // weekly digests + a second recommendation_history write), not just a re-delivery
+  // of today's jobs — recovery-only, not for routine re-sends.
+  if (!opts?.force) {
+    const { data: run } = await supabase.from("cron_runs").select("emails_sent").eq("run_date", today).eq("kind", "daily").maybeSingle();
+    if (run && (run.emails_sent ?? 0) > 0) {
+      return { dryRun: false, companiesWithNewJobs: companyAlerts.size, totalNewJobs, sample, skipped: `today's daily run already sent ${run.emails_sent} emails; pass force=true to override` };
+    }
+  }
+
+  await recordRunStart(today, "email-only", companyAlerts.size, false);
+  const result = await sendPerUserAlerts(companyAlerts);
+  await recordRunComplete(today, "email-only", companyAlerts.size, result.sendResult.sent, "completed");
+  return { dryRun: false, companiesWithNewJobs: companyAlerts.size, totalNewJobs, sample, sent: result.sendResult.sent, failed: result.sendResult.failed };
+}
+
 async function sendPerUserAlerts(
   companyAlerts: Map<string, { companyName: string; careersUrl: string; newJobs: { title: string; urlPath: string }[] }>
 ): Promise<{ sendResult: BatchSendResult; deliveryStats: EmailDeliveryStats }> {
