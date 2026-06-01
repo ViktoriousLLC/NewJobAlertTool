@@ -2073,3 +2073,13 @@ Behavior-only; the lead engine, data window, and image pipeline are unchanged.
 - Memory `feedback_every_pr_linear_and_docs` + a `tasks/lessons.md` entry.
 
 **Lesson.** A discipline that only lives in a command gets bypassed the moment you don't run the command. Attach it to the artifact (the PR) instead, so the obligation holds no matter how the PR is created. Reaching for raw git to "move faster" is precisely what drops the paperwork that keeps the project legible.
+
+---
+
+## 2026-06-01 — Main scraper insert: de-dup within a scrape (the Rivian 23505)
+
+The no-email re-scrape surfaced a latent bug via a Sentry alert: `DB write failed (insert new jobs for Rivian): code 23505` (unique violation on `(company_id, job_url_path)`). Root cause: a source can return two postings that normalize to the **same** `job_url_path` (e.g. one role listed under two locations). The per-company reconcile in `scrapeAndRecordCompany` batch-inserted all new jobs in one statement, so a single in-scrape duplicate failed the **entire** insert — losing all of that company's new jobs that run. It's been latent for any dup-URL source; the bigger/new-company re-scrape just hit one.
+
+Fix: de-dup the to-insert list by `job_url_path` before the batch insert (keep first per path). This is the **same** class the change-reviewer caught in the RapidAPI path (#144) — the core scraper's insert simply never had the guard. Independently of this, it reinforced the scoping lesson below.
+
+**Scope lesson (on me).** The re-scrape was triggered as a FULL daily run (all 519) when the goal was only to populate the ~272 *new* companies — the existing ones already had data and get refreshed by the 14:00 cron anyway, so they were being scraped twice today. The user (correctly) flagged the creep. Corrected: ship the dedup fix (its deploy cleanly stops the over-scoped run via the new SIGTERM handler — a live test of it), then re-scrape only the new companies. Target the actual work, not the whole set, for an on-demand populate.

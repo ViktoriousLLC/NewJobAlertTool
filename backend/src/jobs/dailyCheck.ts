@@ -664,8 +664,19 @@ export async function scrapeAndRecordCompany(
       }
     }
 
-    // 1. New jobs: in scrape, not in DB → INSERT with status='active'
-    const toInsert = jobs.filter((j) => !existingByPath.has(j.urlPath));
+    // 1. New jobs: in scrape, not in DB → INSERT with status='active'.
+    // De-dup by urlPath within this scrape: a source can return two postings that
+    // normalize to the same job_url_path (e.g. one role listed under two locations),
+    // which collides on the (company_id, job_url_path) UNIQUE constraint and fails
+    // the WHOLE batch insert (23505) — losing ALL of this company's new jobs (the
+    // Rivian Sentry error, 2026-06-01). Keep the first occurrence per path.
+    const seenInsertPaths = new Set<string>();
+    const toInsert = jobs.filter((j) => {
+      if (existingByPath.has(j.urlPath)) return false;
+      if (seenInsertPaths.has(j.urlPath)) return false;
+      seenInsertPaths.add(j.urlPath);
+      return true;
+    });
     if (toInsert.length > 0) {
       const { error: insertError } = await supabase.from("seen_jobs").insert(
         toInsert.map((j) => ({
