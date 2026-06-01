@@ -1,0 +1,51 @@
+# DEV-59: alerting-liveness probe — "monitor the monitors." On 2026-06-01 we found
+# RESEND_API_KEY was never set as a GitHub secret, so the daily-code-audit email
+# alert had been silently dead — and nothing caught it, because code scans check
+# code, not the secrets config, and an alert that only fires "on findings" can't
+# tell "clean day" from "I'm broken." Same class as the Sentry-dead-3.5-months bug.
+#
+# This runs on GitHub's own schedule and (1) fails loudly if any required secret is
+# missing, and (2) actually sends a test email via Resend, so the absence of the
+# monthly "OK" email is itself the signal that the alert pipe is down. The end-to-end
+# send is the part a code scan can never do.
+name: Alerting Liveness
+on:
+  schedule:
+    - cron: '0 12 1 * *'   # 1st of each month, 12:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required secrets + end-to-end alert delivery
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SUPABASE_PAT_CI: ${{ secrets.SUPABASE_PAT_CI }}
+          ADMIN_EMAIL: vikrant.agar@gmail.com
+        run: |
+          set -uo pipefail
+          MISSING=""
+          [ -z "${RESEND_API_KEY:-}" ] && MISSING="$MISSING RESEND_API_KEY"
+          [ -z "${CRON_SECRET:-}" ] && MISSING="$MISSING CRON_SECRET"
+          [ -z "${SUPABASE_PAT_CI:-}" ] && MISSING="$MISSING SUPABASE_PAT_CI"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Required GitHub secrets MISSING:$MISSING — CI/alerting is degraded (this is the gap that left daily-code-audit silently dead)."
+            if [ -n "${RESEND_API_KEY:-}" ]; then
+              curl -sS -m 30 -X POST https://api.resend.com/emails \
+                -H "Authorization: Bearer $RESEND_API_KEY" -H "Content-Type: application/json" \
+                -d "$(jq -n --arg m "Required GitHub secrets are missing:$MISSING. CI/alerting workflows that depend on them are silently degraded. Set them in repo Settings > Secrets." --arg to "$ADMIN_EMAIL" '{from:"NewPMJobs <alerts@newpmjobs.com>",to:[$to],subject:"NewPMJobs ALERT: GitHub secrets missing",text:$m}')" || true
+            fi
+            exit 1
+          fi
+          echo "All required secrets present. Sending the monthly end-to-end alerting confirmation via Resend..."
+          HTTP=$(curl -sS -m 30 -o /dev/null -w "%{http_code}" -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" -H "Content-Type: application/json" \
+            -d "$(jq -n --arg to "$ADMIN_EMAIL" '{from:"NewPMJobs <alerts@newpmjobs.com>",to:[$to],subject:"NewPMJobs: monthly alerting-liveness OK",text:"Monthly end-to-end alerting probe (DEV-59). All required GitHub secrets are present and Resend accepted this send, so the alert pipeline (cron-watchdog, daily-code-audit, auth-template-check) can actually reach you. If you ever STOP getting this on the 1st of the month, the alerting pipe is down — investigate."}')")
+          echo "Resend send HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Resend send failed (HTTP $HTTP) — the alert pipeline is broken even though the key is present."
+            exit 1
+          fi
+          echo "Alerting pipeline confirmed live end-to-end."
