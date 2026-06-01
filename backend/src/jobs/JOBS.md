@@ -64,6 +64,7 @@ A deploy killed the 14:00 cron mid-run with NO email and NO alarm: the catalog h
 - **Graceful-shutdown alert** (`index.ts` SIGTERM/SIGINT handler): on shutdown while a run is active, `Sentry.captureMessage("interrupted at company N/M")` + marks the `cron_runs` row `interrupted`, best-effort within Railway's grace window, before exit.
 - **Out-of-band watchdog** (`.github/workflows/cron-watchdog.yml`, DEV-57): runs on GitHub at 16:00 + 17:00 UTC, hits `GET /api/cron/run-health`, and emails admin via Resend if today's run did NOT complete (or the backend is unreachable). The only alarm outside the Railway process, so a run that never finished is caught. Needs `CRON_SECRET` + `RESEND_API_KEY` GitHub secrets.
 - **Hard cron-window guard** (`.github/workflows/cron-window-guard.yml`, DEV-57): required CI check that blocks any merge to main during 13:55-16:00 UTC, so a redeploy can't kill the in-flight run.
+- **Worker entrypoint** (`backend/src/jobs/dailyEntry.ts`, `npm run cron:daily`, DEV-57): a standalone process that runs the daily check once and exits — ready to move the run OFF the web service onto a dedicated Railway cron service so a web-service deploy can't kill it. The Railway service cutover + an email-only recovery path are **DEV-58** (verified steps that need a real 14:00 run to confirm; deliberately not flipped blind).
 
 ## Weekly LinkedIn-Draft Digest (PR #52, added 2026-05-22)
 
