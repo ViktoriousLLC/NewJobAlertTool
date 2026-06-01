@@ -15,6 +15,7 @@ import feedRouter from "./routes/feed";
 import preferencesRouter from "./routes/preferences";
 import adminRouter from "./routes/admin";
 import interviewsRouter, { interviewsDiagnosticsHandler } from "./routes/interviews";
+import { resendWebhookHandler } from "./routes/resendWebhook";
 import { runDailyCheck, scrapeAndRecordCompany, createScrapeContext, PerCompanyScrapeResult, currentRun, recordRunInterrupted, sendEmailOnlyFromToday } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
@@ -79,6 +80,19 @@ app.use(
     origin: allowedOrigins,
   })
 );
+// Resend email-engagement webhook (DEV-65). MUST be registered BEFORE the
+// global express.json() below: Svix signature verification runs over the EXACT
+// raw bytes Resend signed, and express.json() would consume + re-shape the body
+// so the HMAC would never match. express.raw() leaves req.body as a Buffer for
+// this one path only; every other route still gets parsed JSON. Mounted before
+// the generalLimiter too, so a legitimate burst of webhook deliveries isn't
+// 429'd — the route is signature-gated, not auth-gated. NO JWT (server-to-server).
+app.post(
+  "/api/webhooks/resend",
+  express.raw({ type: "application/json", limit: "1mb" }),
+  resendWebhookHandler,
+);
+
 // 100kb cap on JSON bodies. The check-then-add path can send a preCheckedJobs
 // array which is the largest legitimate payload; bumped to 256kb to cover
 // companies with many jobs. Per-route input length caps still apply.
