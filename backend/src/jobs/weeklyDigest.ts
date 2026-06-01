@@ -691,8 +691,8 @@ export function renderEmailHtml(
   // breaks. The old <br/>-in-a-div collapsed to one line when pasted.
   const postHtml = escapeHtml(post);
 
-  // Product Pulse is Monday-only: it's rendered only when sendWeeklyDigest
-  // computed it (gated on Monday). Non-Monday / preview passes null -> no block.
+  // Product Pulse renders whenever sendWeeklyDigest passes it (every weekly send);
+  // a null (e.g. the preview route opting out) just omits the block.
   const pulseSection = productPulse ? renderProductPulseHtml(productPulse) : "";
 
   // UTM-tagged own-site CTA so email-sourced clicks attribute in PostHog
@@ -781,11 +781,11 @@ export async function sendWeeklyDigest(now: Date = new Date()): Promise<{ sent: 
   // email when the Gemini API is unavailable / out of credits).
   const image = data.imagePrompt ? await generateDigestImage(data.imagePrompt) : null;
 
-  // Product Pulse (DEV-65): Monday only. computeProductPulse never throws (it
-  // catches its own errors and returns a renderable shape), so a metrics failure
-  // can't break the send. getUTCDay(): 1 = Monday.
-  const isMonday = now.getUTCDay() === 1;
-  const productPulse = isMonday ? await computeProductPulse(now) : null;
+  // Product Pulse (DEV-65): included on EVERY weekly digest send. The digest is
+  // Friday-gated at the caller (dailyCheck.ts), so this rides the weekly email Vik
+  // actually receives. computeProductPulse never throws (it catches its own errors
+  // and returns a renderable shape), so a metrics failure can't break the send.
+  const productPulse = await computeProductPulse(now);
 
   const resend = new Resend(process.env.RESEND_API_KEY);
   // Leading 📬📬📬 (open mailbox with raised flag) so Vik can spot the weekly

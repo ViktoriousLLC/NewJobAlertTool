@@ -1,4 +1,4 @@
-// Product Pulse — the weekly product-metrics block in the Monday admin digest
+// Product Pulse — the weekly product-metrics block in the weekly (Friday) digest
 // (DEV-65). Two tiers:
 //
 //   Supabase (ALWAYS, never optional): new signups in the last 7 days + total
@@ -26,7 +26,7 @@ const POSTHOG_PROJECT_ID = process.env.POSTHOG_PROJECT_ID || "311721";
 const DASHBOARD_URL = `https://us.posthog.com/project/${POSTHOG_PROJECT_ID}/dashboard/1652973`;
 
 // Pre-built dashboard insights (DEV-65). Querying these by short_id returns the
-// cached, already-computed results, so the Monday digest spends ~no PostHog
+// cached, already-computed results, so the weekly digest spends ~no PostHog
 // compute and stays fast. The HogQL /query/ calls below cover the rest.
 const INSIGHTS = {
   referrers: "Z92wZyh3", // Where visitors come from (referring domain, 30d)

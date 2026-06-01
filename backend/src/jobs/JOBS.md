@@ -99,9 +99,9 @@ Replaced the old hardcoded `**Banking is on a tear.**` lead. The post now opens 
 - Email own-site CTA ("See this week's roles on the live feed") → `utm_source=email&utm_medium=email&utm_campaign=weekly-digest`. The PostHog dashboard link in Product Pulse is NOT UTM'd (it's a PostHog URL, not our site).
 - `withUtm` correctly uses `?` vs `&` depending on whether the URL already has a query string, and preserves a trailing `#fragment`. Note: the referrers insight previously couldn't break down by `utm_source` because it wasn't captured — these tags are what make that breakdown possible going forward.
 
-### Product Pulse — Monday product metrics (DEV-65, 2026-06-01)
+### Product Pulse — weekly product metrics (DEV-65, 2026-06-01)
 
-`backend/src/jobs/productPulse.ts` adds a "Product Pulse" block to the **Monday** weekly email (`now.getUTCDay() === 1`; preview forces it on any day). `computeProductPulse()` NEVER throws — every metric failure is caught and the renderer emits a short "metrics unavailable" note instead of breaking the digest send.
+`backend/src/jobs/productPulse.ts` adds a "Product Pulse" block to the **weekly (Friday) digest** email (rides every weekly send — the digest is Friday-gated in dailyCheck.ts; preview forces it on any day). `computeProductPulse()` NEVER throws — every metric failure is caught and the renderer emits a short "metrics unavailable" note instead of breaking the digest send.
 
 - **Supabase tier (ALWAYS, even with no PostHog key)**: new signups in the last 7 days + total users (from `listAllUsers().created_at`), total active `user_subscriptions` (`head+count`), count of `is_active` companies (`head+count`).
 - **PostHog tier (RICHER, only when `POSTHOG_PERSONAL_API_KEY` is set)**: weekly active logged-in users (HogQL `count(DISTINCT person_id)` over authenticated events, 7d), signup-funnel conversion %, conversion by device, top 3 referrers, top nav-button clicks, companies-tracked-per-user split. Read via `GET https://us.posthog.com/api/projects/311721/insights/?short_id=<id>` (cached results, no recompute — referrers `Z92wZyh3`, funnel-by-device `ovOuaVgP`, nav-buttons `V4GmJxGZ`, depth `MEs3szkz`) plus `POST .../query/` (HogQL) for the WAU slice. Each slice is independently `Promise.allSettled`-wrapped so one failing insight doesn't blank the rest. 8s per-request timeout.
