@@ -1,0 +1,50 @@
+# DEV-57 out-of-band cron watchdog. Runs on GitHub's infrastructure, fully
+# decoupled from Railway, so it can detect a daily run that NEVER finished
+# (deploy kill, OOM, hang, Railway outage) — the exact silent-failure class that
+# made the 2026-05-31 P0 invisible. Every in-app alarm lives downstream of the
+# scrape loop and dies with it; this is the one alarm that lives outside.
+#
+# It asks the backend (GET /api/cron/run-health, CRON_SECRET) whether TODAY's
+# daily run reached completion in the cron_runs table. If not (or the backend is
+# unreachable), it emails the admin via Resend. Runs after the run should have
+# finished (~15:25 UTC for 519 companies); 16:00 is the primary check, 17:00 a backup.
+name: Cron Watchdog
+on:
+  schedule:
+    - cron: '0 16 * * *'
+    - cron: '0 17 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm today's daily cron completed
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ADMIN_EMAIL: vikrant.agar@gmail.com
+        run: |
+          set -uo pipefail
+          RESP=$(curl -sS -m 30 -w $'\n%{http_code}' \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            https://api.newpmjobs.com/api/cron/run-health || true)
+          BODY=$(echo "$RESP" | sed '$d')
+          CODE=$(echo "$RESP" | tail -n1)
+          echo "HTTP $CODE: $BODY"
+          HEALTHY=$(echo "$BODY" | jq -r '.healthy' 2>/dev/null || echo "error")
+          if [ "$CODE" = "200" ] && [ "$HEALTHY" = "true" ]; then
+            echo "Daily cron completed today. Healthy."
+            exit 0
+          fi
+          echo "UNHEALTHY (code=$CODE healthy=$HEALTHY) -> alerting admin"
+          SUBJECT="NewPMJobs ALERT: daily cron did NOT complete today"
+          MSG="The out-of-band watchdog could not confirm today's daily run completed. HTTP status: ${CODE}. Response: ${BODY}. The 14:00 UTC cron may have died mid-run (so no alert email was sent), or the backend is unreachable. Check the cron_runs table and Railway logs."
+          curl -sS -m 30 -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg s "$SUBJECT" --arg m "$MSG" --arg to "$ADMIN_EMAIL" \
+                 '{from:"NewPMJobs <alerts@newpmjobs.com>", to:[$to], subject:$s, text:$m}')"
+          echo "Alert email sent to $ADMIN_EMAIL."
+          # Fail the run too, so it's visibly red in the Actions tab.
+          exit 1

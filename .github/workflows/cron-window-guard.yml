@@ -1,0 +1,29 @@
+# DEV-57 hard cron-window guard. The 2026-05-31 P0 was caused by a merge to main
+# redeploying Railway mid-cron, which killed the in-flight daily run. This is a
+# required status check that FAILS on any PR to main evaluated during the daily-cron
+# window (13:55-16:00 UTC), so a merge that would redeploy during the run is blocked.
+# (Belt-and-suspenders with the CLAUDE.md rule + the worker migration, which is the
+# airtight fix: once the run is off the web service, web deploys can't touch it.)
+name: Cron Window Guard
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  merge_group: {}
+  workflow_dispatch: {}
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Block merges during the daily-cron window
+        run: |
+          set -euo pipefail
+          NOW=$(date -u +%H%M)
+          # HHMM as an integer; window is 13:55-16:00 UTC (the 14:00 cron + its
+          # ~85-min run over 519 companies). Widen the upper bound if the catalog grows.
+          if [ "$((10#$NOW))" -ge 1355 ] && [ "$((10#$NOW))" -le 1600 ]; then
+            echo "::error::Merge blocked: it is ${NOW} UTC, inside the daily-cron window (13:55-16:00). A merge now auto-redeploys Railway and could kill the running daily cron (DEV-57). Merge after 16:00 UTC."
+            exit 1
+          fi
+          echo "OK: ${NOW} UTC is outside the daily-cron window."

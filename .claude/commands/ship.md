@@ -38,6 +38,7 @@ Make the PR self-documenting before committing:
 - `gh pr create --title "..." --body "..."` (body = what/why + the docs updated in Step 2).
 
 ## Step 6 — Merge
+- **Cron-window guard (DEV-57): do NOT merge during 13:55-16:00 UTC.** A merge auto-redeploys Railway and would kill the in-flight 14:00 daily cron (the 2026-05-31 P0). `date -u +%H%M`; if inside the window, STOP and report the PR URL — merge after 16:00 UTC. (CI's `cron-window-guard` also blocks it.)
 - `main` is a repository ruleset (id 16381419) with **0 required approvals**, so merge is allowed without a human approver: `gh pr merge <n> --squash`.
 - Merge ONLY if CI (Railway + Vercel) is green and the review had no unaddressed blockers. If anything is red or pending, **pause and report the PR URL** instead of merging.
 

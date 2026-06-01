@@ -62,7 +62,8 @@ A deploy killed the 14:00 cron mid-run with NO email and NO alarm: the catalog h
 - **Resumable run (no-email path only)**: on a `skipEmails` run (the re-scrape / backfill path), the daily loop skips companies already scraped today (`last_checked_at` date = today's UTC), so a re-triggered run resumes instead of restarting at company 1. **NOT applied on an email-bearing run** — the per-user email is built from `companyAlerts`, which only holds companies scraped THIS run, so skipping already-scraped ones would ship a *partial* email that still reports success. An email run therefore always does a full (idempotent) scrape; only the no-email path resumes. `runDailyCheck({ force: true })` bypasses the skip entirely.
 - **`GET /api/cron/run-health`** (CRON_SECRET): `{ healthy, date, run }` where `healthy` = today's daily run reached `status='completed'`. Read by the out-of-band watchdog.
 - **Graceful-shutdown alert** (`index.ts` SIGTERM/SIGINT handler): on shutdown while a run is active, `Sentry.captureMessage("interrupted at company N/M")` + marks the `cron_runs` row `interrupted`, best-effort within Railway's grace window, before exit.
-- The out-of-band watchdog (GitHub Action) + the hard merge-freeze during the cron window ship in a follow-up PR.
+- **Out-of-band watchdog** (`.github/workflows/cron-watchdog.yml`, DEV-57): runs on GitHub at 16:00 + 17:00 UTC, hits `GET /api/cron/run-health`, and emails admin via Resend if today's run did NOT complete (or the backend is unreachable). The only alarm outside the Railway process, so a run that never finished is caught. Needs `CRON_SECRET` + `RESEND_API_KEY` GitHub secrets.
+- **Hard cron-window guard** (`.github/workflows/cron-window-guard.yml`, DEV-57): required CI check that blocks any merge to main during 13:55-16:00 UTC, so a redeploy can't kill the in-flight run.
 
 ## Weekly LinkedIn-Draft Digest (PR #52, added 2026-05-22)
 
