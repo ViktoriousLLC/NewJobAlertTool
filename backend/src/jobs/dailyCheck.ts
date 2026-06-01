@@ -199,6 +199,17 @@ function pickRecommendations(
 // Overlap guard: prevent concurrent daily check runs
 let dailyCheckRunning = false;
 
+// DEV-62: expose the daily-run flag + a single-flight latch for the subscribe-path
+// scrape. Concurrent POST /api/subscriptions fire-and-forget scrapes were each
+// launching their OWN Chromium on top of the ~80-min daily run and exhausting the
+// container (2026-06-01: pthread_create "Resource temporarily unavailable" / failed
+// browser launch). scrapeCompaniesByIds now skips while either flag is set; the daily
+// cron is the guaranteed backstop for these companies, so skipping is self-healing.
+export function isDailyCheckRunning(): boolean {
+  return dailyCheckRunning;
+}
+let subscribeScrapeActive = false;
+
 // DEV-57 cron-run lifecycle. Tracked in the `cron_runs` table so a run that dies
 // mid-way is observable from OUTSIDE the process (the GitHub-Actions watchdog reads
 // it) and the SIGTERM handler can report where it was killed. `currentRun` is the
@@ -322,6 +333,14 @@ export interface PerCompanyScrapeResult {
 export async function scrapeCompaniesByIds(companyIds: string[]): Promise<PerCompanyScrapeResult[]> {
   const uniqueIds = Array.from(new Set(companyIds));
   if (uniqueIds.length === 0) return [];
+  // DEV-62 (2026-06-01 resource-exhaustion fix): never run a subscribe-scrape while
+  // the daily cron is in flight (it backfills these companies in the same run), and
+  // never more than one subscribe-scrape at a time — each launches its own Chromium,
+  // and uncapped concurrency exhausted the container. The cron is the backstop, so
+  // skipping is safe + self-healing.
+  if (dailyCheckRunning || subscribeScrapeActive) return [];
+  subscribeScrapeActive = true;
+  try {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const companies: any[] = [];
   const CHUNK = 100;
@@ -340,6 +359,9 @@ export async function scrapeCompaniesByIds(companyIds: string[]): Promise<PerCom
     if (i < companies.length - 1) await delay(5000);
   }
   return perCompany;
+  } finally {
+    subscribeScrapeActive = false;
+  }
 }
 
 // Scrape one company, run the self-healing tiers, and reconcile seen_jobs
