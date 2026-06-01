@@ -45,6 +45,20 @@ States: `input` → `checking` → `preview` → `retry`
 - `ADMIN_EMAIL` from env var with hardcoded fallback in `lib/constants.ts`.
 - Admin hard-delete: `DELETE /api/companies/{id}?hard=true` → CASCADE deletes jobs, subscriptions, etc.
 
+## Resend Webhook (DEV-65, `POST /api/webhooks/resend`)
+
+Server-to-server webhook that streams Resend email-engagement events into PostHog so email **opens/clicks** join the product analytics. **NO JWT** — it is authenticated by the Svix signature Resend sends, not a bearer token.
+
+- **Handler:** `backend/src/routes/resendWebhook.ts` (a bare handler, not an `express.Router`).
+- **Mounting (critical):** registered in `index.ts` with `express.raw({ type: "application/json" })` **BEFORE** the global `express.json()` and **before** the `/api/` rate limiter. The Svix HMAC is computed over the EXACT raw request bytes — if `express.json()` parsed + re-serialized the body first, the signature would never match. So for this one path `req.body` is a `Buffer`; every other route still gets parsed JSON, and the 256kb global JSON limit is untouched. It sits ahead of the rate limiter so a legitimate burst of deliveries isn't 429'd (the route is signature-gated, not auth-gated).
+- **Signature verification:** `backend/src/lib/svixVerify.ts` implements the documented Svix scheme directly (no `svix` npm dependency): secret is base64 after the `whsec_` prefix; `signedContent = ${svix-id}.${svix-timestamp}.${rawBody}`; HMAC-SHA256 → base64; constant-time compare (`timingSafeEqual`) against each space-separated `v1,<sig>` entry in the `svix-signature` header. Also enforces a ±5 min timestamp tolerance (replay protection). Reads the secret from **`RESEND_WEBHOOK_SECRET`** (the `whsec_...` value from the Resend dashboard). Unverified → **401** (fails closed if the secret is unset).
+- **Headers Resend sends:** `svix-id`, `svix-timestamp`, `svix-signature`.
+- **Events handled:** `email.sent` → `email_sent`, `email.delivered` → `email_delivered`, `email.opened` → `email_opened`, `email.clicked` → `email_clicked`, `email.bounced` → `email_bounced`, `email.complained` → `email_complained`. Unknown types are ack'd (200) without forwarding.
+- **distinctId:** `hashEmail(recipient)` from `backend/src/lib/hashEmail.ts` — SHA-256 hex of `email.toLowerCase().trim()`, **byte-for-byte identical** to the frontend `hashEmail` in `frontend/src/lib/analytics.ts` that the logged-in user is `identify()`'d under, so an email event stitches to the SAME PostHog person. Recipient is read from `data.to` (string or array) or `data.email`.
+- **PostHog properties:** `{ email_id, subject, tags, recipient_domain }`, plus `link` on `email.clicked` (from `data.click.link` — `email.opened` has NO nested object). `recipient_domain` (not the raw email) is surfaced for funnels; the raw address stays out of properties as PII, only the hash is the distinctId.
+- **Resilience:** once the signature is valid the route ALWAYS returns **200** (so Resend doesn't retry-storm over a downstream hiccup); a single bad event is logged + sent to Sentry and skipped, never thrown.
+- **Activation (one-time, manual):** enable Open + Click tracking on the sending domain in Resend, register the endpoint `https://api.newpmjobs.com/api/webhooks/resend`, copy its Signing Secret into `RESEND_WEBHOOK_SECRET` on Railway prod.
+
 ## Subscribe Semantics
 
 - **`POST /api/subscriptions`** (body `{ company_ids: string[] }`) upserts subscriptions, bumps `subscriber_count`, sets `is_active=true`, then **fires a fire-and-forget background scrape** (`scrapeCompaniesByIds` from `jobs/dailyCheck`, NO email) for just-subscribed companies that have zero jobs and aren't `scrape_blocked`, capped at 25 (DEV-54). So a freshly-added catalog company populates within minutes instead of waiting for the 14:00 cron. The daily cron is the guaranteed backstop; the scrape is idempotent. Response: `{ success, subscribed, populating }`.
@@ -103,6 +117,10 @@ GET    /api/cron/trigger                 — Must await runDailyCheck() — Rail
 GET    /api/cron/self-check-suspects     — Returns the daily self-check suspect set as JSON for the DEV-41 remote routine
                                            (which has no Supabase access). Filters in Node; EXCLUDES is_verified_zero. See JOBS.md.
                                            Auth: accepts CRON_SECRET OR the scoped read-only SELF_CHECK_TOKEN (least privilege).
+
+# Webhooks (NO JWT — server-to-server, signature-verified)
+POST   /api/webhooks/resend              — Resend email-engagement webhook (DEV-65). Forwards email lifecycle
+                                           events into PostHog. Svix-signature-gated; see "Resend Webhook" below.
 ```
 
 ## Input Validation
