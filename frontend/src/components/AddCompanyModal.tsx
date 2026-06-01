@@ -171,6 +171,10 @@ export default function AddCompanyModal({
   const [subscribing, setSubscribing] = useState(false);
   // Group key currently being bulk-added via "Add all in {category}" (null = idle).
   const [bulkGroupKey, setBulkGroupKey] = useState<string | null>(null);
+  // Category filter chips (group keys). Empty = show all groups.
+  const [activeCategories, setActiveCategories] = useState<Set<string>>(new Set());
+  // Companies with an in-flight untrack (instant DELETE on uncheck) — disables that row.
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
 
   // New company check-then-add state
   const [flowState, setFlowState] = useState<FlowState>("input");
@@ -211,6 +215,8 @@ export default function AddCompanyModal({
     setCatalogLoading(true);
     setSelected(new Set());
     setSearch("");
+    setActiveCategories(new Set());
+    setPendingIds(new Set());
     setTab("catalog");
     resetNewCompanyState();
 
@@ -266,8 +272,31 @@ export default function AddCompanyModal({
     }
   }
 
-  function toggleCompany(id: string) {
-    if (subscribedIds.has(id)) return;
+  async function toggleCompany(id: string) {
+    // Already tracked → unticking instantly UNTRACKS it (DELETE), so a mistaken
+    // add can be undone right here instead of going to the dashboard one-by-one.
+    // pendingIds guards against double-clicks; onCompanyAdded refetches the parent's
+    // subscriptions so the row flips back to untracked.
+    if (subscribedIds.has(id)) {
+      if (pendingIds.has(id)) return;
+      setPendingIds((p) => new Set(p).add(id));
+      try {
+        const res = await apiFetch(`/api/subscriptions/${id}`, { method: "DELETE" });
+        if (!res.ok) throw new Error("Failed to untrack");
+        trackEvent("company_untracked", { source: "catalog_modal" });
+        onCompanyAdded();
+      } catch (err) {
+        console.error("Untrack failed:", err);
+      } finally {
+        setPendingIds((p) => {
+          const n = new Set(p);
+          n.delete(id);
+          return n;
+        });
+      }
+      return;
+    }
+    // Not tracked → stage/unstage in the selection (committed via "Add Selected").
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -308,6 +337,12 @@ export default function AddCompanyModal({
       .filter((c) => !subscribedIds.has(c.id) && !c.scrape_blocked)
       .map((c) => c.id);
     if (deltaIds.length === 0) return;
+
+    // Confirm before a bulk add — "Add all" used to fire instantly, which made an
+    // accidental 40-company add a pain to undo.
+    if (!window.confirm(`Add all ${deltaIds.length} compan${deltaIds.length === 1 ? "y" : "ies"} in ${group.label}? You can untick any of them afterward to remove.`)) {
+      return;
+    }
 
     setBulkGroupKey(group.key);
     try {
@@ -476,6 +511,12 @@ export default function AddCompanyModal({
   // `tech` expanded into its sub-buckets. Recomputed on each render — the catalog
   // is a few hundred rows, so the cost is negligible and not worth memoizing.
   const catalogGroups = groupCatalog(filteredCatalog);
+  // The chips render from catalogGroups (so counts reflect the search); the group
+  // CARDS render from visibleGroups (filtered by the active chips; empty = all).
+  const visibleGroups =
+    activeCategories.size === 0
+      ? catalogGroups
+      : catalogGroups.filter((g) => activeCategories.has(g.key));
 
   function getStepLabel(i: number, isDone: boolean) {
     switch (i) {
@@ -873,6 +914,48 @@ export default function AddCompanyModal({
                 />
               </div>
 
+              {/* Category filter chips — toggle which groups show (none selected = all) */}
+              {!catalogLoading && catalogGroups.length > 1 && (
+                <div className="flex flex-wrap gap-1.5 mb-4">
+                  <button
+                    type="button"
+                    onClick={() => setActiveCategories(new Set())}
+                    className={`text-xs font-medium px-2.5 py-1 rounded-full border transition-colors ${
+                      activeCategories.size === 0
+                        ? "bg-[#0EA5E9] text-white border-[#0EA5E9]"
+                        : "bg-white text-stone-600 border-stone-200 hover:border-[#0EA5E9]"
+                    }`}
+                  >
+                    All
+                  </button>
+                  {catalogGroups.map((g) => {
+                    const on = activeCategories.has(g.key);
+                    return (
+                      <button
+                        key={g.key}
+                        type="button"
+                        onClick={() =>
+                          setActiveCategories((prev) => {
+                            const n = new Set(prev);
+                            if (n.has(g.key)) n.delete(g.key);
+                            else n.add(g.key);
+                            return n;
+                          })
+                        }
+                        className={`text-xs font-medium px-2.5 py-1 rounded-full border transition-colors ${
+                          on
+                            ? "bg-[#0EA5E9] text-white border-[#0EA5E9]"
+                            : "bg-white text-stone-600 border-stone-200 hover:border-[#0EA5E9]"
+                        }`}
+                      >
+                        {g.label}{" "}
+                        <span className={on ? "text-white/80" : "text-stone-400"}>{g.companies.length}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               {catalogLoading ? (
                 <div className="flex items-center justify-center py-8 text-stone-500">
                   <svg className="animate-spin h-5 w-5 mr-2" viewBox="0 0 24 24">
@@ -883,7 +966,7 @@ export default function AddCompanyModal({
                 </div>
               ) : (
                 <div className="space-y-5">
-                  {catalogGroups.map((group) => {
+                  {visibleGroups.map((group) => {
                     // Addable = in this group, not already subscribed, not blocked.
                     // Drives both the "Add all" button (delta count) and its
                     // enabled/disabled state.
@@ -920,27 +1003,31 @@ export default function AddCompanyModal({
                             const isSubscribed = subscribedIds.has(company.id);
                             const isSelected = selected.has(company.id);
                             // Scraping-blocked employers can't be tracked (we can't pull
-                            // their roles), so they're non-selectable — same treatment as
-                            // already-subscribed rows.
+                            // their roles), so they stay non-selectable.
                             const isBlocked = !!company.scrape_blocked;
+                            const isPending = pendingIds.has(company.id);
                             return (
                               <label
                                 key={company.id}
-                                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
-                                  isSubscribed || isBlocked
+                                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
+                                  isBlocked
                                     ? "opacity-50 cursor-default"
+                                    : isPending
+                                    ? "opacity-60 cursor-wait"
+                                    : isSubscribed
+                                    ? "bg-emerald-50 border border-emerald-200 cursor-pointer"
                                     : isSelected
-                                    ? "bg-blue-50 border border-blue-200"
-                                    : "hover:bg-stone-50 border border-transparent"
+                                    ? "bg-blue-50 border border-blue-200 cursor-pointer"
+                                    : "hover:bg-stone-50 border border-transparent cursor-pointer"
                                 }`}
                                 onClick={(e) => {
-                                  if (isSubscribed || isBlocked) e.preventDefault();
+                                  if (isBlocked || isPending) e.preventDefault();
                                 }}
                               >
                                 <input
                                   type="checkbox"
                                   checked={isSubscribed || isSelected}
-                                  disabled={isSubscribed || isBlocked}
+                                  disabled={isBlocked || isPending}
                                   onChange={() => toggleCompany(company.id)}
                                   className="rounded border-stone-300 text-[#0EA5E9] focus:ring-[#0EA5E9]"
                                 />
@@ -969,9 +1056,11 @@ export default function AddCompanyModal({
                                     {company.total_product_jobs} roles
                                   </span>
                                 )}
-                                {isSubscribed && (
-                                  <span className="text-xs text-stone-400 italic">(added)</span>
-                                )}
+                                {isPending ? (
+                                  <span className="shrink-0 text-xs text-stone-400 italic">removing...</span>
+                                ) : isSubscribed ? (
+                                  <span className="shrink-0 text-xs text-emerald-600 italic">tracked · untick to remove</span>
+                                ) : null}
                               </label>
                             );
                           })}

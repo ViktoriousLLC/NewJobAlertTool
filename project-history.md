@@ -2134,3 +2134,12 @@ First fix off the silent-failure audit (DEV-62). The "does-less-with-no-error" c
 ## 2026-06-01 — A required typecheck gate (DEV-62 #1)
 
 The audit's rank-1 finding: the ONLY required status check on `main` was the cron-window `guard`, so a PR that broke `tsc` (or re-broke the auth templates) could merge with a green button and auto-deploy to prod — the "guards that exist but don't gate" class. Added `.github/workflows/typecheck.yml` running backend + frontend `tsc --noEmit` on every PR, then added those contexts to the `main` ruleset's `required_status_checks`. Chose typecheck over a full build deliberately: it's deterministic and needs no runtime env/secrets, so a *required* check can't false-block merges on a missing build-time var (the full build is still exercised by the Vercel/Railway preview deploys on each PR). Verified the workflow green on its own PR before making it required, so it couldn't lock merges. Follow-up noted on DEV-61: pin all GitHub Actions to commit SHAs (currently `@v4` tags) as a supply-chain hardening.
+
+---
+
+## 2026-06-01 — Catalog modal UX, from real use (DEV-63)
+
+Three fixes from the owner testing the add-by-category modal (#140), all in `AddCompanyModal.tsx`:
+1. **Category filter chips at the top.** Categories were only inline group-headers; added a toggle-able chip row below the search (per-category counts, none-selected = show all) so you can filter which groups appear from the top.
+2. **"Add all" now confirms.** It fired instantly — an accidental bulk add was silent and a pain to undo. Now a "Add all N companies in {category}?" confirm.
+3. **Untick-to-untrack in the modal.** Tracked companies were grayed-out and non-interactive, so undoing a mistaken add meant removing them one-by-one from the dashboard. Now they render checked + enabled ("tracked · untick to remove"); unticking instantly untracks (DELETE /api/subscriptions/:id, per-row pending state). Untracked rows still stage into "Add Selected" — adds stay a deliberate batch, removals are instant (a mistake-fix). Lesson: a bulk action needs both a guard before (confirm) and an easy undo after.

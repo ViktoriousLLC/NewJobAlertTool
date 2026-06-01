@@ -6,7 +6,7 @@ This sidecar collects everything needed before touching `frontend/src/components
 
 - `LandingPage.tsx` — Above-fold (Nav + Hero) + shared utils
 - `LandingBelowFold.tsx` — Below-fold (sections 3-10), lazy-loaded
-- `AddCompanyModal.tsx` — Catalog browse + check-then-add (4 states: input → checking → preview → retry)
+- `AddCompanyModal.tsx` — Catalog browse + check-then-add (4 states: input → checking → preview → retry). Catalog tab (DEV-63): top **category filter chips** (toggle which groups show, counts shown, none-selected = all); per-group **"Add all"** with a confirm dialog; per-row checkboxes that **stage untracked companies into "Add Selected"** but **instantly untrack a tracked one on untick** (DELETE /api/subscriptions/:id, per-row `pendingIds` state). scrape_blocked rows stay non-selectable.
 - `NavBar.tsx` — Sticky nav, active route detection
 - `HelpButton.tsx` — Floating ? icon, ~120 lines, posts to `/api/help`
 
