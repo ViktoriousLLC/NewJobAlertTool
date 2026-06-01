@@ -7,7 +7,7 @@ This sidecar collects everything needed before touching `frontend/src/components
 - `LandingPage.tsx` — Above-fold (Nav + Hero) + shared utils
 - `LandingBelowFold.tsx` — Below-fold (sections 3-10), lazy-loaded
 - `AddCompanyModal.tsx` — Catalog browse + check-then-add (4 states: input → checking → preview → retry)
-- `NavBar.tsx` — Sticky nav, active route detection
+- `NavBar.tsx` — Sticky nav, active route detection. Admin-only (gated on `NEXT_PUBLIC_ADMIN_EMAIL`) **Metrics** button (desktop + mobile) opens the PostHog "Admin Metrics" dashboard (project 311721 / dashboard 1652973) in a new tab, alongside the Admin button (DEV-65).
 - `HelpButton.tsx` — Floating ? icon, ~120 lines, posts to `/api/help`
 
 ## Page Files (`frontend/src/app/`)

@@ -2134,3 +2134,17 @@ First fix off the silent-failure audit (DEV-62). The "does-less-with-no-error" c
 ## 2026-06-01 — A required typecheck gate (DEV-62 #1)
 
 The audit's rank-1 finding: the ONLY required status check on `main` was the cron-window `guard`, so a PR that broke `tsc` (or re-broke the auth templates) could merge with a green button and auto-deploy to prod — the "guards that exist but don't gate" class. Added `.github/workflows/typecheck.yml` running backend + frontend `tsc --noEmit` on every PR, then added those contexts to the `main` ruleset's `required_status_checks`. Chose typecheck over a full build deliberately: it's deterministic and needs no runtime env/secrets, so a *required* check can't false-block merges on a missing build-time var (the full build is still exercised by the Vercel/Railway preview deploys on each PR). Verified the workflow green on its own PR before making it required, so it couldn't lock merges. Follow-up noted on DEV-61: pin all GitHub Actions to commit SHAs (currently `@v4` tags) as a supply-chain hardening.
+
+---
+
+## 2026-06-01 — Product analytics: Admin Metrics dashboard + in-app access (DEV-65)
+
+**The ask reframed.** Vik wanted acquisition → engagement → retention analytics "from a user-journey perspective," and asked whether clicks/events need custom instrumentation "or is there something out of the box." Audited what's already wired before building anything: the app already fires the auth funnel events (`auth.signin_email_sent` → `signin_link_clicked` → `signin_success`/`failure`), per-route `$pageview`, and the engagement actions (`companies_subscribed`, `company_deleted`, `job_starred/unstarred`, etc.). Confirmed in code that **PostHog autocapture is ON** — `PostHogProvider.tsx` sets `capture_pageview:false` but has no `autocapture` line, and the two are independent, so every click/tap/input is already captured with zero per-element code. So the answer to "do we instrument every click" is **no** — it's already happening; the work is a dashboard + a few clean labels, not a build.
+
+**Built the dashboard from existing data.** Created an "Admin Metrics" PostHog dashboard (project 311721, dashboard 1652973) with 8 insights, each query validated against live production data before saving: acquisition funnel (819 → 26 → 14 over 90d), DAU/WAU/MAU (MAU ~699), stickiness, feature-usage by page + engagement-actions-over-time, day- and week-period retention (covers 7/14/30/60/90), and lifecycle. Net-new only; no existing insights touched. Test accounts are not yet filtered, so admin browsing is included (toggleable).
+
+**In-app access.** Added an admin-only "Metrics" button to NavBar (desktop + mobile, gated on `NEXT_PUBLIC_ADMIN_EMAIL`, exactly like the Admin button) that opens the dashboard in a new tab. Tagged it with a `data-ph-capture-attribute` so its own clicks read cleanly in autocapture.
+
+**Instrumentation gap surfaced (not a bug):** `company_untracked` isn't reaching PostHog because it's only in the still-unmerged #156; `company_added` is sparse (adding a brand-new company is rare). Both expected.
+
+**Remaining (separate PRs):** Resend open/click tracking → webhook → PostHog for email engagement (the one true gap; Vik opted in), and optional `data-attr` labels on the rest of the CTAs for cleaner autocapture funnels.

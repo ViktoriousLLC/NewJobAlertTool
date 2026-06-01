@@ -164,6 +164,23 @@ function NavBarInner() {
             </svg>
           </Link>
 
+          {/* Metrics (admin only) — opens the PostHog "Admin Metrics" dashboard */}
+          {userEmail === ADMIN_EMAIL && (
+            <a
+              href="https://us.posthog.com/project/311721/dashboard/1652973"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#8B8FA3]/50 hover:text-white p-1.5 rounded-md hover:bg-white/10 transition-all"
+              title="Metrics"
+              data-ph-capture-attribute-cta="admin-metrics"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3v18h18" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 15l3-3 3 3 4-5" />
+              </svg>
+            </a>
+          )}
+
           {/* Admin (only visible to admin user) */}
           {userEmail === ADMIN_EMAIL && (
             <Link
@@ -252,6 +269,22 @@ function NavBarInner() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
             </Link>
+            {userEmail === ADMIN_EMAIL && (
+              <a
+                href="https://us.posthog.com/project/311721/dashboard/1652973"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#8B8FA3]/50 hover:text-white p-2.5 rounded-md hover:bg-white/10 transition-all"
+                title="Metrics"
+                onClick={() => setMobileOpen(false)}
+                data-ph-capture-attribute-cta="admin-metrics"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3v18h18" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 15l3-3 3 3 4-5" />
+                </svg>
+              </a>
+            )}
             {userEmail === ADMIN_EMAIL && (
               <Link
                 href="/admin"
