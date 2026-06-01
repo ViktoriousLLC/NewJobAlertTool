@@ -1131,11 +1131,16 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
     // misleading "success (0 jobs from source)" — exactly what the session-start
     // health check flags as broken. Skip them entirely (no scrape, no delay).
     if (company.platform_type === "rapidapi_linkedin") continue;
-    // DEV-57 resumability: skip companies already scraped today so a re-triggered
-    // run (after a kill) resumes instead of restarting at company 1. `force`
-    // bypasses it for a deliberate full re-scrape. On a normal 14:00 run nothing
-    // has been checked "today" yet, so this is a no-op in the common case.
-    if (!options?.force && company.last_checked_at && String(company.last_checked_at).slice(0, 10) === runDate) {
+    // DEV-57 resumability: on a NO-EMAIL run (skipEmails — the re-scrape / backfill
+    // path) skip companies already scraped today, so a re-triggered run resumes
+    // instead of restarting at company 1. Deliberately NOT applied on an
+    // email-bearing run: the per-user email is built from `companyAlerts`, which
+    // only accumulates companies actually scraped THIS run, so skipping
+    // already-scraped ones would ship a PARTIAL email (subscribers to the skipped
+    // companies get nothing) that still reports success. So an email run always does
+    // a full scrape (re-scraping is idempotent); only the no-email path resumes.
+    // `force` bypasses the skip entirely.
+    if (!options?.force && options?.skipEmails && company.last_checked_at && String(company.last_checked_at).slice(0, 10) === runDate) {
       continue;
     }
     // An auto-disabled company on a non-probe day returns immediately without
@@ -1289,7 +1294,9 @@ async function runDailyCheckInner(options?: { skipEmails?: boolean; forceMondayD
   await recordRunComplete(runDate, "daily", currentRun.scraped, options?.skipEmails ? null : emailBatchResult.sent, "completed");
   currentRun.active = false;
 
-  // Failure threshold: if >25% of companies failed, throw so cron returns 500
+  // Failure threshold: if >25% of companies failed, throw so cron returns 500.
+  // Denominator is the full catalog: on the normal email-bearing run nothing is
+  // skipped (resumability is skipEmails-only), so this is over the attempted set.
   if (companies.length > 0 && failedCompanies.length / companies.length > 0.25) {
     const pct = Math.round((failedCompanies.length / companies.length) * 100);
     throw new Error(

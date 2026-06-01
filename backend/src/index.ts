@@ -707,5 +707,10 @@ async function handleCronAwareShutdown(signal: string): Promise<void> {
   }
   process.exit(0);
 }
-process.on("SIGTERM", () => { void handleCronAwareShutdown("SIGTERM"); });
-process.on("SIGINT", () => { void handleCronAwareShutdown("SIGINT"); });
+// Only register on the prod service (where the daily cron actually runs and a
+// deploy can kill it). Avoids changing local-dev Ctrl-C behavior; matches the
+// DEV-47 RAILWAY_ENVIRONMENT_NAME prod-guard convention.
+if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+  process.on("SIGTERM", () => { void handleCronAwareShutdown("SIGTERM"); });
+  process.on("SIGINT", () => { void handleCronAwareShutdown("SIGINT"); });
+}
