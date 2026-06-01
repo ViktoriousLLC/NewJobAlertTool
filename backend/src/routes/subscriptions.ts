@@ -93,11 +93,15 @@ router.post("/", async (req: Request, res: Response) => {
     // were stacking Chromium on top of the run and exhausting the container (2026-06-01).
     // scrapeCompaniesByIds also self-guards (single-flight + daily-run check), so this
     // is belt-and-suspenders. Stays fire-and-forget — never block the subscribe response.
-    if (needScrape.length > 0 && !isDailyCheckRunning()) {
+    const fired = needScrape.length > 0 && !isDailyCheckRunning();
+    if (fired) {
       void scrapeCompaniesByIds(needScrape).catch((e) => Sentry.captureException(e));
     }
 
-    res.json({ success: true, subscribed: company_ids.length, populating: needScrape.length });
+    // Report 0 when we skipped (daily run active) so the count isn't a lie — the cron
+    // backfills these regardless. (Can't cheaply reflect the in-function single-flight
+    // skip from here, but the daily-run case is the common one.)
+    res.json({ success: true, subscribed: company_ids.length, populating: fired ? needScrape.length : 0 });
   } catch (err) {
     Sentry.captureException(err);
     console.error("POST /api/subscriptions error:", err);
