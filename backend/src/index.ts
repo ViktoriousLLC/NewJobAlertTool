@@ -85,11 +85,23 @@ app.use(
 // raw bytes Resend signed, and express.json() would consume + re-shape the body
 // so the HMAC would never match. express.raw() leaves req.body as a Buffer for
 // this one path only; every other route still gets parsed JSON. Mounted before
-// the generalLimiter too, so a legitimate burst of webhook deliveries isn't
-// 429'd — the route is signature-gated, not auth-gated. NO JWT (server-to-server).
+// its OWN generous limiter (below) — not the /api/ generalLimiter — so a real Resend
+// delivery burst isn't 429'd while an abusive flood is still capped. The route is
+// signature-gated, not auth-gated. NO JWT (server-to-server).
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 600, // far above any real Resend delivery rate for this volume; stops a flood
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 app.post(
   "/api/webhooks/resend",
-  express.raw({ type: "application/json", limit: "1mb" }),
+  webhookLimiter,
+  // type: () => true so a Content-Type drift (e.g. "application/json; charset=utf-8"
+  // or a proxy rewrite) can't silently leave req.body empty and 401 every delivery.
+  // Only this path mounts this raw parser, so raw-parsing everything here is safe.
+  // 256kb matches the global JSON cap (these payloads are a few hundred bytes).
+  express.raw({ type: () => true, limit: "256kb" }),
   resendWebhookHandler,
 );
 
