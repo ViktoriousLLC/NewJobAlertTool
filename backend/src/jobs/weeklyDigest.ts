@@ -10,8 +10,27 @@ import {
   generateDigestImage,
   type ArtStyleKey,
 } from "../lib/weeklyDigestImage";
+import { computeProductPulse, renderProductPulseHtml } from "./productPulse";
 
 const AI_TITLE_RE = /\b(AI|ML|GenAI|LLM|Machine Learning|Generative|Agentforce|Agentic|Voice AI|Copilot|GPT)\b/i;
+
+// Our own site, for the in-post / in-email links we UTM-tag (DEV-65). Defaults
+// to the production domain when FRONTEND_URL isn't set (local / preview).
+const SITE_URL = (process.env.FRONTEND_URL || "https://newpmjobs.com").replace(/\/+$/, "");
+
+// Append UTM params so PostHog can attribute weekly-digest traffic by channel
+// (DEV-65). Correctly merges with any existing query string (uses ? vs &) and
+// preserves an existing #fragment. ONLY apply to links that point to OUR site —
+// never to external job/career links, which leave our domain.
+function withUtm(url: string, source: "linkedin" | "email"): string {
+  const medium = source === "linkedin" ? "social" : "email";
+  const params = `utm_source=${source}&utm_medium=${medium}&utm_campaign=weekly-digest`;
+  const hashIdx = url.indexOf("#");
+  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
+  const hash = hashIdx === -1 ? "" : url.slice(hashIdx);
+  const joiner = base.includes("?") ? "&" : "?";
+  return `${base}${joiner}${params}${hash}`;
+}
 const TOP_INDUSTRIES = 5;
 const TOP_COMPANIES = 10;
 const AI_TOP_COMPANIES = 5;
@@ -548,6 +567,11 @@ export function renderLinkedInPost(d: WeeklyDigestData): string {
       )
     : "My take this week: here is where PM hiring landed.";
 
+  // UTM-tagged link to our site so the LinkedIn-sourced clicks attribute in
+  // PostHog (DEV-65). LinkedIn auto-links a full https:// URL and preserves its
+  // query string, so the params survive the click.
+  const siteLink = withUtm(SITE_URL, "linkedin");
+
   return [
     `${total} new PM jobs were posted this week (week ending ${d.fridayDate}).`,
     "",
@@ -564,7 +588,7 @@ export function renderLinkedInPost(d: WeeklyDigestData): string {
     `3. New AI PM roles (${d.aiRoles.count} this week${aiRatio >= 2 ? `, about 1 in ${aiRatio}` : ""}):`,
     aiLines,
     "",
-    `What roles are you chasing this week? See them all at NewPMjobs.com.`,
+    `What roles are you chasing this week? See them all at ${siteLink}`,
   ].join("\n");
 }
 
@@ -656,12 +680,25 @@ function costFooter(d: WeeklyDigestData, imageAttached: boolean): string {
   return `Generation cost: ${llmLine}${imgLine}. Total this send: ~$${total.toFixed(3)}.`;
 }
 
-export function renderEmailHtml(d: WeeklyDigestData, imageAttached = false): string {
+export function renderEmailHtml(
+  d: WeeklyDigestData,
+  imageAttached = false,
+  productPulse: import("./productPulse").ProductPulseData | null = null,
+): string {
   const post = renderLinkedInPost(d);
   // Keep real newlines (do NOT convert to <br/>): a <pre> element preserves them
   // in the plain-text clipboard flavor, so copy-paste into LinkedIn keeps line
   // breaks. The old <br/>-in-a-div collapsed to one line when pasted.
   const postHtml = escapeHtml(post);
+
+  // Product Pulse renders whenever sendWeeklyDigest passes it (every weekly send);
+  // a null (e.g. the preview route opting out) just omits the block.
+  const pulseSection = productPulse ? renderProductPulseHtml(productPulse) : "";
+
+  // UTM-tagged own-site CTA so email-sourced clicks attribute in PostHog
+  // (DEV-65). Email links get utm_medium=email; this is the only own-site link
+  // in the email chrome (the LinkedIn draft above carries its own linkedin UTM).
+  const feedLink = withUtm(SITE_URL, "email");
 
   return `<!DOCTYPE html>
 <html><body style="margin:0;padding:0;background:#f9fafb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#111827;">
@@ -670,6 +707,8 @@ export function renderEmailHtml(d: WeeklyDigestData, imageAttached = false): str
   <p style="margin:0 0 8px 0;font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Weekly LinkedIn Draft · ${d.fridayDate}</p>
   <h1 style="margin:0 0 4px 0;font-size:22px;color:#111827;">Week of ${d.weekLabel}</h1>
   <p style="margin:0 0 24px 0;color:#6b7280;font-size:14px;">${d.totalNewJobs} new PM roles across ${d.trackedCompanies} companies. Copy + paste below into LinkedIn (bold the opener and the numbered headers in AuthoredUp).</p>
+
+  ${pulseSection}
 
   <div style="background:#f3f4f6;border-left:4px solid #0EA5E9;padding:20px;border-radius:6px;margin-bottom:32px;">
     <pre style="margin:0;font-family:inherit;font-size:15px;line-height:1.6;color:#111827;white-space:pre-wrap;word-break:break-word;">${postHtml}</pre>
@@ -716,7 +755,9 @@ export function renderEmailHtml(d: WeeklyDigestData, imageAttached = false): str
   <h3 style="${SUBHEAD_STYLE}">Daily posting velocity</h3>
   <table style="${TABLE_STYLE}">${renderDailyVelocityTable(d)}</table>
 
-  <p style="margin-top:36px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;">NewPMJobs weekly digest. Sent every Friday at 14:00 UTC. ${costFooter(d, imageAttached)}</p>
+  <p style="margin-top:36px;font-size:13px;"><a href="${feedLink}" style="color:#0EA5E9;text-decoration:none;font-weight:600;">See this week's roles on the live feed -&gt;</a></p>
+
+  <p style="margin-top:16px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;">NewPMJobs weekly digest. Sent every Friday at 14:00 UTC. ${costFooter(d, imageAttached)}</p>
 </div>
 </body></html>`;
 }
@@ -740,6 +781,12 @@ export async function sendWeeklyDigest(now: Date = new Date()): Promise<{ sent: 
   // email when the Gemini API is unavailable / out of credits).
   const image = data.imagePrompt ? await generateDigestImage(data.imagePrompt) : null;
 
+  // Product Pulse (DEV-65): included on EVERY weekly digest send. The digest is
+  // Friday-gated at the caller (dailyCheck.ts), so this rides the weekly email Vik
+  // actually receives. computeProductPulse never throws (it catches its own errors
+  // and returns a renderable shape), so a metrics failure can't break the send.
+  const productPulse = await computeProductPulse(now);
+
   const resend = new Resend(process.env.RESEND_API_KEY);
   // Leading 📬📬📬 (open mailbox with raised flag) so Vik can spot the weekly
   // digest at a glance in his inbox; Unicode-bold WEEKLY renders bold in Gmail's
@@ -751,7 +798,7 @@ export async function sendWeeklyDigest(now: Date = new Date()): Promise<{ sent: 
       from: "NewPMJobs <alerts@newpmjobs.com>",
       to: ADMIN_EMAIL,
       subject,
-      html: renderEmailHtml(data, !!image),
+      html: renderEmailHtml(data, !!image, productPulse),
       ...(image
         ? { attachments: [{ filename: `hot-take-${data.fridayDate.replace(/\s+/g, "-").toLowerCase()}.png`, content: image.base64 }] }
         : {}),

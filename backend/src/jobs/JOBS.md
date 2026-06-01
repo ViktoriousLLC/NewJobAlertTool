@@ -71,14 +71,14 @@ A deploy killed the 14:00 cron mid-run with NO email and NO alarm: the catalog h
 
 **Friday auto-trigger inside `runDailyCheck()`.** When UTC day-of-week === 5, after the consolidated admin digest, `sendWeeklyDigest()` from `backend/src/jobs/weeklyDigest.ts` fires. Owned by the existing 14:00 UTC daily Railway cron — no separate schedule.
 
-- **Module**: `backend/src/jobs/weeklyDigest.ts` — exports `computeWeeklyDigest`, `renderLinkedInPost`, `renderEmailHtml`, `sendWeeklyDigest`. Helpers: `backend/src/lib/weeklyLeadWriter.ts` (Claude lead phrasing), `backend/src/lib/weeklyDigestImage.ts` (Gemini banner), `backend/src/lib/vikVoiceFull.ts` (auto-generated verbatim voice files).
+- **Module**: `backend/src/jobs/weeklyDigest.ts` — exports `computeWeeklyDigest`, `renderLinkedInPost`, `renderEmailHtml`, `sendWeeklyDigest`. Helpers: `backend/src/lib/weeklyLeadWriter.ts` (Claude lead phrasing), `backend/src/lib/weeklyDigestImage.ts` (Gemini banner), `backend/src/lib/vikVoiceFull.ts` (auto-generated verbatim voice files), `backend/src/jobs/productPulse.ts` (DEV-65 Monday metrics block).
 - **Recipient**: `ADMIN_EMAIL` only (this is editorial content for Vik, not subscribers).
 - **Subject**: `📬📬📬 𝗪𝗘𝗘𝗞𝗟𝗬: LinkedIn Job Summary for <Mon DD>` (leading triple open-mailbox emoji so it's spottable at a glance in the inbox + Unicode-bold "WEEKLY" prefix; falls back gracefully to plain caps in clients that don't render it). Updated 2026-05-31.
 - **Body**: copy-paste-ready LinkedIn post (plain text, @-tagged companies) + alternate leads + the banner image prompt (and the generated PNG attached when Gemini succeeds) + raw-data tables + an Appendix (top cities + remote; big-tech concentration; seniority; top-paying companies; surge vs 4-week avg; daily velocity) + a generation-cost footer. **The post sits in a `<pre>` block (real newlines, `font-family:inherit`) so copy-paste into LinkedIn preserves line breaks — do NOT revert it to a `<br/>`-in-a-div, which collapsed to one line on paste. Company names in the Claude-written lead are @-tagged at render via `tagCompanyMentions()` (the structured top-10 / AI sections were always tagged; the free-text lead was the gap).**
 - **Data window**: last 7 days of `seen_jobs` where `status = 'active'` AND `is_baseline = false` joined to `companies`.
 - **AI title regex**: `/\b(AI|ML|GenAI|LLM|Machine Learning|Generative|Agentforce|Agentic|Voice AI|Copilot|GPT)\b/i`. Conservative; misses titles that only imply AI.
 - **Expected fire time on Fridays**: ~14:25-14:35 UTC (after scrape + per-user alerts + comp_cache refresh + admin digest).
-- **Manual triggers**: `?forceWeeklyDigest=true` on `/api/cron/trigger`, `/api/cron/weekly-digest` (CRON_SECRET), `POST /api/admin/weekly-digest/send` (admin JWT), `GET /api/admin/weekly-digest/preview` (admin JWT, no send). NOTE: `computeWeeklyDigest` now makes a Claude call on every invocation (including preview), so preview costs ~10-15c + a few seconds. Only `sendWeeklyDigest` writes `weekly_lead_history`; preview never does.
+- **Manual triggers**: `?forceWeeklyDigest=true` on `/api/cron/trigger`, `/api/cron/weekly-digest` (CRON_SECRET), `POST /api/admin/weekly-digest/send` (admin JWT), `GET /api/admin/weekly-digest/preview` (admin JWT, no send). NOTE: `computeWeeklyDigest` now makes a Claude call on every invocation (including preview), so preview costs ~10-15c + a few seconds. Only `sendWeeklyDigest` writes `weekly_lead_history`; preview never does. The preview ALSO force-computes the DEV-65 Product Pulse block (so the Monday-only metrics are reviewable on any day).
 
 ### Rotating "My take" lead engine (DEV-43, added 2026-05-30)
 
@@ -90,6 +90,23 @@ Replaced the old hardcoded `**Banking is on a tear.**` lead. The post now opens 
 - **Banner image**: `weeklyDigestImage.ts` builds a nano banana prompt (fixed 4-line "HOT TAKE · DATE / hook / subline / NewPMjobs.com" lockup + a rotating art style from `ART_STYLE_KEYS`) and, when `GEMINI_API_KEY` works, generates the PNG (`gemini-2.5-flash-image`) to attach. The email ALWAYS includes the text prompt so Vik can regenerate free via his consumer plan. Generation fails soft (his Gemini project has hit depleted-credit 429s; the image model has no free tier) — no image, just the prompt.
 - **Required env (Railway)**: `ANTHROPIC_API_KEY` (have it; interviews use it), optional `WEEKLY_DIGEST_MODEL`, `GEMINI_API_KEY` (for the auto-image; optional), optional `GEMINI_IMAGE_MODEL`.
 - A separate critic/refine LLM pass is NOT in v1 (single strong call; Vik is the human gate). The build-proof run used one; add it here if quality drifts.
+
+### UTM tagging on own-site links (DEV-65, 2026-06-01)
+
+`withUtm(url, source)` in `weeklyDigest.ts` appends `utm_source` + `utm_medium` + `utm_campaign=weekly-digest` so PostHog can attribute weekly-digest traffic by channel. Applied ONLY to links pointing at OUR site (`FRONTEND_URL`, default `https://newpmjobs.com`) — never to external job/career links, which leave the domain.
+
+- LinkedIn post CTA → `utm_source=linkedin&utm_medium=social&utm_campaign=weekly-digest`. The closing "See them all at <url>" line now carries a full UTM'd URL (LinkedIn auto-links it and preserves the query string). The first bare-text "NewPMjobs.com" mid-sentence stays plain brand text.
+- Email own-site CTA ("See this week's roles on the live feed") → `utm_source=email&utm_medium=email&utm_campaign=weekly-digest`. The PostHog dashboard link in Product Pulse is NOT UTM'd (it's a PostHog URL, not our site).
+- `withUtm` correctly uses `?` vs `&` depending on whether the URL already has a query string, and preserves a trailing `#fragment`. Note: the referrers insight previously couldn't break down by `utm_source` because it wasn't captured — these tags are what make that breakdown possible going forward.
+
+### Product Pulse — weekly product metrics (DEV-65, 2026-06-01)
+
+`backend/src/jobs/productPulse.ts` adds a "Product Pulse" block to the **weekly (Friday) digest** email (rides every weekly send — the digest is Friday-gated in dailyCheck.ts; preview forces it on any day). `computeProductPulse()` NEVER throws — every metric failure is caught and the renderer emits a short "metrics unavailable" note instead of breaking the digest send.
+
+- **Supabase tier (ALWAYS, even with no PostHog key)**: new signups in the last 7 days + total users (from `listAllUsers().created_at`), total active `user_subscriptions` (`head+count`), count of `is_active` companies (`head+count`).
+- **PostHog tier (RICHER, only when `POSTHOG_PERSONAL_API_KEY` is set)**: weekly active logged-in users (HogQL `count(DISTINCT person_id)` over authenticated events, 7d), signup-funnel conversion %, conversion by device, top 3 referrers, top nav-button clicks, companies-tracked-per-user split. Read via `GET https://us.posthog.com/api/projects/311721/insights/?short_id=<id>` (cached results, no recompute — referrers `Z92wZyh3`, funnel-by-device `ovOuaVgP`, nav-buttons `V4GmJxGZ`, depth `MEs3szkz`) plus `POST .../query/` (HogQL) for the WAU slice. Each slice is independently `Promise.allSettled`-wrapped so one failing insight doesn't blank the rest. 8s per-request timeout.
+- **Graceful fallback**: `POSTHOG_PERSONAL_API_KEY` unset → only the Supabase metrics render + a "Full dashboard ->" link to `https://us.posthog.com/project/311721/dashboard/1652973`.
+- **Env (Railway, optional)**: `POSTHOG_PERSONAL_API_KEY` — a PostHog **Personal API key** (read), NOT the publishable `POSTHOG_API_KEY` (capture/write). Scopes needed: **`insight:read` + `query:read`** on project 311721. Optional overrides: `POSTHOG_PROJECT_ID` (default `311721`), `POSTHOG_HOST_QUERY` (default `https://us.posthog.com` — deliberately separate from the ingest `POSTHOG_HOST=us.i.posthog.com` that capture uses).
 
 ## Daily Self-Check Agent (PR #20+; reworked into a parallel fan-out workflow in DEV-41, 2026-05-30)
 
