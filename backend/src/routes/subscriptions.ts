@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import * as Sentry from "@sentry/node";
 import { supabase } from "../lib/supabase";
-import { scrapeCompaniesByIds } from "../jobs/dailyCheck";
+import { scrapeCompaniesByIds, isDailyCheckRunning } from "../jobs/dailyCheck";
 
 const router = Router();
 
@@ -88,7 +88,12 @@ router.post("/", async (req: Request, res: Response) => {
       .filter((c) => !c.scrape_blocked && (c.total_product_jobs ?? 0) === 0)
       .map((c) => c.id)
       .slice(0, 25);
-    if (needScrape.length > 0) {
+    // DEV-62: skip the fire-and-forget populate while the daily cron is running — the
+    // cron backfills these companies in the same run, and concurrent subscribe-scrapes
+    // were stacking Chromium on top of the run and exhausting the container (2026-06-01).
+    // scrapeCompaniesByIds also self-guards (single-flight + daily-run check), so this
+    // is belt-and-suspenders. Stays fire-and-forget — never block the subscribe response.
+    if (needScrape.length > 0 && !isDailyCheckRunning()) {
       void scrapeCompaniesByIds(needScrape).catch((e) => Sentry.captureException(e));
     }
 
