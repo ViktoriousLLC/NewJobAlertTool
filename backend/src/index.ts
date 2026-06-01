@@ -15,7 +15,7 @@ import feedRouter from "./routes/feed";
 import preferencesRouter from "./routes/preferences";
 import adminRouter from "./routes/admin";
 import interviewsRouter, { interviewsDiagnosticsHandler } from "./routes/interviews";
-import { runDailyCheck, scrapeAndRecordCompany, createScrapeContext, PerCompanyScrapeResult, currentRun, recordRunInterrupted } from "./jobs/dailyCheck";
+import { runDailyCheck, scrapeAndRecordCompany, createScrapeContext, PerCompanyScrapeResult, currentRun, recordRunInterrupted, sendEmailOnlyFromToday } from "./jobs/dailyCheck";
 import { requireAuth } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
 import { fetchAllRows } from "./lib/fetchAllRows";
@@ -469,6 +469,31 @@ app.get("/api/cron/run-health", async (req, res) => {
   }
   const healthy = !!data && data.status === "completed";
   res.json({ healthy, date: today, run: data ?? null });
+});
+
+// Email-only recovery (DEV-58). Sends the daily alert from already-scraped data
+// (today's new jobs in seen_jobs) WITHOUT re-scraping — for "scrape finished but the
+// email step failed/was skipped -> just send it." CRON_SECRET-gated. SAFE BY DEFAULT:
+// it is a dry-run (returns what it WOULD send, sends nothing) UNLESS ?dryRun=false,
+// and a real send refuses if today's daily run already emailed (?force=true overrides).
+// No scraping happens here.
+app.post("/api/cron/email-only", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const secret = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!safeCompareSecret(secret, process.env.CRON_SECRET)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const dryRun = req.query.dryRun !== "false"; // default TRUE; must pass ?dryRun=false to actually send
+  const force = req.query.force === "true";
+  try {
+    const result = await sendEmailOnlyFromToday({ dryRun, force });
+    res.json(result);
+  } catch (err) {
+    Sentry.captureException(err, { tags: { area: "cron.email-only" } });
+    console.error("email-only failed:", err);
+    res.status(500).json({ error: "email-only failed" });
+  }
 });
 
 // Self-check suspect feed (DEV-41). The daily-self-check workflow runs in a

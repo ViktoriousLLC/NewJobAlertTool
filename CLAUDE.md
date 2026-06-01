@@ -113,6 +113,7 @@ GET    /api/cron/trigger (requires CRON_SECRET; see JOBS.md)
 GET    /api/cron/weekly-digest (requires CRON_SECRET; see JOBS.md)
 GET    /api/cron/self-check-suspects (requires CRON_SECRET; feeds the DEV-41 daily self-check remote routine — it has no DB access; see JOBS.md)
 GET    /api/cron/run-health (requires CRON_SECRET; DEV-57: reports whether today's daily run reached completion (reads cron_runs) — polled by the out-of-band GitHub-Actions watchdog; see JOBS.md)
+POST   /api/cron/email-only (requires CRON_SECRET; DEV-58: re-sends the daily alert from already-scraped seen_jobs WITHOUT re-scraping — DRY-RUN by default, ?dryRun=false to actually send, refuses double-send unless ?force=true; see JOBS.md)
 POST   /api/cron/scrape-only (requires CRON_SECRET; DEV-52: scrapes companies + reconciles seen_jobs with NO email — body {companyIds?}; default = is_active companies with 0 seen_jobs. Decouples scraping from the daily email; see JOBS.md)
 POST   /api/cron/rapidapi-blocked (requires CRON_SECRET; DEV-51: on-demand RapidAPI restore of scrape_blocked employers — NOT date-gated, for manual testing once quota resets. The daily cron runs the SAME pull auto-gated to RAPIDAPI_ACTIVATION_DATE (default 2026-07-01). No email; see JOBS.md)
 ```
