@@ -2104,3 +2104,17 @@ The no-email re-scrape surfaced a latent bug via a Sentry alert: `DB write faile
 Fix: de-dup the to-insert list by `job_url_path` before the batch insert (keep first per path). This is the **same** class the change-reviewer caught in the RapidAPI path (#144) — the core scraper's insert simply never had the guard. Independently of this, it reinforced the scoping lesson below.
 
 **Scope lesson (on me).** The re-scrape was triggered as a FULL daily run (all 519) when the goal was only to populate the ~272 *new* companies — the existing ones already had data and get refreshed by the 14:00 cron anyway, so they were being scraped twice today. The user (correctly) flagged the creep. Corrected: ship the dedup fix (its deploy cleanly stops the over-scoped run via the new SIGTERM handler — a live test of it), then re-scrape only the new companies. Target the actual work, not the whole set, for an on-demand populate.
+
+---
+
+## 2026-06-01 — Enforce ship-discipline mechanically, because remembering it keeps failing (DEV-60)
+
+**The pattern.** Manual `gh pr merge` kept dropping a doc or Linear step — a different one each time (project-history entry, journey phase, sidecar currency, Linear ticket). The user had to keep *asking* whether docs were updated, which is itself the failure: the check shouldn't be him. Root cause: the discipline lived as a checklist the agent has to remember, and memory fails under load. An agent or a linked doc would have the same flaw (you have to remember to use them).
+
+**Two findings, one fix: make it mechanical.**
+1. **The sidecar guard was never wired.** `.claude/hooks/sidecar-guard.js` exists and CLAUDE.md claims "a PreToolUse hook enforces this and will block the tool call" — but neither `settings.json` nor `settings.local.json` had a `hooks` block. The enforcement everyone assumed was mechanical had been honor-system. Now wired.
+2. **New pre-merge ship-gate** `.claude/hooks/pre-merge-guard.js` — PreToolUse(Bash) that blocks `gh pr merge <N>` unless the PR diff includes a `project-history.md` entry AND references a `DEV-N`. Fails OPEN on any error or non-merge command (can never lock the shell). Tested against real PRs before wiring: it blocked #147 (the cron-resilience PR shipped with no project-history entry — the exact recurring gap), allowed #152, and ignored non-merge commands. Journey + sidecar currency remain judgment calls (reminded in the block message, not auto-blocked — when you write the now-forced project-history entry, run the full savecc checklist).
+
+Both wired in `.claude/settings.json` with the user's explicit authorization (the auto-mode classifier correctly refused to let the agent self-modify its own startup config off an exploratory question — a good guardrail). The hooks gate only the agent's own tool calls.
+
+**Lesson.** When a discipline keeps slipping, don't write a stronger reminder — remove the memory from the loop. A guard that fires on the action itself (merge, edit) is the only thing that can't be forgotten. And verify your "enforcement" is actually running: a guard script that isn't wired is the same silent-no-op class as the dead cron alarm and the unset Resend key.
