@@ -327,11 +327,14 @@ router.post("/weekly-digest/send", async (_req: Request, res: Response) => {
 router.get("/weekly-digest/preview", async (_req: Request, res: Response) => {
   try {
     const { computeWeeklyDigest, renderLinkedInPost, renderEmailHtml } = await import("../jobs/weeklyDigest");
-    const data = await computeWeeklyDigest();
+    const { computeProductPulse } = await import("../jobs/productPulse");
+    // Force the Product Pulse block in preview (DEV-65) so it's reviewable on
+    // any day, not just Monday. computeProductPulse never throws.
+    const [data, productPulse] = await Promise.all([computeWeeklyDigest(), computeProductPulse()]);
     res.json({
       data,
       linkedinPost: renderLinkedInPost(data),
-      emailHtml: renderEmailHtml(data),
+      emailHtml: renderEmailHtml(data, false, productPulse),
     });
   } catch (err) {
     Sentry.captureException(err);
