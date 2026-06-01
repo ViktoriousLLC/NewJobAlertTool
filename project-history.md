@@ -2076,6 +2076,27 @@ Behavior-only; the lead engine, data window, and image pipeline are unchanged.
 
 ---
 
+## 2026-05-31 / 06-01 — P0: the daily cron died silently, and the silent-failure class got closed
+
+**The incident.** The day after the catalog doubled (247 → 519), the 14:00 daily cron — which scrapes every company then emails subscribers their new jobs — was killed mid-run at company 31/519 when a merge (PR #146, 14:06:56) redeployed Railway. Two automatic retries (~17:45, ~20:00) also died early. Only 117/519 scraped; **no alert email, no admin digest, and NO alarm of any kind**. Discovered ~95 min later only via a manual DB query.
+
+**Why it was silent (the core finding).** Every monitoring mechanism ran *inside* the cron process and *downstream* of the scrape loop that died: the DEV-49 email tripwires, the admin digest, the >25%-failure throw — all after the ~85-min scrape. A SIGTERM from a redeploy is not a catchable JS error, so the handler's try/catch never ran. "Broken", "still running", and "never started" were indistinguishable from outside, and `/api/health` stayed green (the replacement container booted fine). Same silent-no-op class as DEV-27 (Sentry dead 3.5 months). Investigated with a 5-agent workflow, verified against code + live DB.
+
+**The fix wave (DEV-57; PRs #147-#151, change-reviewed on the cron-critical diffs).** Vik chose the hard versions:
+- **#147** — `cron_runs` heartbeat (`started_at` at the TOP of the run, `completed_at`/`status` at the end, so a killed run leaves `completed_at IS NULL`); `GET /api/cron/run-health`; **resumable run** (skip already-scraped-today, *skipEmails-only* — review caught that doing it on an email run would ship a partial blast); **SIGTERM graceful-shutdown alert**.
+- **#148** — **out-of-band watchdog** `cron-watchdog.yml` (GitHub Actions, 16:00/17:00 UTC, emails admin if today's run didn't complete — the one alarm OUTSIDE the dying process) + **hard `cron-window-guard.yml`** (required check, blocks merges 13:55-16:00 UTC) + set `RESEND_API_KEY`/`CRON_SECRET` GitHub secrets.
+- **#149** — `dailyEntry.ts` / `npm run cron:daily` worker entrypoint (off-web-service migration's code half; the Railway cutover is the verified-flip remainder → DEV-58).
+- **#150** — email-only recovery (`POST /api/cron/email-only`, dry-run by default, double-send-guarded).
+- **#151** — the Rivian `23505` dup-URL fix (next entry).
+
+**Proven in production the same night.** Merging #151 redeployed Railway mid-re-scrape; the SIGTERM handler caught it, recorded the run `interrupted` at company 192/519, and Sentry-alerted — the exact May-31 silent death, now loud. Email-only verified via dry-run (37 companies / 151 jobs, sent nothing). Catalog repopulated with a *scoped* no-email re-scrape (new companies only): `with_active_jobs` 195 → 337/519, new-with-jobs 15 → 155/272, all 272 new scraped.
+
+**A bonus silent failure found.** `RESEND_API_KEY` was never set as a GitHub secret, so the daily-code-audit (DEV-11) email had also been silently dead — a code scan can't see a missing secret. Fixed, and closed the class with DEV-59 (`alerting-liveness.yml`: monthly secret-presence check + an end-to-end test send, so a dead alert pipe surfaces).
+
+**Lesson.** Monitor the monitors. Every guardrail checked some specific layer, but nothing checked whether the run *happened* or whether the alarms could still *fire*. The fix for a silent failure is never another check inside the thing that failed — it's a witness standing outside it.
+
+---
+
 ## 2026-06-01 — Main scraper insert: de-dup within a scrape (the Rivian 23505)
 
 The no-email re-scrape surfaced a latent bug via a Sentry alert: `DB write failed (insert new jobs for Rivian): code 23505` (unique violation on `(company_id, job_url_path)`). Root cause: a source can return two postings that normalize to the **same** `job_url_path` (e.g. one role listed under two locations). The per-company reconcile in `scrapeAndRecordCompany` batch-inserted all new jobs in one statement, so a single in-scrape duplicate failed the **entire** insert — losing all of that company's new jobs that run. It's been latent for any dup-URL source; the bigger/new-company re-scrape just hit one.
