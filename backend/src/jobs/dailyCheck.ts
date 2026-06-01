@@ -1028,6 +1028,18 @@ export async function scrapeAndRecordCompany(
 }
 
 export async function runDailyCheck(options?: { skipEmails?: boolean; forceMondayDigest?: boolean; forceWeeklyDigest?: boolean; force?: boolean }): Promise<void> {
+  // DEV-64 staging safety: ONLY the production Railway service may send the daily
+  // alert email. On any non-prod runtime (staging, PR previews, local) force
+  // skipEmails=true so a manual /api/cron/trigger or worker run can still scrape for
+  // testing but can NEVER blast email to real users — belt-and-suspenders alongside
+  // the blanked staging cron schedule and absent staging RESEND_API_KEY. Prod is
+  // unaffected. Gate on the Railway-injected var (DEV-47), not NODE_ENV.
+  const effective = { ...options };
+  if (process.env.RAILWAY_ENVIRONMENT_NAME !== "production" && !effective.skipEmails) {
+    console.warn(`[runDailyCheck] non-prod runtime (RAILWAY_ENVIRONMENT_NAME=${process.env.RAILWAY_ENVIRONMENT_NAME ?? "(unset)"}) — forcing skipEmails=true so staging/preview can never email real users`);
+    effective.skipEmails = true;
+  }
+
   if (dailyCheckRunning) {
     console.warn("Daily check already running — skipping this trigger to prevent overlap");
     return;
@@ -1035,7 +1047,7 @@ export async function runDailyCheck(options?: { skipEmails?: boolean; forceMonda
   dailyCheckRunning = true;
 
   try {
-    await runDailyCheckInner(options);
+    await runDailyCheckInner(effective);
   } finally {
     dailyCheckRunning = false;
     // If the inner run threw before marking itself complete, the cron_runs row is
