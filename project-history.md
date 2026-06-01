@@ -2128,3 +2128,9 @@ First fix off the silent-failure audit (DEV-62). The "does-less-with-no-error" c
 - **Admin digest (`sendAlert.ts`) and weekly digest (`weeklyDigest.ts`)** only caught *thrown* errors, but Resend returns API errors (rotated/422 key) in the `error` field **without throwing** — so they'd log "sent" (and the weekly path would write `weekly_lead_history`) on a silent failure. The admin digest is the alarm channel itself. Both now inspect `error` and report/abort.
 
 **Verified, didn't trust.** The audit also flagged `sendUserAlert` (sendAlert.ts:443) and `sendAdminEmail` (:462) as ignoring the return — but reading the code, both already check `error` and throw. Fixed only the three real instances; left the two false positives alone. (An adversarial audit is a lead list, not a patch list — verify each before acting, same as we do with scraper diagnoses.) tsc clean.
+
+---
+
+## 2026-06-01 — A required typecheck gate (DEV-62 #1)
+
+The audit's rank-1 finding: the ONLY required status check on `main` was the cron-window `guard`, so a PR that broke `tsc` (or re-broke the auth templates) could merge with a green button and auto-deploy to prod — the "guards that exist but don't gate" class. Added `.github/workflows/typecheck.yml` running backend + frontend `tsc --noEmit` on every PR, then added those contexts to the `main` ruleset's `required_status_checks`. Chose typecheck over a full build deliberately: it's deterministic and needs no runtime env/secrets, so a *required* check can't false-block merges on a missing build-time var (the full build is still exercised by the Vercel/Railway preview deploys on each PR). Verified the workflow green on its own PR before making it required, so it couldn't lock merges. Follow-up noted on DEV-61: pin all GitHub Actions to commit SHAs (currently `@v4` tags) as a supply-chain hardening.

@@ -1,0 +1,42 @@
+# DEV-62 #1: pre-merge typecheck gate. Before this, the ONLY required status check
+# on main was the cron-window `guard` — a PR that broke `tsc` could merge with a
+# green button and auto-deploy to prod (the "guards that don't gate" gap). This runs
+# backend + frontend `tsc --noEmit` on every PR; once verified green it's added to
+# the ruleset's required_status_checks so a type error can't reach main.
+# (Deterministic + no runtime env/secrets needed — chosen over a full build so a
+# required check can't false-block merges on a missing build-time var.)
+name: Typecheck
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: backend — npm ci + tsc --noEmit
+        working-directory: backend
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: 'true' # typecheck doesn't need the Chromium binary
+        run: |
+          npm ci
+          npx tsc --noEmit
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: frontend — npm ci + tsc --noEmit
+        working-directory: frontend
+        run: |
+          npm ci
+          npx tsc --noEmit
