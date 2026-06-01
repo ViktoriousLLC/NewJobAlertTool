@@ -2137,6 +2137,19 @@ The audit's rank-1 finding: the ONLY required status check on `main` was the cro
 
 ---
 
+## 2026-06-01 — Product analytics: Admin Metrics dashboard + in-app access (DEV-65)
+
+**The ask reframed.** Vik wanted acquisition → engagement → retention analytics "from a user-journey perspective," and asked whether clicks/events need custom instrumentation "or is there something out of the box." Audited what's already wired before building anything: the app already fires the auth funnel events (`auth.signin_email_sent` → `signin_link_clicked` → `signin_success`/`failure`), per-route `$pageview`, and the engagement actions (`companies_subscribed`, `company_deleted`, `job_starred/unstarred`, etc.). Confirmed in code that **PostHog autocapture is ON** — `PostHogProvider.tsx` sets `capture_pageview:false` but has no `autocapture` line, and the two are independent, so every click/tap/input is already captured with zero per-element code. So the answer to "do we instrument every click" is **no** — it's already happening; the work is a dashboard + a few clean labels, not a build.
+
+**Built the dashboard from existing data.** Created an "Admin Metrics" PostHog dashboard (project 311721, dashboard 1652973) with 8 insights, each query validated against live production data before saving: acquisition funnel (819 → 26 → 14 over 90d), DAU/WAU/MAU (MAU ~699), stickiness, feature-usage by page + engagement-actions-over-time, day- and week-period retention (covers 7/14/30/60/90), and lifecycle. Net-new only; no existing insights touched. Test accounts are not yet filtered, so admin browsing is included (toggleable).
+
+**In-app access.** Added an admin-only "Metrics" button to NavBar (desktop + mobile, gated on `NEXT_PUBLIC_ADMIN_EMAIL`, exactly like the Admin button) that opens the dashboard in a new tab. Tagged it with a `data-ph-capture-attribute` so its own clicks read cleanly in autocapture.
+
+**Instrumentation gap surfaced (not a bug):** `company_untracked` isn't reaching PostHog because it's only in the still-unmerged #156; `company_added` is sparse (adding a brand-new company is rare). Both expected.
+
+**Remaining (separate PRs):** Resend open/click tracking → webhook → PostHog for email engagement (the one true gap; Vik opted in), and optional `data-attr` labels on the rest of the CTAs for cleaner autocapture funnels.
+---
+
 ## 2026-06-01 — Email opens/clicks join product analytics: the Resend webhook (DEV-65)
 
 **Context.** DEV-65 is the admin metrics dashboard. The plan for email engagement (opens/clicks) was to use Resend's open/click tracking + webhooks rather than build per-email pixel/redirect code ourselves. This is the webhook half: a server-to-server endpoint that streams Resend email-lifecycle events into PostHog, so email opens and clicks land in the same product-analytics surface as page views — and, critically, **stitched to the same person** as the logged-in user.
@@ -2151,6 +2164,7 @@ The audit's rank-1 finding: the ONLY required status check on `main` was the cro
 **Activation is manual (one-time, in the Resend dashboard + Railway).** Enable Open + Click tracking on the sending domain, register the endpoint `https://api.newpmjobs.com/api/webhooks/resend`, copy its Signing Secret into `RESEND_WEBHOOK_SECRET` on Railway prod. Until then the webhook fails closed (401s every delivery), so no events flow — by design.
 
 **Lesson.** Adopt over reinvent (the DEV-61 theme): Resend already tracks opens/clicks and signs the events, so the work was a thin, verified forwarder, not a tracking pixel of our own. The single load-bearing detail — verify over the *raw* bytes, so the body parser can't sit in front of it — is the same shape we'll need for the Stripe webhook next.
+
 ---
 
 ## 2026-06-01 — Staging environment, step 1: isolated Supabase project + catalog-clone + non-prod email guard (DEV-64)
