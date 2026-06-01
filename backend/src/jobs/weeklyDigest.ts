@@ -747,7 +747,7 @@ export async function sendWeeklyDigest(now: Date = new Date()): Promise<{ sent: 
   const subject = `\u{1F4EC}\u{1F4EC}\u{1F4EC} \u{1D5EA}\u{1D5D8}\u{1D5D8}\u{1D5DE}\u{1D5DF}\u{1D5EC}: LinkedIn Job Summary for ${data.fridayDate}`;
 
   try {
-    await resend.emails.send({
+    const { error: sendErr } = await resend.emails.send({
       from: "NewPMJobs <alerts@newpmjobs.com>",
       to: ADMIN_EMAIL,
       subject,
@@ -756,6 +756,14 @@ export async function sendWeeklyDigest(now: Date = new Date()): Promise<{ sent: 
         ? { attachments: [{ filename: `hot-take-${data.fridayDate.replace(/\s+/g, "-").toLowerCase()}.png`, content: image.base64 }] }
         : {}),
     });
+    // Resend returns API errors (rotated/422 key, etc.) in `error` WITHOUT throwing,
+    // so the catch alone would log "sent" on a silent failure + still write
+    // weekly_lead_history. Treat an error-field the same as a throw.
+    if (sendErr) {
+      Sentry.captureException(new Error(`Weekly digest Resend error: ${sendErr.message || JSON.stringify(sendErr)}`));
+      console.error("Weekly digest send returned an error:", sendErr);
+      return { sent: false, reason: "send_failed", data };
+    }
     console.log(`Weekly digest sent to ${ADMIN_EMAIL}: ${subject}`);
   } catch (err) {
     Sentry.captureException(err);

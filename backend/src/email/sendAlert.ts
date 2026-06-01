@@ -387,7 +387,7 @@ export async function sendBatchAlerts(payloads: EmailPayload[]): Promise<BatchSe
       // limit, 422 validation). It returns them in `error`. Without inspecting
       // it, a whole non-delivered batch was counted as sent — which would hide
       // the next email outage exactly the way the 1000-row bug was hidden.
-      const { error } = await resend.batch.send(batch);
+      const { data, error } = await resend.batch.send(batch);
       if (error) {
         result.failed += batch.length;
         const msg = error.message || JSON.stringify(error);
@@ -398,8 +398,25 @@ export async function sendBatchAlerts(payloads: EmailPayload[]): Promise<BatchSe
           extra: { batchNum, batchSize: batch.length },
         });
       } else {
-        result.sent += batch.length;
-        console.log(`Batch ${batchNum}: sent ${batch.length} emails`);
+        // Count messages Resend actually CREATED (each returns an id), not the
+        // request size — a batch can come back with no top-level error yet create
+        // fewer than requested. Counting batch.length would hide that drop and
+        // inflate the L4/L5/L6 email tripwires (the silent over-count this audit found).
+        const created = data?.data?.length ?? batch.length;
+        result.sent += created;
+        if (created < batch.length) {
+          const dropped = batch.length - created;
+          result.failed += dropped;
+          const msg = `Batch ${batchNum}: Resend created ${created}/${batch.length} (${dropped} silently dropped)`;
+          result.errors.push(msg);
+          console.error(msg);
+          Sentry.captureException(new Error(`Resend batch partial drop: ${msg}`), {
+            tags: { area: "sendBatchAlerts" },
+            extra: { batchNum, requested: batch.length, created },
+          });
+        } else {
+          console.log(`Batch ${batchNum}: sent ${created} emails`);
+        }
       }
     } catch (err) {
       // Network/transport failure (the SDK can still throw on these).
@@ -921,14 +938,22 @@ export async function sendAdminDigest(input: AdminDigestInput): Promise<void> {
   </p></div>`;
 
   try {
-    await resend.emails.send({
+    const { error } = await resend.emails.send({
       from: "NewPMJobs <alerts@newpmjobs.com>",
       to: ADMIN_EMAIL,
       subject,
       html,
     });
+    // Resend returns API errors in `error` WITHOUT throwing — and this IS the admin
+    // alarm channel, so a silent failure here is the worst kind (we'd log "sent").
+    if (error) {
+      console.error("Admin digest send returned an error:", error);
+      Sentry.captureException(new Error(`Admin digest Resend error: ${error.message || JSON.stringify(error)}`), { tags: { area: "sendConsolidatedAdminDigest" } });
+      return;
+    }
     console.log(`Admin digest sent: ${subject}`);
   } catch (err) {
     console.error("Failed to send admin digest:", err);
+    Sentry.captureException(err, { tags: { area: "sendConsolidatedAdminDigest" } });
   }
 }
