@@ -66,6 +66,7 @@ curl -s "https://api.<your-domain>/api/health"   # verify backend after merge
 - **`main` is a repository ruleset (id 16381419), 0 required approvals** — not classic branch protection. Direct push is blocked; `gh pr merge` works without a human approver, so `/ship` can merge (it's a convention gate, not a hard one). (The "Deployment" steps above describe the manual long-form of this.)
 - **Docs ride in the change's PR (savecc-on-ship):** the project-history entry + any CLAUDE.md/sidecar currency fix go in the same PR; MEMORY.md updates right after.
 - **Every PR has a Linear task — no exceptions, manual git included.** Find the `DEV-N` the work belongs to, or **create one** in the Development team before opening the PR; reference it in the PR body; move it to its new state (In Progress when work starts, Done on merge) + link the PR. This binds whether you run `/ship` OR push a branch by hand — **the manual-git fast-path does NOT get to skip the Linear task or the docs.** Bypassing `/ship` is exactly what let docs + Linear lag a full session on 2026-05-31; the user had to ask four times. Docs AND Linear, every PR.
+- **Never merge to `main` during the daily-cron window (13:55-16:00 UTC).** A merge auto-redeploys Railway, restarting the container; on 2026-05-31 that killed the in-flight 14:00 daily cron at company 31/519 with no email and no alarm (P0, DEV-57). Enforced by the `cron-window-guard` required CI check (blocks the merge) and `/ship` refuses in-window; the airtight fix is the worker migration (the run lives off the web service, so web deploys can't touch it). The catalog-doubling lengthened the run, so widen the window if it grows.
 
 ## Subagents
 
@@ -152,7 +153,9 @@ Indexes, exact column lists, and partial-index details live in the migrations + 
 ## CI Workflows (.github/workflows/)
 
 - **`auth-template-check.yml`** (DEV-12) — on every PR touching auth code + nightly at 15:05 UTC. Fetches deployed Supabase Auth config via Management API. Fails build if templates don't use `{{ .TokenHash }}` format documented in AUTH.md. **Requires `SUPABASE_PAT_CI` GitHub repo secret.**
-- **`daily-code-audit.yml`** (DEV-11) — daily at 15:00 UTC. Heuristic scan of last 24h diff for 4 risk patterns (auth template anti-pattern, cookie-drop, JWT-in-source, unguarded routes). Emails admin only on findings. Uses existing `RESEND_API_KEY` secret.
+- **`daily-code-audit.yml`** (DEV-11) — daily at 15:00 UTC. Heuristic scan of last 24h diff for 4 risk patterns (auth template anti-pattern, cookie-drop, JWT-in-source, unguarded routes). Emails admin only on findings. Uses `RESEND_API_KEY` secret (NOTE: this secret was actually MISSING until 2026-06-01, so this alert was silently dead until then — set during the DEV-57 work).
+- **`cron-watchdog.yml`** (DEV-57) — out-of-band daily cron watchdog at 16:00 + 17:00 UTC. Hits `GET /api/cron/run-health` (CRON_SECRET); if today's daily run did NOT reach completion (or the backend is unreachable), emails admin via Resend. The one alarm that lives OUTSIDE the Railway process, so a run that never finished (deploy kill / OOM / hang) is caught. **Requires `CRON_SECRET` + `RESEND_API_KEY` GitHub repo secrets** (both set 2026-06-01).
+- **`cron-window-guard.yml`** (DEV-57) — required status check; FAILS on any PR to main evaluated during the daily-cron window (13:55-16:00 UTC) so a deploy can't land mid-run. Belt-and-suspenders with the worker migration.
 
 ## Feedback Workflow
 
