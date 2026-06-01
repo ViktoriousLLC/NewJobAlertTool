@@ -2118,3 +2118,13 @@ Fix: de-dup the to-insert list by `job_url_path` before the batch insert (keep f
 Both wired in `.claude/settings.json` with the user's explicit authorization (the auto-mode classifier correctly refused to let the agent self-modify its own startup config off an exploratory question — a good guardrail). The hooks gate only the agent's own tool calls.
 
 **Lesson.** When a discipline keeps slipping, don't write a stronger reminder — remove the memory from the loop. A guard that fires on the action itself (merge, edit) is the only thing that can't be forgotten. And verify your "enforcement" is actually running: a guard script that isn't wired is the same silent-no-op class as the dead cron alarm and the unset Resend key.
+
+---
+
+## 2026-06-01 — Email send paths: count what was actually sent, not what we asked to send (DEV-62 #3)
+
+First fix off the silent-failure audit (DEV-62). The "does-less-with-no-error" class hiding inside the email pipeline:
+- **Batch send (`sendAlert.ts`)** counted `result.sent += batch.length` whenever Resend returned no *top-level* error — without inspecting the per-message results. A batch that comes back OK but creates fewer messages than requested was counted as fully sent, which would **inflate the L4/L5/L6 email tripwires** (the very alarms meant to catch a recipient drop). Now counts `data.data.length` (messages Resend actually created) and Sentry-reports the shortfall as a partial drop.
+- **Admin digest (`sendAlert.ts`) and weekly digest (`weeklyDigest.ts`)** only caught *thrown* errors, but Resend returns API errors (rotated/422 key) in the `error` field **without throwing** — so they'd log "sent" (and the weekly path would write `weekly_lead_history`) on a silent failure. The admin digest is the alarm channel itself. Both now inspect `error` and report/abort.
+
+**Verified, didn't trust.** The audit also flagged `sendUserAlert` (sendAlert.ts:443) and `sendAdminEmail` (:462) as ignoring the return — but reading the code, both already check `error` and throw. Fixed only the three real instances; left the two false positives alone. (An adversarial audit is a lead list, not a patch list — verify each before acting, same as we do with scraper diagnoses.) tsc clean.
